@@ -5,7 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import {
   ArrowLeft, AlertTriangle, User, Calendar, Flag,
   CheckSquare, MessageSquare, Users, Mail, Activity, BarChart3,
-  CheckCheck, Loader2, Star,
+  CheckCheck, Loader2, Star, Send, ClipboardCheck,
 } from "lucide-react";
 import { cn, formatDate, formatDateTime, formatRelativeTime, statusLabel, priorityLabel, getInitials, avatarColor } from "@/lib/utils";
 import { useTaskStore } from "@/stores/useTaskStore";
@@ -14,7 +14,7 @@ import { subscribeTask, updateTask, getMessages, addMessage, getEmailLogs, getAu
 import { hasPermission } from "@/lib/rbac/permissions";
 import { StepsTab } from "@/components/tasks/StepsTab";
 import { UserAvatar } from "@/components/common/UserAvatar";
-import type { Task, User as UserType, Message, EmailLog, AuditEvent, Evaluation } from "@/types";
+import type { Task, User as UserType, Message, EmailLog, AuditEvent, Evaluation, CompletionProposal } from "@/types";
 import { generateId } from "@/lib/utils";
 import { toast } from "sonner";
 
@@ -38,6 +38,13 @@ export default function TaskDetailsPage() {
   const [evalRatings, setEvalRatings] = useState<Record<string, number>>({});
   const [evalComments, setEvalComments] = useState<Record<string, string>>({});
   const [submittingEval, setSubmittingEval] = useState(false);
+
+  // Completion proposal state
+  const [proposalSummary, setProposalSummary] = useState("");
+  const [submittingProposal, setSubmittingProposal] = useState(false);
+  const [closureRating, setClosureRating] = useState(0);
+  const [closureComment, setClosureComment] = useState("");
+  const [submittingClosure, setSubmittingClosure] = useState(false);
 
   // Realtime task subscription
   useEffect(() => {
@@ -188,6 +195,81 @@ export default function TaskDetailsPage() {
   }
 
 
+
+  async function handleSubmitProposal() {
+    if (!currentUser || !task || !proposalSummary.trim()) return;
+    setSubmittingProposal(true);
+    try {
+      const proposal: CompletionProposal = {
+        submittedBy: currentUser.id,
+        submittedAt: new Date().toISOString(),
+        summary: proposalSummary.trim(),
+        status: "pending",
+      };
+      await updateTask(id, { completionProposal: proposal });
+      const managers = users.filter(
+        (u) => ["teamLead", "director", "hrAdmin"].includes(u.role) && u.isActive && u.id !== currentUser.id
+      );
+      await Promise.all(managers.map((u) =>
+        addNotification({
+          userId: u.id,
+          type: "completion_proposal",
+          title: "Đề xuất kết thúc nhiệm vụ",
+          body: `${currentUser.name} đề xuất kết thúc "${task.name}".`,
+          link: `/tasks/${id}`,
+          read: false,
+          priority: "normal",
+          createdAt: new Date().toISOString(),
+        })
+      ));
+      await addAuditEvent(id, {
+        taskId: id, action: "completion_proposed",
+        userId: currentUser.id, userName: currentUser.name,
+        timestamp: new Date().toISOString(),
+      });
+      setProposalSummary("");
+      toast.success("Đã gửi đề xuất kết thúc. Cấp trên sẽ xem xét và phê duyệt.");
+    } catch { toast.error("Gửi đề xuất thất bại."); }
+    finally { setSubmittingProposal(false); }
+  }
+
+  async function handleReviewProposal(approved: boolean) {
+    if (!currentUser || !task || !task.completionProposal) return;
+    if (approved && closureRating === 0) { toast.error("Vui lòng chọn số sao đánh giá."); return; }
+    setSubmittingClosure(true);
+    try {
+      const updated: CompletionProposal = {
+        ...task.completionProposal,
+        status: approved ? "approved" : "rejected",
+        reviewedBy: currentUser.id,
+        reviewedAt: new Date().toISOString(),
+        ...(approved && closureRating > 0 && { reviewRating: closureRating }),
+        ...(closureComment.trim() && { reviewComment: closureComment.trim() }),
+      };
+      await updateTask(id, { completionProposal: updated });
+      if (task.mainPerformerId && task.mainPerformerId !== currentUser.id) {
+        await addNotification({
+          userId: task.mainPerformerId,
+          type: "completion_reviewed",
+          title: approved ? "Đề xuất kết thúc được phê duyệt" : "Đề xuất kết thúc bị từ chối",
+          body: `${currentUser.name} đã ${approved ? "phê duyệt" : "từ chối"} đề xuất kết thúc "${task.name}".`,
+          link: `/tasks/${id}`,
+          read: false,
+          priority: "normal",
+          createdAt: new Date().toISOString(),
+        });
+      }
+      await addAuditEvent(id, {
+        taskId: id, action: approved ? "completion_approved" : "completion_rejected",
+        userId: currentUser.id, userName: currentUser.name,
+        timestamp: new Date().toISOString(),
+      });
+      setClosureComment("");
+      setClosureRating(0);
+      toast.success(approved ? "Đã phê duyệt kết thúc nhiệm vụ." : "Đã từ chối đề xuất.");
+    } catch { toast.error("Thao tác thất bại."); }
+    finally { setSubmittingClosure(false); }
+  }
 
   if (loading) {
     return (
@@ -362,6 +444,122 @@ export default function TaskDetailsPage() {
                   {statusLabel(s)}
                 </button>
               ))}
+          </div>
+        )}
+
+        {/* Completion proposal — main performer submits when task is done */}
+        {task.status === "done" && (
+          <div className="mt-4 pt-4 border-t border-slate-100 dark:border-slate-700">
+            {!task.completionProposal ? (
+              isMainPerformer && (
+                <div className="space-y-3">
+                  <p className="text-sm font-semibold text-slate-700 dark:text-slate-200 flex items-center gap-2">
+                    <ClipboardCheck className="w-4 h-4 text-green-600" />
+                    Đề xuất kết thúc nhiệm vụ
+                  </p>
+                  <textarea
+                    value={proposalSummary}
+                    onChange={(e) => setProposalSummary(e.target.value)}
+                    placeholder="Tóm tắt kết quả đạt được, những việc đã hoàn thành và bài học kinh nghiệm..."
+                    rows={3}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-green-500 resize-none"
+                  />
+                  <button
+                    onClick={handleSubmitProposal}
+                    disabled={submittingProposal || !proposalSummary.trim()}
+                    className="flex items-center gap-1.5 px-4 py-2 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-sm font-semibold rounded-xl transition"
+                  >
+                    {submittingProposal ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                    Gửi đề xuất kết thúc
+                  </button>
+                </div>
+              )
+            ) : (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <ClipboardCheck className="w-4 h-4 text-green-600" />
+                  <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">Đề xuất kết thúc nhiệm vụ</p>
+                  <span className={cn(
+                    "px-2 py-0.5 rounded-full text-[10px] font-bold",
+                    task.completionProposal.status === "approved" ? "bg-green-100 text-green-700"
+                      : task.completionProposal.status === "rejected" ? "bg-red-100 text-red-600"
+                      : "bg-amber-100 text-amber-700"
+                  )}>
+                    {task.completionProposal.status === "approved" ? "Đã phê duyệt"
+                      : task.completionProposal.status === "rejected" ? "Bị từ chối"
+                      : "Chờ phê duyệt"}
+                  </span>
+                </div>
+
+                <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                  <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-1">Tóm tắt từ người thực hiện</p>
+                  <p className="text-sm text-slate-700 dark:text-slate-200">{task.completionProposal.summary}</p>
+                  <p className="text-[10px] text-slate-400 mt-1">{formatDateTime(task.completionProposal.submittedAt)}</p>
+                </div>
+
+                {task.completionProposal.status !== "pending" && (
+                  <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl space-y-1">
+                    <p className="text-[10px] text-slate-400 uppercase tracking-wider">
+                      {task.completionProposal.status === "approved" ? "Nhận xét phê duyệt" : "Lý do từ chối"}
+                    </p>
+                    {task.completionProposal.reviewRating && (
+                      <span className="text-amber-500">{"★".repeat(task.completionProposal.reviewRating)}{"☆".repeat(5 - task.completionProposal.reviewRating)}</span>
+                    )}
+                    {task.completionProposal.reviewComment && (
+                      <p className="text-sm text-slate-700 dark:text-slate-200">{task.completionProposal.reviewComment}</p>
+                    )}
+                    {task.completionProposal.reviewedBy && (
+                      <p className="text-[10px] text-slate-400">
+                        {users.find((u) => u.id === task.completionProposal?.reviewedBy)?.name ?? "Cấp trên"}
+                        {" · "}
+                        {task.completionProposal.reviewedAt ? formatDateTime(task.completionProposal.reviewedAt) : ""}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {/* Manager review form */}
+                {canApprove && task.completionProposal.status === "pending" && (
+                  <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl border border-blue-100 dark:border-blue-900 space-y-2">
+                    <p className="text-xs font-semibold text-blue-700 dark:text-blue-300">Đánh giá &amp; phê duyệt kết thúc</p>
+                    <div className="flex gap-1">
+                      {[1, 2, 3, 4, 5].map((star) => (
+                        <button key={star} onClick={() => setClosureRating(star)}>
+                          <Star className={cn(
+                            "w-5 h-5 transition",
+                            closureRating >= star ? "fill-amber-400 text-amber-400" : "text-slate-300 dark:text-slate-600"
+                          )} />
+                        </button>
+                      ))}
+                    </div>
+                    <textarea
+                      value={closureComment}
+                      onChange={(e) => setClosureComment(e.target.value)}
+                      placeholder="Nhận xét tổng thể về nhiệm vụ (tùy chọn)..."
+                      rows={2}
+                      className="w-full px-3 py-2 text-sm border border-blue-200 dark:border-blue-800 rounded-xl bg-white dark:bg-slate-900 text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleReviewProposal(true)}
+                        disabled={submittingClosure || closureRating === 0}
+                        className="flex items-center gap-1.5 px-4 py-2 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-sm font-semibold rounded-xl transition"
+                      >
+                        {submittingClosure ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCheck className="w-4 h-4" />}
+                        Phê duyệt kết thúc
+                      </button>
+                      <button
+                        onClick={() => handleReviewProposal(false)}
+                        disabled={submittingClosure}
+                        className="flex items-center gap-1.5 px-4 py-2 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50 text-sm font-semibold rounded-xl transition"
+                      >
+                        Từ chối
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>

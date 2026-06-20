@@ -83,6 +83,17 @@ export interface StepSubTask {
   completedAt?: string;
 }
 
+export interface CompletionProposal {
+  submittedBy: string;
+  submittedAt: string;
+  summary: string;
+  status: "pending" | "approved" | "rejected";
+  reviewedBy?: string;
+  reviewedAt?: string;
+  reviewComment?: string;
+  reviewRating?: number;
+}
+
 export interface TaskStep {
   id: string;
   name: string;
@@ -177,6 +188,9 @@ export interface Task {
   totalAmount?: number;
   totalIncome?: number;
   totalExpense?: number;
+
+  // Completion proposal (main performer → manager approval)
+  completionProposal?: CompletionProposal;
 
   // Google Calendar
   googleCalendarEventId?: string;
@@ -323,6 +337,8 @@ export type NotificationType =
   | "calendar_change_request"
   | "calendar_change_approved"
   | "risk_flag"
+  | "completion_proposal"
+  | "completion_reviewed"
   | "digest";
 
 export interface Notification {
