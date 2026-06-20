@@ -69,7 +69,8 @@ export function subscribeUsers(callback: (users: User[]) => void) {
   const db = getDb();
   return onSnapshot(
     query(collection(db, "users"), where("isActive", "==", true)),
-    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as User)))
+    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as User))),
+    (err) => console.error("[subscribeUsers]", err.code, err.message)
   );
 }
 
@@ -138,14 +139,17 @@ export function subscribeTasks(
   const db = getDb();
   return onSnapshot(
     query(collection(db, "tasks"), orderBy("createdAt", "desc"), ...constraints),
-    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Task)))
+    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Task))),
+    (err) => console.error("[subscribeTasks]", err.code, err.message)
   );
 }
 
 export function subscribeTask(taskId: string, callback: (task: Task | null) => void) {
   const db = getDb();
-  return onSnapshot(doc(db, "tasks", taskId), (snap) =>
-    callback(snap.exists() ? ({ id: snap.id, ...snap.data() } as Task) : null)
+  return onSnapshot(
+    doc(db, "tasks", taskId),
+    (snap) => callback(snap.exists() ? ({ id: snap.id, ...snap.data() } as Task) : null),
+    (err) => console.error("[subscribeTask]", err.code, err.message)
   );
 }
 
@@ -191,7 +195,8 @@ export function subscribeMessages(taskId: string, callback: (messages: Message[]
   const db = getDb();
   return onSnapshot(
     query(collection(db, "tasks", taskId, "messages"), orderBy("timestamp", "asc")),
-    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Message)))
+    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Message))),
+    (err) => console.error("[subscribeMessages]", err.code, err.message)
   );
 }
 
@@ -238,7 +243,8 @@ export function subscribeNotifications(userId: string, callback: (notifs: Notifi
       orderBy("createdAt", "desc"),
       limit(50)
     ),
-    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Notification)))
+    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Notification))),
+    (err) => console.error("[subscribeNotifications]", err.code, err.message)
   );
 }
 
@@ -282,7 +288,8 @@ export function subscribeCalendarEvents(userId: string, callback: (events: Calen
   const db = getDb();
   return onSnapshot(
     query(collection(db, "calendarEvents"), where("userId", "==", userId)),
-    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as CalendarEvent)))
+    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as CalendarEvent))),
+    (err) => console.error("[subscribeCalendarEvents]", err.code, err.message)
   );
 }
 
