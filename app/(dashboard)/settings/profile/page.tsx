@@ -23,7 +23,7 @@ export default function ProfilePage() {
 
   if (!currentUser) return null;
 
-  const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     if (file.size > 2 * 1024 * 1024) {
@@ -31,24 +31,33 @@ export default function ProfilePage() {
       return;
     }
     setUploadingAvatar(true);
-    try {
-      const reader = new FileReader();
-      reader.onload = async (ev) => {
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
         const base64 = ev.target?.result as string;
         const url = await uploadBase64File(base64, file.name, file.type, `avatars/${currentUser.id}`);
         const updated = { ...currentUser, avatar: url };
         await saveUser(updated);
         setCurrentUser(updated);
         toast.success("Đã cập nhật ảnh đại diện");
+      } catch (err: unknown) {
+        console.error(err);
+        const msg = err instanceof Error ? err.message : "";
+        if (msg.includes("unauthorized") || msg.includes("storage/unauthorized")) {
+          toast.error("Chưa có quyền upload — cần cập nhật Firebase Storage Rules");
+        } else {
+          toast.error("Upload ảnh thất bại");
+        }
+      } finally {
         setUploadingAvatar(false);
-      };
-      reader.readAsDataURL(file);
-    } catch (err) {
-      console.error(err);
-      toast.error("Upload ảnh thất bại");
+      }
+    };
+    reader.onerror = () => {
+      toast.error("Không thể đọc file ảnh");
       setUploadingAvatar(false);
-    }
-    // reset input so same file can be re-selected
+    };
+    reader.readAsDataURL(file);
+    // reset so same file can be re-selected
     e.target.value = "";
   };
 
