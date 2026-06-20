@@ -19,7 +19,7 @@ export default function KPIWeekWidget() {
     const myTasks = tasks.filter(
       (t) =>
         t.mainPerformerId === currentUser.id ||
-        t.stakeholders.some((s) => s.userId === currentUser.id && s.role === "assignee"),
+        (t.stakeholders ?? []).some((s) => s.userId === currentUser.id && s.role === "assignee"),
     );
 
     const thisWeek = myTasks.filter(

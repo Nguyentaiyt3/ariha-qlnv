@@ -16,7 +16,7 @@ export default function DeadlineAlertWidget() {
       const days = daysUntilDeadline(t.deadlineBase);
       const isMyTask =
         t.mainPerformerId === currentUser?.id ||
-        t.stakeholders.some((s) => s.userId === currentUser?.id);
+        (t.stakeholders ?? []).some((s) => s.userId === currentUser?.id);
       return isMyTask && days <= 5;
     })
     .sort((a, b) => {

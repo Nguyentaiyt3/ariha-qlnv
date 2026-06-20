@@ -21,7 +21,7 @@ export default function CalendarMiniWidget() {
         const d = new Date(t.deadlineBase);
         const mine =
           t.mainPerformerId === currentUser?.id ||
-          t.stakeholders.some((s) => s.userId === currentUser?.id);
+          (t.stakeholders ?? []).some((s) => s.userId === currentUser?.id);
         return mine && d >= now && d <= in7days;
       })
       .sort((a, b) => new Date(a.deadlineBase!).getTime() - new Date(b.deadlineBase!).getTime())

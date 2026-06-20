@@ -16,7 +16,7 @@ export default function TeamLeaderboardWidget() {
       .map((u) => {
         const myTasks = tasks.filter(
           (t) =>
-            (t.mainPerformerId === u.id || t.stakeholders.some((s) => s.userId === u.id && s.role === "assignee")) &&
+            (t.mainPerformerId === u.id || (t.stakeholders ?? []).some((s) => s.userId === u.id && s.role === "assignee")) &&
             t.deadlineBase &&
             new Date(t.deadlineBase) >= monthStart,
         );

@@ -20,7 +20,7 @@ export default function InternalMessagesWidget() {
       .filter(
         (t) =>
           t.mainPerformerId === currentUser.id ||
-          t.stakeholders.some((s) => s.userId === currentUser.id),
+          (t.stakeholders ?? []).some((s) => s.userId === currentUser.id),
       )
       .map((t) => t.id)
       .slice(0, 5);

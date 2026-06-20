@@ -16,7 +16,7 @@ export default function WorkloadHeatmapWidget() {
           (t) =>
             t.status !== "done" &&
             t.status !== "cancelled" &&
-            (t.mainPerformerId === u.id || t.stakeholders.some((s) => s.userId === u.id && s.role === "assignee")),
+            (t.mainPerformerId === u.id || (t.stakeholders ?? []).some((s) => s.userId === u.id && s.role === "assignee")),
         );
         const risk = active.filter((t) => t.riskFlag).length;
         return { user: u, count: active.length, risk };

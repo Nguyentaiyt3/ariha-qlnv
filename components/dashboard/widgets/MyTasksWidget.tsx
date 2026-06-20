@@ -16,7 +16,7 @@ export default function MyTasksWidget() {
         t.status !== "done" &&
         t.status !== "cancelled" &&
         (t.mainPerformerId === currentUser?.id ||
-          t.stakeholders.some((s) => s.userId === currentUser?.id && s.role === "assignee")),
+          (t.stakeholders ?? []).some((s) => s.userId === currentUser?.id && s.role === "assignee")),
     )
     .sort((a, b) => {
       if (a.riskFlag && !b.riskFlag) return -1;
