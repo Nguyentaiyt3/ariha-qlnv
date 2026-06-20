@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find \"D:/ARiHA\" -maxdepth 3 -type f 2>/dev/null | sort)"
+    ]
+  }
+}
