@@ -68,9 +68,25 @@ export interface SubTask {
   deadline?: string;
 }
 
+export interface StepSubTask {
+  id: string;
+  userId: string;
+  priority: TaskPriority;
+  deadline?: string;
+  note?: string;
+  progress: number;
+  proofs: Proof[];
+  amountType: "none" | "income" | "expense";
+  amount: number;
+  status: "pending" | "in_progress" | "completed";
+  createdAt: string;
+  completedAt?: string;
+}
+
 export interface TaskStep {
   id: string;
   name: string;
+  description?: string;
   assigneeId: string;
   status: "pending" | "in_progress" | "completed";
   progress: number;
@@ -83,6 +99,7 @@ export interface TaskStep {
   durationDays?: number;
   deadline?: string;
   completedAt?: string;
+  subTasks?: StepSubTask[];
 }
 
 export interface Proof {

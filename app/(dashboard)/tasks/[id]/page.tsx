@@ -3,19 +3,22 @@
 import { useState, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
-  ArrowLeft, AlertTriangle, Clock, User, Calendar, Flag,
+  ArrowLeft, AlertTriangle, User, Calendar, Flag,
   CheckSquare, MessageSquare, Users, Mail, Activity, BarChart3,
-  Edit3, Trash2, CheckCheck, X, Loader2, Plus
+  CheckCheck, Loader2, Star,
 } from "lucide-react";
-import { cn, formatDate, formatDateTime, formatRelativeTime, statusLabel, priorityLabel, phaseLabel, getInitials, avatarColor } from "@/lib/utils";
+import { cn, formatDate, formatDateTime, formatRelativeTime, statusLabel, priorityLabel, getInitials, avatarColor } from "@/lib/utils";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useAuthStore } from "@/stores/useAuthStore";
-import { subscribeTask, updateTask, getMessages, addMessage, getEmailLogs, getAuditTrail, addAuditEvent, addNotification } from "@/lib/firebase/firestore";
+import { subscribeTask, updateTask, getMessages, addMessage, getEmailLogs, getAuditTrail, addAuditEvent, addNotification, getEvaluations, saveEvaluation } from "@/lib/firebase/firestore";
 import { hasPermission } from "@/lib/rbac/permissions";
-import type { Task, User as UserType, Message, EmailLog, AuditEvent } from "@/types";
+import { StepsTab } from "@/components/tasks/StepsTab";
+import { UserAvatar } from "@/components/common/UserAvatar";
+import type { Task, User as UserType, Message, EmailLog, AuditEvent, Evaluation } from "@/types";
+import { generateId } from "@/lib/utils";
 import { toast } from "sonner";
 
-type TabId = "steps" | "stakeholders" | "chat" | "email" | "audit";
+type TabId = "steps" | "stakeholders" | "chat" | "email" | "audit" | "evaluation";
 
 export default function TaskDetailsPage() {
   const { id } = useParams() as { id: string };
@@ -31,7 +34,10 @@ export default function TaskDetailsPage() {
   const [chatInput, setChatInput] = useState("");
   const [sendingMsg, setSendingMsg] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [assigningStepId, setAssigningStepId] = useState<string | null>(null);
+  const [evaluations, setEvaluations] = useState<Evaluation[]>([]);
+  const [evalRatings, setEvalRatings] = useState<Record<string, number>>({});
+  const [evalComments, setEvalComments] = useState<Record<string, string>>({});
+  const [submittingEval, setSubmittingEval] = useState(false);
 
   // Realtime task subscription
   useEffect(() => {
@@ -51,8 +57,10 @@ export default function TaskDetailsPage() {
       getEmailLogs(id).then(setEmailLogs).catch(console.error);
     } else if (activeTab === "audit") {
       getAuditTrail(id).then(setAuditEvents).catch(console.error);
+    } else if (activeTab === "evaluation" && currentUser) {
+      getEvaluations(currentUser.id).then(setEvaluations).catch(console.error);
     }
-  }, [activeTab, id, task]);
+  }, [activeTab, id, task, currentUser]);
 
   async function handleSendMessage() {
     if (!chatInput.trim() || !currentUser || !task) return;
@@ -103,12 +111,11 @@ export default function TaskDetailsPage() {
         timestamp: new Date().toISOString(),
       });
 
-      // Notify approvers when task moves to review
+      // Notify approvers + all managers when task moves to review
       if (status === "review") {
-        const approvers = (task.stakeholders ?? []).filter((s) => s.role === "approver");
-        const notifTargets = approvers.length > 0
-          ? approvers.map((s) => s.userId)
-          : task.creatorId ? [task.creatorId] : [];
+        const approvers = (task.stakeholders ?? []).filter((s) => s.role === "approver").map((s) => s.userId);
+        const managers = users.filter((u) => ["teamLead", "director", "hrAdmin"].includes(u.role) && u.isActive).map((u) => u.id);
+        const notifTargets = Array.from(new Set([...approvers, ...managers])).filter((uid) => uid !== currentUser.id);
         await Promise.all(notifTargets.map((uid) =>
           addNotification({
             userId: uid,
@@ -144,23 +151,43 @@ export default function TaskDetailsPage() {
     } catch { toast.error("Cập nhật trạng thái thất bại."); }
   }
 
-  async function handleAssignStep(stepId: string, userId: string) {
-    if (!task) return;
-    const updatedSteps = task.steps.map((s) =>
-      s.id === stepId ? { ...s, assigneeId: userId, status: "pending" as const } : s
-    );
-    const alreadyStakeholder = (task.stakeholders ?? []).some((s) => s.userId === userId);
-    const updatedStakeholders = alreadyStakeholder
-      ? task.stakeholders
-      : [...(task.stakeholders ?? []), { userId, role: "assignee" as const }];
-    try {
-      await updateTask(id, { steps: updatedSteps, stakeholders: updatedStakeholders });
-      setAssigningStepId(null);
-      toast.success("Đã phân công bước thành công");
-    } catch {
-      toast.error("Phân công thất bại");
+  async function onSaveTask(updates: Partial<Task>) {
+    if (updates.steps) {
+      const avg = updates.steps.length
+        ? Math.round(updates.steps.reduce((s, step) => s + step.progress, 0) / updates.steps.length)
+        : 0;
+      updates.progress = avg;
     }
+    await updateTask(id, { ...updates, updatedAt: new Date().toISOString() });
   }
+
+  async function handleSubmitEval(targetUserId: string) {
+    if (!currentUser || !task) return;
+    const rating = evalRatings[targetUserId];
+    if (!rating) { toast.error("Chọn số sao đánh giá"); return; }
+    setSubmittingEval(true);
+    try {
+      const ev: Evaluation = {
+        id: generateId("eval"),
+        taskId: id,
+        evaluatedUserId: targetUserId,
+        evaluatorId: currentUser.id,
+        type: hasPermission(currentUser.role, "task:approve") ? "manager" : "peer",
+        isAnonymous: false,
+        scores: { overall: rating },
+        comment: evalComments[targetUserId] ?? "",
+        period: new Date().toISOString().slice(0, 7),
+        overallScore: rating * 20,
+        createdAt: new Date().toISOString(),
+      };
+      await saveEvaluation(ev);
+      setEvaluations((prev) => [...prev, ev]);
+      toast.success("Đã gửi đánh giá");
+    } catch { toast.error("Gửi đánh giá thất bại"); }
+    finally { setSubmittingEval(false); }
+  }
+
+
 
   if (loading) {
     return (
@@ -180,14 +207,22 @@ export default function TaskDetailsPage() {
   }
 
   const performer = users.find((u) => u.id === task.mainPerformerId);
-  const canApprove = currentUser && hasPermission(currentUser.role, "task:approve");
+  const canApprove = !!(currentUser && hasPermission(currentUser.role, "task:approve"));
   const isMainPerformer = currentUser?.id === task.mainPerformerId;
   const canAssignSteps = task.approved && (isMainPerformer || canApprove);
-  const canEdit = currentUser && (
-    hasPermission(currentUser.role, "task:approve") ||
-    task.mainPerformerId === currentUser.id ||
-    task.stakeholders?.some((s) => s.userId === currentUser.id)
-  );
+  // Staff cannot change status while task is pending approval
+  const canChangeStatus = !!(currentUser && (
+    canApprove ||
+    (task.approved && (
+      isMainPerformer ||
+      (task.stakeholders ?? []).some((s) => s.userId === currentUser.id)
+    ))
+  ));
+  const canEdit = !!(currentUser && (
+    canApprove ||
+    isMainPerformer ||
+    (task.stakeholders ?? []).some((s) => s.userId === currentUser.id)
+  ));
 
   const TABS: { id: TabId; label: string; Icon: React.ComponentType<{ className?: string }> }[] = [
     { id: "steps", label: "Quy trình", Icon: CheckSquare },
@@ -195,7 +230,15 @@ export default function TaskDetailsPage() {
     { id: "chat", label: "Tin nhắn", Icon: MessageSquare },
     { id: "email", label: "Email Log", Icon: Mail },
     { id: "audit", label: "Lịch sử", Icon: Activity },
+    ...(task.status === "done" ? [{ id: "evaluation" as TabId, label: "Đánh giá", Icon: Star }] : []),
   ];
+
+  // All people who worked on this task (for peer evaluation)
+  const taskWorkers = Array.from(new Set([
+    task.mainPerformerId,
+    ...(task.steps ?? []).flatMap((s) => [s.assigneeId, ...(s.subTasks ?? []).map((st) => st.userId)]),
+    ...(task.stakeholders ?? []).filter((s) => s.role === "assignee").map((s) => s.userId),
+  ].filter(Boolean) as string[])).filter((uid) => uid !== currentUser?.id);
 
   return (
     <div className="max-w-5xl mx-auto space-y-5 animate-fade-in">
@@ -260,16 +303,21 @@ export default function TaskDetailsPage() {
 
         {/* Meta info */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-5 pt-5 border-t border-slate-100 dark:border-slate-700">
+          <div>
+            <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1"><User className="w-3.5 h-3.5" /> Người thực hiện</div>
+            {performer ? (
+              <UserAvatar user={performer} size="sm" showName />
+            ) : (
+              <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">—</p>
+            )}
+          </div>
           {[
-            { label: "Người thực hiện", value: performer?.name ?? "—", icon: User },
             { label: "Hạn hoàn thành", value: task.deadlineBase ? formatDate(task.deadlineBase) : "—", icon: Calendar },
             { label: "Phòng ban", value: task.department ?? "—", icon: Flag },
             { label: "Tiến độ", value: `${task.progress}%`, icon: BarChart3 },
           ].map(({ label, value, icon: Icon }) => (
             <div key={label}>
-              <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1">
-                <Icon className="w-3.5 h-3.5" /> {label}
-              </div>
+              <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1"><Icon className="w-3.5 h-3.5" /> {label}</div>
               <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">{value}</p>
             </div>
           ))}
@@ -299,8 +347,8 @@ export default function TaskDetailsPage() {
           ))}
         </div>
 
-        {/* Change status */}
-        {canEdit && task.status !== "done" && task.status !== "cancelled" && (
+        {/* Change status — staff cannot act while awaiting approval */}
+        {canChangeStatus && task.status !== "done" && task.status !== "cancelled" && (
           <div className="flex items-center gap-2 mt-4 flex-wrap">
             <span className="text-xs text-slate-400">Chuyển sang:</span>
             {(["todo", "in_progress", "review", "done"] as Task["status"][])
@@ -340,124 +388,14 @@ export default function TaskDetailsPage() {
 
         <div className="p-5">
           {/* Steps tab */}
-          {activeTab === "steps" && (
-            <div className="space-y-3">
-              {task.workflowName && (
-                <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 mb-1">
-                  <span className="px-2 py-0.5 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-full font-medium">
-                    {task.workflowName}
-                  </span>
-                  <span>{task.steps.length} bước</span>
-                </div>
-              )}
-
-              {!task.approved && (
-                <div className="text-xs text-amber-600 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 rounded-xl border border-amber-100 dark:border-amber-900">
-                  Nhiệm vụ chưa được phê duyệt. Phân công bước sẽ khả dụng sau khi duyệt.
-                </div>
-              )}
-
-              {task.steps.length === 0 ? (
-                <p className="text-slate-400 text-sm text-center py-8">
-                  Chưa có bước quy trình nào. Chọn quy trình khi tạo nhiệm vụ để tự động thêm các bước.
-                </p>
-              ) : (
-                task.steps.map((step, i) => {
-                  const stepUser = users.find((u) => u.id === step.assigneeId);
-                  const isAssigning = assigningStepId === step.id;
-
-                  return (
-                    <div key={step.id} className="p-4 bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-100 dark:border-slate-800">
-                      <div className="flex items-start gap-3">
-                        {/* Step number / status */}
-                        <div className={cn(
-                          "w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0 mt-0.5",
-                          step.status === "completed"
-                            ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
-                            : step.status === "in_progress"
-                            ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
-                            : "bg-slate-200 text-slate-500 dark:bg-slate-700 dark:text-slate-400"
-                        )}>
-                          {step.status === "completed" ? "✓" : i + 1}
-                        </div>
-
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between flex-wrap gap-2">
-                            <p className="font-medium text-sm dark:text-white">{step.name}</p>
-
-                            {/* Assignee or assign button */}
-                            {stepUser ? (
-                              <div className="flex items-center gap-1.5">
-                                <div className={cn("w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-white", avatarColor(stepUser.name))}>
-                                  {getInitials(stepUser.name)}
-                                </div>
-                                <span className="text-xs text-slate-500 dark:text-slate-400">{stepUser.name}</span>
-                                {canAssignSteps && (
-                                  <button
-                                    onClick={() => setAssigningStepId(isAssigning ? null : step.id)}
-                                    className="text-xs text-blue-500 hover:text-blue-700 transition ml-1"
-                                  >
-                                    Đổi
-                                  </button>
-                                )}
-                              </div>
-                            ) : canAssignSteps ? (
-                              <button
-                                onClick={() => setAssigningStepId(isAssigning ? null : step.id)}
-                                className="text-xs px-2 py-0.5 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 hover:bg-blue-100 border border-blue-200 dark:border-blue-800 rounded-full transition"
-                              >
-                                + Phân công
-                              </button>
-                            ) : (
-                              <span className="text-xs text-slate-400 italic">Chưa phân công</span>
-                            )}
-                          </div>
-
-                          {/* Progress bar */}
-                          <div className="h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden mt-2">
-                            <div
-                              className="h-full bg-blue-500 rounded-full transition-all"
-                              style={{ width: `${step.progress}%` }}
-                            />
-                          </div>
-                          <div className="flex items-center gap-3 mt-1.5 text-xs text-slate-400">
-                            <span>{step.progress}%</span>
-                            {step.deadline && <span>Hạn: {formatDate(step.deadline)}</span>}
-                            {step.durationDays && <span>{step.durationDays} ngày</span>}
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Inline assignee picker */}
-                      {isAssigning && (
-                        <div className="mt-3 pt-3 border-t border-slate-200 dark:border-slate-700">
-                          <p className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-2">Chọn người phụ trách bước này:</p>
-                          <div className="flex flex-wrap gap-2">
-                            {users.filter((u) => u.isActive).map((u) => (
-                              <button
-                                key={u.id}
-                                onClick={() => handleAssignStep(step.id, u.id)}
-                                className={cn(
-                                  "flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs border transition",
-                                  step.assigneeId === u.id
-                                    ? "bg-blue-600 text-white border-blue-600"
-                                    : "bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-blue-400"
-                                )}
-                              >
-                                <div className={cn("w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold text-white", avatarColor(u.name))}>
-                                  {getInitials(u.name)}
-                                </div>
-                                {u.name}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })
-              )}
-            </div>
+          {activeTab === "steps" && currentUser && (
+            <StepsTab
+              task={task}
+              users={users}
+              currentUser={currentUser}
+              canAssignSteps={canAssignSteps}
+              onSave={onSaveTask}
+            />
           )}
 
           {/* Stakeholders tab */}
@@ -480,13 +418,8 @@ export default function TaskDetailsPage() {
                         if (!u) return null;
                         return (
                           <div key={s.userId} className="flex items-center gap-2 px-3 py-2 bg-slate-50 dark:bg-slate-900 rounded-xl">
-                            <div className={cn("w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold text-white", avatarColor(u.name))}>
-                              {getInitials(u.name)}
-                            </div>
-                            <div>
-                              <p className="text-sm font-medium dark:text-white">{u.name}</p>
-                              <p className="text-[10px] text-slate-400">{u.department}</p>
-                            </div>
+                            <UserAvatar user={u} size="sm" showName />
+                            <span className="text-xs text-slate-400">{u.department}</span>
                           </div>
                         );
                       })}
@@ -564,6 +497,77 @@ export default function TaskDetailsPage() {
                     </span>
                   </div>
                 ))
+              )}
+            </div>
+          )}
+
+          {/* Evaluation tab */}
+          {activeTab === "evaluation" && (
+            <div className="space-y-4">
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {hasPermission(currentUser?.role ?? "guest", "task:approve")
+                  ? "Bạn có thể đánh giá tất cả thành viên đã tham gia nhiệm vụ này."
+                  : "Đánh giá đồng nghiệp đã cùng thực hiện nhiệm vụ."}
+              </p>
+              {taskWorkers.length === 0 ? (
+                <p className="text-slate-400 text-sm text-center py-8">Không có thành viên nào để đánh giá.</p>
+              ) : (
+                taskWorkers.map((uid) => {
+                  const worker = users.find((u) => u.id === uid);
+                  if (!worker) return null;
+                  const already = evaluations.find(
+                    (e) => e.evaluatedUserId === uid && e.evaluatorId === currentUser?.id && e.taskId === id,
+                  );
+                  return (
+                    <div key={uid} className="p-4 bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-100 dark:border-slate-800">
+                      <div className="flex items-center gap-3 mb-3">
+                        <UserAvatar user={worker} size="md" showName />
+                      </div>
+                      {already ? (
+                        <div className="flex items-center gap-2 text-sm text-slate-500">
+                          <span>Đã đánh giá:</span>
+                          <span className="text-amber-500">{"★".repeat(already.scores.overall ?? 0)}</span>
+                          {already.comment && <span className="text-xs italic">"{already.comment}"</span>}
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          <div className="flex gap-1">
+                            {[1, 2, 3, 4, 5].map((star) => (
+                              <button
+                                key={star}
+                                onClick={() => setEvalRatings((r) => ({ ...r, [uid]: star }))}
+                                className="transition"
+                              >
+                                <Star
+                                  className={cn(
+                                    "w-6 h-6",
+                                    (evalRatings[uid] ?? 0) >= star
+                                      ? "fill-amber-400 text-amber-400"
+                                      : "text-slate-300 dark:text-slate-600",
+                                  )}
+                                />
+                              </button>
+                            ))}
+                          </div>
+                          <textarea
+                            value={evalComments[uid] ?? ""}
+                            onChange={(e) => setEvalComments((c) => ({ ...c, [uid]: e.target.value }))}
+                            placeholder="Nhận xét (tùy chọn)..."
+                            rows={2}
+                            className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                          />
+                          <button
+                            onClick={() => handleSubmitEval(uid)}
+                            disabled={submittingEval || !evalRatings[uid]}
+                            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm rounded-xl transition"
+                          >
+                            {submittingEval ? <Loader2 className="w-4 h-4 animate-spin inline" /> : "Gửi đánh giá"}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
               )}
             </div>
           )}
