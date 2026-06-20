@@ -10,7 +10,7 @@ import {
 import { cn, formatDate, formatDateTime, formatRelativeTime, statusLabel, priorityLabel, phaseLabel, getInitials, avatarColor } from "@/lib/utils";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useAuthStore } from "@/stores/useAuthStore";
-import { subscribeTask, updateTask, getMessages, addMessage, getEmailLogs, getAuditTrail, addAuditEvent } from "@/lib/firebase/firestore";
+import { subscribeTask, updateTask, getMessages, addMessage, getEmailLogs, getAuditTrail, addAuditEvent, addNotification } from "@/lib/firebase/firestore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import type { Task, User as UserType, Message, EmailLog, AuditEvent } from "@/types";
 import { toast } from "sonner";
@@ -101,6 +101,44 @@ export default function TaskDetailsPage() {
         before: { status: old }, after: { status },
         timestamp: new Date().toISOString(),
       });
+
+      // Notify approvers when task moves to review
+      if (status === "review") {
+        const approvers = (task.stakeholders ?? []).filter((s) => s.role === "approver");
+        const notifTargets = approvers.length > 0
+          ? approvers.map((s) => s.userId)
+          : task.creatorId ? [task.creatorId] : [];
+        await Promise.all(notifTargets.map((uid) =>
+          addNotification({
+            userId: uid,
+            type: "approval_request",
+            title: "Nhiệm vụ cần phê duyệt",
+            body: `"${task.name}" đã được gửi lên chờ phê duyệt bởi ${currentUser.name}.`,
+            link: `/tasks/${id}`,
+            read: false,
+            priority: "high",
+            createdAt: new Date().toISOString(),
+          })
+        ));
+      }
+
+      // Notify creator + performer when task is done
+      if (status === "done") {
+        const targets = [...new Set([task.creatorId, task.mainPerformerId].filter(Boolean) as string[])];
+        await Promise.all(targets.map((uid) =>
+          addNotification({
+            userId: uid,
+            type: "task_completed",
+            title: "Nhiệm vụ hoàn thành",
+            body: `"${task.name}" đã được đánh dấu hoàn thành.`,
+            link: `/tasks/${id}`,
+            read: false,
+            priority: "normal",
+            createdAt: new Date().toISOString(),
+          })
+        ));
+      }
+
       toast.success(`Trạng thái chuyển sang: ${statusLabel(status)}`);
     } catch { toast.error("Cập nhật trạng thái thất bại."); }
   }

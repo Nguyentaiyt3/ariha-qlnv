@@ -23,8 +23,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { Plus } from "lucide-react";
 import { cn, statusLabel } from "@/lib/utils";
 import { TaskCard } from "./TaskCard";
-import { updateTask } from "@/lib/firebase/firestore";
-import { addAuditEvent } from "@/lib/firebase/firestore";
+import { updateTask, addAuditEvent, addNotification } from "@/lib/firebase/firestore";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useTaskStore } from "@/stores/useTaskStore";
 import type { Task, TaskStatus, User } from "@/types";
@@ -92,6 +91,41 @@ export function KanbanBoard({ tasks, users, onSelectTask, onCreateTask }: Kanban
           after: { status: newStatus },
           timestamp: new Date().toISOString(),
         });
+
+        if (newStatus === "review") {
+          const approvers = (draggedTask.stakeholders ?? []).filter((s) => s.role === "approver");
+          const targets = approvers.length > 0
+            ? approvers.map((s) => s.userId)
+            : draggedTask.creatorId ? [draggedTask.creatorId] : [];
+          await Promise.all(targets.map((uid) =>
+            addNotification({
+              userId: uid,
+              type: "approval_request",
+              title: "Nhiệm vụ cần phê duyệt",
+              body: `"${draggedTask.name}" đã được gửi lên chờ phê duyệt bởi ${currentUser.name}.`,
+              link: `/tasks/${draggedTask.id}`,
+              read: false,
+              priority: "high",
+              createdAt: new Date().toISOString(),
+            })
+          ));
+        }
+
+        if (newStatus === "done") {
+          const targets = [...new Set([draggedTask.creatorId, draggedTask.mainPerformerId].filter(Boolean) as string[])];
+          await Promise.all(targets.map((uid) =>
+            addNotification({
+              userId: uid,
+              type: "task_completed",
+              title: "Nhiệm vụ hoàn thành",
+              body: `"${draggedTask.name}" đã được đánh dấu hoàn thành.`,
+              link: `/tasks/${draggedTask.id}`,
+              read: false,
+              priority: "normal",
+              createdAt: new Date().toISOString(),
+            })
+          ));
+        }
       }
     } catch {
       storeUpdateTask(draggedTask.id, { status: oldStatus });
