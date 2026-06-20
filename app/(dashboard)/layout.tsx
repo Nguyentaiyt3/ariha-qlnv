@@ -9,6 +9,7 @@ import { useAuthStore } from "@/stores/useAuthStore";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useNotificationStore } from "@/stores/useNotificationStore";
 import { subscribeTasks, subscribeUsers, subscribeNotifications } from "@/lib/firebase/firestore";
+import { isTaskVisible } from "@/lib/utils";
 import CommandPalette from "@/components/common/CommandPalette";
 import { CreateTaskModal } from "@/components/tasks/CreateTaskModal";
 import type { Task, User } from "@/types";
@@ -36,7 +37,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   useEffect(() => {
     if (!currentUser) return;
 
-    const unsubTasks = subscribeTasks((tasks: Task[]) => setTasks(tasks));
+    const unsubTasks = subscribeTasks((tasks: Task[]) => {
+      const visible = tasks.filter((t) => isTaskVisible(t, currentUser.id, currentUser.role));
+      setTasks(visible);
+    });
     const unsubUsers = subscribeUsers((users: User[]) => setUsers(users));
     const unsubNotifs = subscribeNotifications(currentUser.id, (notifs) => setNotifications(notifs));
 

@@ -7,7 +7,7 @@ import {
   CheckSquare, MessageSquare, Users, Mail, Activity, BarChart3,
   CheckCheck, Loader2, Star, Send, ClipboardCheck,
 } from "lucide-react";
-import { cn, formatDate, formatDateTime, formatRelativeTime, statusLabel, priorityLabel, getInitials, avatarColor } from "@/lib/utils";
+import { cn, formatDate, formatDateTime, formatRelativeTime, statusLabel, priorityLabel, getInitials, avatarColor, isTaskVisible } from "@/lib/utils";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { subscribeTask, updateTask, getMessages, addMessage, getEmailLogs, getAuditTrail, addAuditEvent, addNotification, getEvaluations, saveEvaluation } from "@/lib/firebase/firestore";
@@ -54,6 +54,15 @@ export default function TaskDetailsPage() {
     });
     return unsub;
   }, [id]);
+
+  // Access guard — redirect if user is not a participant
+  useEffect(() => {
+    if (!task || !currentUser) return;
+    if (!isTaskVisible(task, currentUser.id, currentUser.role)) {
+      toast.error("Bạn không có quyền xem nhiệm vụ này.");
+      router.push("/tasks");
+    }
+  }, [task, currentUser, router]);
 
   // Load tab data on switch
   useEffect(() => {

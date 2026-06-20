@@ -141,3 +141,20 @@ export function groupBy<T>(arr: T[], key: keyof T): Record<string, T[]> {
 export function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
+
+// Task visibility — managers see all; others only see tasks they participate in
+export function isTaskVisible(
+  task: { creatorId: string; mainPerformerId: string; stakeholders?: { userId: string }[]; steps?: { assigneeId: string; subTasks?: { userId: string }[] }[] },
+  userId: string,
+  role: string,
+): boolean {
+  if (["teamLead", "director", "hrAdmin"].includes(role)) return true;
+  if (task.creatorId === userId) return true;
+  if (task.mainPerformerId === userId) return true;
+  if ((task.stakeholders ?? []).some((s) => s.userId === userId)) return true;
+  if ((task.steps ?? []).some((s) =>
+    s.assigneeId === userId ||
+    (s.subTasks ?? []).some((st) => st.userId === userId)
+  )) return true;
+  return false;
+}
