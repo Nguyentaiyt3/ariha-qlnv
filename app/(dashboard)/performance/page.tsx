@@ -41,6 +41,7 @@ export default function PerformancePage() {
         setEvaluations(evals);
         setFrameworks(fws);
       })
+      .catch(console.error)
       .finally(() => setLoading(false));
   }, [currentUser]);
 

@@ -45,11 +45,11 @@ export default function TaskDetailsPage() {
   useEffect(() => {
     if (!task) return;
     if (activeTab === "chat") {
-      getMessages(id).then(setMessages);
+      getMessages(id).then(setMessages).catch(console.error);
     } else if (activeTab === "email") {
-      getEmailLogs(id).then(setEmailLogs);
+      getEmailLogs(id).then(setEmailLogs).catch(console.error);
     } else if (activeTab === "audit") {
-      getAuditTrail(id).then(setAuditEvents);
+      getAuditTrail(id).then(setAuditEvents).catch(console.error);
     }
   }, [activeTab, id, task]);
 

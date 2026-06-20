@@ -71,7 +71,7 @@ export default function WorkflowPage() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    getWorkflows().then(setWorkflows);
+    getWorkflows().then(setWorkflows).catch(console.error);
   }, []);
 
   const onConnect = useCallback(
