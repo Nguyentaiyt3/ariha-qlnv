@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Users, Search, Edit2, UserCheck, UserX, Save, X } from "lucide-react";
+import { Users, Search, Edit2, UserCheck, UserX, Save, X, Clock } from "lucide-react";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { hasPermission } from "@/lib/rbac/permissions";
@@ -64,6 +64,8 @@ export default function EmployeesPage() {
       </div>
     );
   }
+
+  const pendingGuests = users.filter((u) => u.role === "guest" && u.isActive);
 
   const filtered = users.filter(
     (u) =>
@@ -130,6 +132,49 @@ export default function EmployeesPage() {
           </span>
         </h1>
       </div>
+
+      {/* Pending-role banner — visible to managers only */}
+      {canManage && pendingGuests.length > 0 && (
+        <div className="mb-5 p-4 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-xl">
+          <div className="flex items-center gap-2 mb-3">
+            <Clock className="w-4 h-4 text-amber-600" />
+            <p className="text-sm font-semibold text-amber-700 dark:text-amber-400">
+              {pendingGuests.length} tài khoản chờ phân quyền
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {pendingGuests.map((u) => (
+              <div key={u.id} className="flex items-center gap-2 bg-white dark:bg-slate-800 border border-amber-200 dark:border-amber-700 rounded-xl px-3 py-2 shadow-sm">
+                <Avatar user={u} size="sm" />
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-[var(--foreground)] truncate max-w-[140px]">{u.name}</p>
+                  <p className="text-[11px] text-[var(--muted-foreground)] truncate max-w-[140px]">{u.email}</p>
+                </div>
+                <select
+                  defaultValue="guest"
+                  onChange={async (e) => {
+                    const newRole = e.target.value as UserRole;
+                    if (newRole === "guest") return;
+                    try {
+                      await saveUser({ ...u, role: newRole });
+                      toast.success(`Đã phân quyền ${u.name} → ${roleLabel(newRole)}`);
+                    } catch {
+                      toast.error("Phân quyền thất bại.");
+                      e.target.value = "guest";
+                    }
+                  }}
+                  className="text-xs border border-amber-300 dark:border-amber-700 rounded-lg px-2 py-1 bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-500 cursor-pointer"
+                >
+                  <option value="guest">Phân quyền...</option>
+                  {(["staff", "teamLead", "director", "hrAdmin"] as UserRole[]).map((r) => (
+                    <option key={r} value={r}>{roleLabel(r)}</option>
+                  ))}
+                </select>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Search */}
       <div className="relative mb-5">

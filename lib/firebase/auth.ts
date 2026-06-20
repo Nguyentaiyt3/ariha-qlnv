@@ -36,7 +36,7 @@ export async function loginWithGoogle(): Promise<User> {
       id: fbUser.uid,
       email: fbUser.email!,
       name: fbUser.displayName || fbUser.email!,
-      role: "staff",
+      role: "guest",
       avatar: fbUser.photoURL || undefined,
       isActive: true,
       createdAt: new Date().toISOString(),
