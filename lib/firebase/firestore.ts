@@ -119,10 +119,14 @@ export async function createTask(task: Omit<Task, "id">): Promise<Task> {
   return newTask;
 }
 
+function deepStrip<T>(obj: T): T {
+  return JSON.parse(JSON.stringify(obj)) as T;
+}
+
 export async function updateTask(taskId: string, updates: Partial<Task>): Promise<void> {
   const db = getDb();
   await updateDoc(doc(db, "tasks", taskId), {
-    ...stripUndefined(updates),
+    ...deepStrip(stripUndefined(updates)),
     updatedAt: new Date().toISOString(),
   });
 }

@@ -3,7 +3,7 @@
 import { useState, useRef } from "react";
 import {
   Plus, ChevronDown, ChevronRight, Camera, Link2, X,
-  Loader2, TrendingUp, TrendingDown, Image as ImageIcon,
+  Loader2, TrendingUp, TrendingDown, Image as ImageIcon, Paperclip,
 } from "lucide-react";
 import { cn, generateId, formatDate, priorityLabel } from "@/lib/utils";
 import { UserAvatar } from "@/components/common/UserAvatar";
@@ -100,14 +100,14 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave }: P
       id: generateId("sub"),
       userId: subForm.userId,
       priority: subForm.priority,
-      deadline: subForm.deadline || undefined,
-      note: subForm.note || undefined,
       amountType: subForm.amountType,
       amount: subForm.amount,
       progress: 0,
       proofs: [],
       status: "pending",
       createdAt: new Date().toISOString(),
+      ...(subForm.deadline && { deadline: subForm.deadline }),
+      ...(subForm.note.trim() && { note: subForm.note.trim() }),
     };
     const subTasks = [...(step.subTasks ?? []), newSub];
     const already = (task.stakeholders ?? []).some((s) => s.userId === subForm.userId);
@@ -137,17 +137,18 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave }: P
     const newStatus =
       progressVal >= 100 ? "completed" : progressVal > 0 ? "in_progress" : "pending";
     let updatedSteps: TaskStep[];
+    const completedAt = progressVal >= 100 ? new Date().toISOString() : undefined;
     if (subId) {
       updatedSteps = patchSubTask(stepId, subId, {
         progress: progressVal,
         status: newStatus,
-        completedAt: progressVal >= 100 ? new Date().toISOString() : undefined,
+        ...(completedAt && { completedAt }),
       });
     } else {
       updatedSteps = patchStep(stepId, {
         progress: progressVal,
         status: newStatus,
-        completedAt: progressVal >= 100 ? new Date().toISOString() : undefined,
+        ...(completedAt && { completedAt }),
       });
     }
     await onSave({ steps: updatedSteps, progress: recalcProgress(updatedSteps) });
@@ -253,6 +254,15 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave }: P
       {steps.map((step, idx) => {
         const stepUser = users.find((u) => u.id === step.assigneeId);
         const isOpen = expanded.has(step.id);
+
+        // Aggregate all proofs: step-level + sub-task level
+        const allProofs = [
+          ...(step.proofs ?? []),
+          ...(step.subTasks ?? []).flatMap((st) => st.proofs ?? []),
+        ];
+        const imageProofs = allProofs.filter((p) => p.fileType === "image");
+        const proofCount = allProofs.length;
+
         const myKey = step.id;
         const isEditingMe = editKey === myKey;
         const isProofMe = proofKey === myKey;
@@ -297,13 +307,39 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave }: P
                   ) : (
                     <span className="text-xs text-slate-400 italic">Chưa phân công</span>
                   )}
-                  {(step.subTasks?.length ?? 0) > 0 && (
-                    <span className="text-xs text-slate-400">• {step.subTasks!.length} hỗ trợ</span>
-                  )}
+                  {(step.subTasks ?? []).map((st) => {
+                    const su = users.find((u) => u.id === st.userId);
+                    if (!su) return null;
+                    return (
+                      <span key={st.id} className="flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400">
+                        <span className="text-slate-300 dark:text-slate-600">|</span>
+                        <UserAvatar user={su} size="xs" showName namePosition="right" />
+                      </span>
+                    );
+                  })}
                 </div>
               </div>
 
               <span className="text-xs text-slate-400 shrink-0">{step.progress}%</span>
+
+              {/* Proof indicators (always visible) */}
+              {proofCount > 0 && (
+                <div className="flex items-center gap-1 shrink-0" title={`${proofCount} minh chứng`}>
+                  {imageProofs.slice(0, 2).map((p) => (
+                    <img
+                      key={p.id}
+                      src={p.fileUrl}
+                      alt=""
+                      className="w-6 h-6 rounded-md object-cover ring-1 ring-slate-200 dark:ring-slate-600"
+                    />
+                  ))}
+                  {imageProofs.length === 0 && (
+                    <Paperclip className="w-3.5 h-3.5 text-slate-400" />
+                  )}
+                  <span className="text-[10px] text-slate-400 font-medium">{proofCount}</span>
+                </div>
+              )}
+
               {isOpen
                 ? <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
                 : <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />}
