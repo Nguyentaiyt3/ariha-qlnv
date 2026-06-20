@@ -105,14 +105,14 @@ export function KanbanBoard({ tasks, users, onSelectTask, onCreateTask }: Kanban
               body: `"${draggedTask.name}" đã được gửi lên chờ phê duyệt bởi ${currentUser.name}.`,
               link: `/tasks/${draggedTask.id}`,
               read: false,
-              priority: "high",
+              priority: "urgent",
               createdAt: new Date().toISOString(),
             })
           ));
         }
 
         if (newStatus === "done") {
-          const targets = [...new Set([draggedTask.creatorId, draggedTask.mainPerformerId].filter(Boolean) as string[])];
+          const targets = Array.from(new Set([draggedTask.creatorId, draggedTask.mainPerformerId].filter(Boolean) as string[]));
           await Promise.all(targets.map((uid) =>
             addNotification({
               userId: uid,

@@ -128,6 +128,7 @@ export interface Task {
 
   // Workflow
   workflowId?: string;
+  workflowName?: string;
 
   // Steps & subtasks
   steps: TaskStep[];
@@ -208,34 +209,21 @@ export interface Attachment {
 
 // ─── WORKFLOWS ───────────────────────────────────────────────
 
-export interface WorkflowNode {
+export interface WorkflowStep {
   id: string;
-  type: "start" | "step" | "approval" | "condition" | "end";
-  label: string;
-  position: { x: number; y: number };
-  data: {
-    description?: string;
-    assigneeRole?: UserRole;
-    daysAllowed?: number;
-  };
-}
-
-export interface WorkflowEdge {
-  id: string;
-  source: string;
-  target: string;
-  label?: string;
-  condition?: string;
+  name: string;
+  description?: string;
+  order: number;
+  durationDays?: number;
 }
 
 export interface Workflow {
   id: string;
   name: string;
   description?: string;
-  nodes: WorkflowNode[];
-  edges: WorkflowEdge[];
-  createdBy: string;
+  steps: WorkflowStep[];
   department?: string;
+  createdBy: string;
   createdAt: string;
   updatedAt: string;
 }

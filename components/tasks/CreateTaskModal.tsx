@@ -1,16 +1,15 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { X, Plus, Loader2, Calendar, User, Flag, Building2, AlertCircle } from "lucide-react";
+import { X, Plus, Loader2, Calendar, User, Flag, Building2, GitBranch } from "lucide-react";
 import { toast } from "sonner";
 import { cn, generateId } from "@/lib/utils";
-import { createTask } from "@/lib/firebase/firestore";
-import { getDefaultMilestoneConfig } from "@/lib/firebase/firestore";
+import { createTask, getDefaultMilestoneConfig, getWorkflows } from "@/lib/firebase/firestore";
 import { calcPhaseDeadlines, DEFAULT_MILESTONE_CONFIG } from "@/lib/deadline-calc";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { hasPermission } from "@/lib/rbac/permissions";
-import type { Task, TaskPriority, TaskStatus, StakeholderRole, User as UserType } from "@/types";
+import type { Task, TaskPriority, TaskStatus, StakeholderRole, Workflow } from "@/types";
 
 interface CreateTaskModalProps {
   onClose: () => void;
@@ -21,6 +20,14 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
   const { currentUser } = useAuthStore();
   const { users, addTask } = useTaskStore();
   const [loading, setLoading] = useState(false);
+  const [workflows, setWorkflows] = useState<Workflow[]>([]);
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState<string>("");
+
+  useEffect(() => {
+    getWorkflows().then(setWorkflows).catch(console.error);
+  }, []);
+
+  const selectedWorkflow = workflows.find((w) => w.id === selectedWorkflowId) ?? null;
 
   // Form state
   const [name, setName] = useState("");
@@ -78,7 +85,22 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
         mainPerformerId,
         stakeholders: allStakeholders,
         dependencies: [],
-        steps: [],
+        workflowId: selectedWorkflow?.id,
+        workflowName: selectedWorkflow?.name,
+        steps: selectedWorkflow
+          ? selectedWorkflow.steps.map((ws) => ({
+              id: generateId("step"),
+              name: ws.name,
+              assigneeId: "",
+              status: "pending" as const,
+              progress: 0,
+              kpiTarget: 0,
+              kpiCurrent: 0,
+              kpiUnit: "điểm",
+              proofs: [],
+              durationDays: ws.durationDays,
+            }))
+          : [],
         subtasks: [],
         kpi: { type: "custom", target: kpiTarget, current: 0, unit: kpiUnit },
         progress: 0,
@@ -160,6 +182,46 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
                 rows={3}
                 className="w-full px-4 py-2.5 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-slate-800 dark:text-white resize-none"
               />
+            </div>
+
+            {/* Workflow selector */}
+            <div>
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">
+                <GitBranch className="inline w-4 h-4 mr-1" />
+                Quy trình
+              </label>
+              <select
+                value={selectedWorkflowId}
+                onChange={(e) => setSelectedWorkflowId(e.target.value)}
+                className="w-full px-3 py-2.5 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-slate-800 dark:text-white"
+              >
+                <option value="">-- Không dùng quy trình --</option>
+                {workflows.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.name}{w.department ? ` (${w.department})` : ""}
+                  </option>
+                ))}
+              </select>
+              {selectedWorkflow && selectedWorkflow.steps.length > 0 && (
+                <div className="mt-2 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl">
+                  <p className="text-xs font-medium text-blue-700 dark:text-blue-300 mb-1.5">
+                    Quy trình gồm {selectedWorkflow.steps.length} bước:
+                  </p>
+                  <ol className="space-y-1">
+                    {selectedWorkflow.steps.map((s, i) => (
+                      <li key={s.id} className="flex items-center gap-2 text-xs text-blue-600 dark:text-blue-400">
+                        <span className="w-4 h-4 shrink-0 bg-blue-200 dark:bg-blue-800 rounded-full flex items-center justify-center text-[10px] font-bold">
+                          {i + 1}
+                        </span>
+                        {s.name}
+                        {s.durationDays && (
+                          <span className="text-blue-400">({s.durationDays}d)</span>
+                        )}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
             </div>
 
             {/* 2-column grid */}

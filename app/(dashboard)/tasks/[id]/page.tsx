@@ -31,6 +31,7 @@ export default function TaskDetailsPage() {
   const [chatInput, setChatInput] = useState("");
   const [sendingMsg, setSendingMsg] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [assigningStepId, setAssigningStepId] = useState<string | null>(null);
 
   // Realtime task subscription
   useEffect(() => {
@@ -116,7 +117,7 @@ export default function TaskDetailsPage() {
             body: `"${task.name}" đã được gửi lên chờ phê duyệt bởi ${currentUser.name}.`,
             link: `/tasks/${id}`,
             read: false,
-            priority: "high",
+            priority: "urgent",
             createdAt: new Date().toISOString(),
           })
         ));
@@ -124,7 +125,7 @@ export default function TaskDetailsPage() {
 
       // Notify creator + performer when task is done
       if (status === "done") {
-        const targets = [...new Set([task.creatorId, task.mainPerformerId].filter(Boolean) as string[])];
+        const targets = Array.from(new Set([task.creatorId, task.mainPerformerId].filter(Boolean) as string[]));
         await Promise.all(targets.map((uid) =>
           addNotification({
             userId: uid,
@@ -141,6 +142,24 @@ export default function TaskDetailsPage() {
 
       toast.success(`Trạng thái chuyển sang: ${statusLabel(status)}`);
     } catch { toast.error("Cập nhật trạng thái thất bại."); }
+  }
+
+  async function handleAssignStep(stepId: string, userId: string) {
+    if (!task) return;
+    const updatedSteps = task.steps.map((s) =>
+      s.id === stepId ? { ...s, assigneeId: userId, status: "pending" as const } : s
+    );
+    const alreadyStakeholder = (task.stakeholders ?? []).some((s) => s.userId === userId);
+    const updatedStakeholders = alreadyStakeholder
+      ? task.stakeholders
+      : [...(task.stakeholders ?? []), { userId, role: "assignee" as const }];
+    try {
+      await updateTask(id, { steps: updatedSteps, stakeholders: updatedStakeholders });
+      setAssigningStepId(null);
+      toast.success("Đã phân công bước thành công");
+    } catch {
+      toast.error("Phân công thất bại");
+    }
   }
 
   if (loading) {
@@ -162,6 +181,8 @@ export default function TaskDetailsPage() {
 
   const performer = users.find((u) => u.id === task.mainPerformerId);
   const canApprove = currentUser && hasPermission(currentUser.role, "task:approve");
+  const isMainPerformer = currentUser?.id === task.mainPerformerId;
+  const canAssignSteps = task.approved && (isMainPerformer || canApprove);
   const canEdit = currentUser && (
     hasPermission(currentUser.role, "task:approve") ||
     task.mainPerformerId === currentUser.id ||
@@ -321,35 +342,117 @@ export default function TaskDetailsPage() {
           {/* Steps tab */}
           {activeTab === "steps" && (
             <div className="space-y-3">
+              {task.workflowName && (
+                <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 mb-1">
+                  <span className="px-2 py-0.5 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-full font-medium">
+                    {task.workflowName}
+                  </span>
+                  <span>{task.steps.length} bước</span>
+                </div>
+              )}
+
+              {!task.approved && (
+                <div className="text-xs text-amber-600 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 rounded-xl border border-amber-100 dark:border-amber-900">
+                  Nhiệm vụ chưa được phê duyệt. Phân công bước sẽ khả dụng sau khi duyệt.
+                </div>
+              )}
+
               {task.steps.length === 0 ? (
-                <p className="text-slate-400 text-sm text-center py-8">Chưa có bước quy trình nào</p>
+                <p className="text-slate-400 text-sm text-center py-8">
+                  Chưa có bước quy trình nào. Chọn quy trình khi tạo nhiệm vụ để tự động thêm các bước.
+                </p>
               ) : (
                 task.steps.map((step, i) => {
                   const stepUser = users.find((u) => u.id === step.assigneeId);
+                  const isAssigning = assigningStepId === step.id;
+
                   return (
-                    <div key={step.id} className="flex items-start gap-3 p-4 bg-slate-50 dark:bg-slate-900 rounded-xl">
-                      <div className={cn(
-                        "w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0",
-                        step.status === "completed" ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-700"
-                      )}>
-                        {step.status === "completed" ? "✓" : i + 1}
+                    <div key={step.id} className="p-4 bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-100 dark:border-slate-800">
+                      <div className="flex items-start gap-3">
+                        {/* Step number / status */}
+                        <div className={cn(
+                          "w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0 mt-0.5",
+                          step.status === "completed"
+                            ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                            : step.status === "in_progress"
+                            ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+                            : "bg-slate-200 text-slate-500 dark:bg-slate-700 dark:text-slate-400"
+                        )}>
+                          {step.status === "completed" ? "✓" : i + 1}
+                        </div>
+
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between flex-wrap gap-2">
+                            <p className="font-medium text-sm dark:text-white">{step.name}</p>
+
+                            {/* Assignee or assign button */}
+                            {stepUser ? (
+                              <div className="flex items-center gap-1.5">
+                                <div className={cn("w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-white", avatarColor(stepUser.name))}>
+                                  {getInitials(stepUser.name)}
+                                </div>
+                                <span className="text-xs text-slate-500 dark:text-slate-400">{stepUser.name}</span>
+                                {canAssignSteps && (
+                                  <button
+                                    onClick={() => setAssigningStepId(isAssigning ? null : step.id)}
+                                    className="text-xs text-blue-500 hover:text-blue-700 transition ml-1"
+                                  >
+                                    Đổi
+                                  </button>
+                                )}
+                              </div>
+                            ) : canAssignSteps ? (
+                              <button
+                                onClick={() => setAssigningStepId(isAssigning ? null : step.id)}
+                                className="text-xs px-2 py-0.5 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 hover:bg-blue-100 border border-blue-200 dark:border-blue-800 rounded-full transition"
+                              >
+                                + Phân công
+                              </button>
+                            ) : (
+                              <span className="text-xs text-slate-400 italic">Chưa phân công</span>
+                            )}
+                          </div>
+
+                          {/* Progress bar */}
+                          <div className="h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden mt-2">
+                            <div
+                              className="h-full bg-blue-500 rounded-full transition-all"
+                              style={{ width: `${step.progress}%` }}
+                            />
+                          </div>
+                          <div className="flex items-center gap-3 mt-1.5 text-xs text-slate-400">
+                            <span>{step.progress}%</span>
+                            {step.deadline && <span>Hạn: {formatDate(step.deadline)}</span>}
+                            {step.durationDays && <span>{step.durationDays} ngày</span>}
+                          </div>
+                        </div>
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between flex-wrap gap-2">
-                          <p className="font-medium text-sm dark:text-white">{step.name}</p>
-                          {stepUser && (
-                            <span className="text-xs text-slate-400">{stepUser.name}</span>
-                          )}
+
+                      {/* Inline assignee picker */}
+                      {isAssigning && (
+                        <div className="mt-3 pt-3 border-t border-slate-200 dark:border-slate-700">
+                          <p className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-2">Chọn người phụ trách bước này:</p>
+                          <div className="flex flex-wrap gap-2">
+                            {users.filter((u) => u.isActive).map((u) => (
+                              <button
+                                key={u.id}
+                                onClick={() => handleAssignStep(step.id, u.id)}
+                                className={cn(
+                                  "flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs border transition",
+                                  step.assigneeId === u.id
+                                    ? "bg-blue-600 text-white border-blue-600"
+                                    : "bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-blue-400"
+                                )}
+                              >
+                                <div className={cn("w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold text-white", avatarColor(u.name))}>
+                                  {getInitials(u.name)}
+                                </div>
+                                {u.name}
+                              </button>
+                            ))}
+                          </div>
                         </div>
-                        <div className="h-1 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden mt-2">
-                          <div className="h-full bg-blue-500 rounded-full" style={{ width: `${step.progress}%` }} />
-                        </div>
-                        <div className="flex items-center gap-3 mt-1.5 text-xs text-slate-400">
-                          <span>{step.progress}% hoàn thành</span>
-                          {step.deadline && <span>Hạn: {formatDate(step.deadline)}</span>}
-                          <span>KPI: {step.kpiCurrent}/{step.kpiTarget} {step.kpiUnit}</span>
-                        </div>
-                      </div>
+                      )}
                     </div>
                   );
                 })
