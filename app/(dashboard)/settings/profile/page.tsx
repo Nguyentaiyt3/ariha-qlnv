@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
-import { User, Camera, Save } from "lucide-react";
+import { useState, useRef } from "react";
+import { User, Camera, Save, Loader2 } from "lucide-react";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { saveUser } from "@/lib/firebase/firestore";
-import { getInitials, avatarColor } from "@/lib/utils";
+import { uploadBase64File } from "@/lib/firebase/storage";
+import { getInitials, avatarColor, roleLabel } from "@/lib/utils";
 import { toast } from "sonner";
 import Link from "next/link";
 
@@ -17,8 +18,39 @@ export default function ProfilePage() {
     department: currentUser?.department ?? "",
   });
   const [saving, setSaving] = useState(false);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   if (!currentUser) return null;
+
+  const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error("Ảnh phải nhỏ hơn 2MB");
+      return;
+    }
+    setUploadingAvatar(true);
+    try {
+      const reader = new FileReader();
+      reader.onload = async (ev) => {
+        const base64 = ev.target?.result as string;
+        const url = await uploadBase64File(base64, file.name, file.type, `avatars/${currentUser.id}`);
+        const updated = { ...currentUser, avatar: url };
+        await saveUser(updated);
+        setCurrentUser(updated);
+        toast.success("Đã cập nhật ảnh đại diện");
+        setUploadingAvatar(false);
+      };
+      reader.readAsDataURL(file);
+    } catch (err) {
+      console.error(err);
+      toast.error("Upload ảnh thất bại");
+      setUploadingAvatar(false);
+    }
+    // reset input so same file can be re-selected
+    e.target.value = "";
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -27,8 +59,9 @@ export default function ProfilePage() {
       await saveUser(updated);
       setCurrentUser(updated);
       toast.success("Đã lưu hồ sơ");
-    } catch {
-      toast.error("Lưu thất bại");
+    } catch (err) {
+      console.error(err);
+      toast.error("Lưu thất bại — kiểm tra Firestore rules");
     } finally {
       setSaving(false);
     }
@@ -41,28 +74,68 @@ export default function ProfilePage() {
         Hồ sơ cá nhân
       </h1>
 
-      {/* Avatar */}
-      <div className="flex items-center gap-4 mb-6 p-5 bg-[var(--card)] border border-[var(--border)] rounded-xl">
-        <div
-          className="w-16 h-16 rounded-full flex items-center justify-center text-white text-xl font-bold"
-          style={{ background: avatarColor(currentUser.name) }}
-        >
-          {getInitials(currentUser.name)}
+      {/* Avatar card */}
+      <div className="flex items-center gap-5 mb-6 p-5 bg-[var(--card)] border border-[var(--border)] rounded-xl">
+        {/* Avatar with upload overlay */}
+        <div className="relative flex-shrink-0">
+          {currentUser.avatar ? (
+            <img
+              src={currentUser.avatar}
+              alt={currentUser.name}
+              referrerPolicy="no-referrer"
+              className="w-20 h-20 rounded-full object-cover ring-4 ring-[var(--border)]"
+            />
+          ) : (
+            <div
+              className="w-20 h-20 rounded-full flex items-center justify-center text-white text-2xl font-bold ring-4 ring-[var(--border)]"
+              style={{ background: avatarColor(currentUser.name) }}
+            >
+              {getInitials(currentUser.name)}
+            </div>
+          )}
+
+          {/* Upload button overlay */}
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploadingAvatar}
+            className="absolute bottom-0 right-0 w-7 h-7 bg-blue-600 hover:bg-blue-700 text-white rounded-full flex items-center justify-center shadow-lg transition-colors disabled:opacity-60"
+            title="Thay ảnh đại diện"
+          >
+            {uploadingAvatar ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Camera className="w-3.5 h-3.5" />
+            )}
+          </button>
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={handleAvatarChange}
+          />
         </div>
+
         <div>
-          <p className="font-semibold text-[var(--foreground)]">{currentUser.name}</p>
+          <p className="font-semibold text-[var(--foreground)] text-lg">{currentUser.name}</p>
           <p className="text-sm text-[var(--muted-foreground)]">{currentUser.email}</p>
-          <p className="text-xs text-[var(--muted-foreground)] mt-0.5">{currentUser.role}</p>
+          <span className="inline-block mt-1 text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full font-medium">
+            {roleLabel(currentUser.role)}
+          </span>
+          <p className="text-xs text-[var(--muted-foreground)] mt-1.5">
+            Nhấn vào icon 📷 để thay ảnh đại diện (tối đa 2MB)
+          </p>
         </div>
       </div>
 
       {/* Form */}
       <div className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-5 space-y-4 mb-4">
         {[
-          { key: "name", label: "Họ tên", type: "text" },
-          { key: "phone", label: "Số điện thoại", type: "tel" },
-          { key: "position", label: "Chức danh", type: "text" },
-          { key: "department", label: "Phòng ban", type: "text" },
+          { key: "name",       label: "Họ tên",          type: "text" },
+          { key: "phone",      label: "Số điện thoại",   type: "tel"  },
+          { key: "position",   label: "Chức danh",        type: "text" },
+          { key: "department", label: "Phòng ban",        type: "text" },
         ].map(({ key, label, type }) => (
           <div key={key}>
             <label className="block text-sm font-medium text-[var(--foreground)] mb-1.5">{label}</label>
@@ -74,6 +147,7 @@ export default function ProfilePage() {
             />
           </div>
         ))}
+
         <div>
           <label className="block text-sm font-medium text-[var(--foreground)] mb-1.5">Email</label>
           <input
@@ -91,7 +165,7 @@ export default function ProfilePage() {
         disabled={saving}
         className="w-full flex items-center justify-center gap-2 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium transition-colors disabled:opacity-60"
       >
-        {saving ? <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" /> : <Save className="w-4 h-4" />}
+        {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
         Lưu hồ sơ
       </button>
 
