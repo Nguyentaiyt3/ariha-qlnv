@@ -27,7 +27,7 @@ export function calcPerformanceScore(input: PerformanceInput): PerformanceResult
   // Filter tasks in period for this user
   const myTasks = tasks.filter(
     (t) =>
-      (t.mainPerformerId === userId || t.stakeholders.some((s) => s.userId === userId && s.role === "assignee")) &&
+      (t.mainPerformerId === userId || (t.stakeholders ?? []).some((s) => s.userId === userId && s.role === "assignee")) &&
       t.deadlineBase &&
       new Date(t.deadlineBase) >= start &&
       new Date(t.deadlineBase) <= end,
