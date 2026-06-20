@@ -4,8 +4,6 @@ import { useState, useEffect, useCallback } from "react";
 import { Calendar, RefreshCw, ExternalLink, CheckCircle, XCircle, AlertCircle } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useAuthStore } from "@/stores/useAuthStore";
-import { subscribeCalendarEvents, getCalendarEvents, saveCalendarEvent, addNotification } from "@/lib/firebase/firestore";
-import { listGoogleEvents } from "@/lib/google-calendar";
 import { useTaskStore } from "@/stores/useTaskStore";
 import type { CalendarEvent, Task } from "@/types";
 import type { BigCalEvent } from "@/components/calendar/CalendarView";
@@ -69,15 +67,18 @@ export default function CalendarPage() {
   };
 
   const loadGoogleEvents = useCallback(async (start: Date, end: Date) => {
-    if (!currentUser?.googleCalendarToken) return;
+    if (!currentUser?.googleCalendarToken || !currentUser.id) return;
     setLoadingGoogle(true);
     try {
-      const events = await listGoogleEvents(
-        currentUser.googleCalendarToken as unknown as Record<string, unknown>,
-        start.toISOString(),
-        end.toISOString(),
-      );
-      setGoogleEvents(events.map(googleToCalEvent).filter((e): e is BigCalEvent => e !== null));
+      const params = new URLSearchParams({
+        userId: currentUser.id,
+        timeMin: start.toISOString(),
+        timeMax: end.toISOString(),
+      });
+      const res = await fetch(`/api/calendar/google/events?${params}`);
+      if (!res.ok) throw new Error("fetch failed");
+      const { events } = await res.json();
+      setGoogleEvents((events ?? []).map(googleToCalEvent).filter((e: BigCalEvent | null): e is BigCalEvent => e !== null));
     } catch {
       toast.error("Không thể tải sự kiện Google Calendar");
     } finally {

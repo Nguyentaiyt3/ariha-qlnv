@@ -1,15 +1,13 @@
-import type { NextConfig } from "next";
-
-const nextConfig: NextConfig = {
+/** @type {import('next').NextConfig} */
+const nextConfig = {
   images: {
     domains: ["firebasestorage.googleapis.com", "lh3.googleusercontent.com"],
   },
   experimental: {
     serverComponentsExternalPackages: ["firebase-admin", "nodemailer", "googleapis"],
   },
-  // Suppress punycode deprecation warning from Firebase SDK
   webpack: (config) => {
-    config.resolve.fallback = { ...config.resolve.fallback, fs: false, net: false, tls: false };
+    config.resolve.fallback = { ...config.resolve.fallback, fs: false, net: false, tls: false, child_process: false };
     return config;
   },
 };

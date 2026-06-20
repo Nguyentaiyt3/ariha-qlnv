@@ -1,7 +1,12 @@
 "use client";
 
 import { initializeApp, getApps, getApp, FirebaseApp } from "firebase/app";
-import { getFirestore, enableIndexedDbPersistence, Firestore } from "firebase/firestore";
+import {
+  getFirestore,
+  initializeFirestore,
+  memoryLocalCache,
+  Firestore,
+} from "firebase/firestore";
 import { getAuth, Auth } from "firebase/auth";
 import { getStorage, FirebaseStorage } from "firebase/storage";
 
@@ -30,18 +35,19 @@ function getFirebaseApp(): FirebaseApp {
 
 export function getDb(): Firestore {
   if (!db) {
-    const app = getFirebaseApp();
-    db = getFirestore(app);
+    const firebaseApp = getFirebaseApp();
+    const databaseId = process.env.NEXT_PUBLIC_FIREBASE_DATABASE_ID;
 
-    // Enable offline persistence (IndexedDB)
-    if (typeof window !== "undefined") {
-      enableIndexedDbPersistence(db).catch((err) => {
-        if (err.code === "failed-precondition") {
-          console.warn("Firebase: Multiple tabs open, persistence enabled in one tab only.");
-        } else if (err.code === "unimplemented") {
-          console.warn("Firebase: Browser doesn't support offline persistence.");
-        }
-      });
+    try {
+      // memoryLocalCache avoids IndexedDB state issues in dev (React Strict Mode + HMR)
+      db = initializeFirestore(
+        firebaseApp,
+        { localCache: memoryLocalCache() },
+        databaseId || undefined,
+      );
+    } catch {
+      // initializeFirestore throws if called a second time — fall back to getFirestore
+      db = databaseId ? getFirestore(firebaseApp, databaseId) : getFirestore(firebaseApp);
     }
   }
   return db;
