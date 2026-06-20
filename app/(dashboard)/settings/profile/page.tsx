@@ -4,7 +4,6 @@ import { useState, useRef } from "react";
 import { User, Camera, Save, Loader2 } from "lucide-react";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { saveUser } from "@/lib/firebase/firestore";
-import { uploadBase64File } from "@/lib/firebase/storage";
 import { getInitials, avatarColor, roleLabel } from "@/lib/utils";
 import { toast } from "sonner";
 import Link from "next/link";
@@ -26,38 +25,47 @@ export default function ProfilePage() {
   const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 2 * 1024 * 1024) {
-      toast.error("Ảnh phải nhỏ hơn 2MB");
+    if (!file.type.startsWith("image/")) {
+      toast.error("Vui lòng chọn file ảnh");
       return;
     }
     setUploadingAvatar(true);
     const reader = new FileReader();
-    reader.onload = async (ev) => {
-      try {
-        const base64 = ev.target?.result as string;
-        const url = await uploadBase64File(base64, file.name, file.type, `avatars/${currentUser.id}`);
-        const updated = { ...currentUser, avatar: url };
-        await saveUser(updated);
-        setCurrentUser(updated);
-        toast.success("Đã cập nhật ảnh đại diện");
-      } catch (err: unknown) {
-        console.error(err);
-        const msg = err instanceof Error ? err.message : "";
-        if (msg.includes("unauthorized") || msg.includes("storage/unauthorized")) {
-          toast.error("Chưa có quyền upload — cần cập nhật Firebase Storage Rules");
-        } else {
-          toast.error("Upload ảnh thất bại");
+    reader.onload = (ev) => {
+      const img = new Image();
+      img.onload = async () => {
+        try {
+          // Resize to max 200×200 using canvas — keeps Firestore doc well under 1MB
+          const SIZE = 200;
+          const canvas = document.createElement("canvas");
+          const scale = Math.min(SIZE / img.width, SIZE / img.height, 1);
+          canvas.width  = Math.round(img.width  * scale);
+          canvas.height = Math.round(img.height * scale);
+          canvas.getContext("2d")!.drawImage(img, 0, 0, canvas.width, canvas.height);
+          const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+
+          const updated = { ...currentUser, avatar: dataUrl };
+          await saveUser(updated);
+          setCurrentUser(updated);
+          toast.success("Đã cập nhật ảnh đại diện");
+        } catch (err) {
+          console.error(err);
+          toast.error("Lưu ảnh thất bại");
+        } finally {
+          setUploadingAvatar(false);
         }
-      } finally {
+      };
+      img.onerror = () => {
+        toast.error("Không thể đọc file ảnh");
         setUploadingAvatar(false);
-      }
+      };
+      img.src = ev.target?.result as string;
     };
     reader.onerror = () => {
       toast.error("Không thể đọc file ảnh");
       setUploadingAvatar(false);
     };
     reader.readAsDataURL(file);
-    // reset so same file can be re-selected
     e.target.value = "";
   };
 
