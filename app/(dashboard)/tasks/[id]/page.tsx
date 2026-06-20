@@ -352,7 +352,7 @@ export default function TaskDetailsPage() {
                 </span>
               )}
               {!task.approved && (
-                <span className="px-2.5 py-1 bg-amber-50 text-amber-700 text-xs font-semibold rounded-full border border-amber-100">
+                <span className="px-2.5 py-1 bg-yellow-50 text-yellow-700 text-xs font-semibold rounded-full border border-yellow-200">
                   Chờ phê duyệt
                 </span>
               )}

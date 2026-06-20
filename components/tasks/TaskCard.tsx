@@ -74,7 +74,7 @@ export function TaskCard({ task, users, onClick, isDragging, className }: TaskCa
         )}
         {!task.approved && (
           <span className="px-2 py-0.5 rounded-full text-[10px] bg-yellow-50 text-yellow-700 border border-yellow-200 dark:bg-yellow-900/20 dark:text-yellow-300 dark:border-yellow-700">
-            Chờ duyệt
+            Chờ phê duyệt
           </span>
         )}
       </div>

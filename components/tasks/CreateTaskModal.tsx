@@ -18,7 +18,7 @@ interface CreateTaskModalProps {
 
 export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskModalProps) {
   const { currentUser } = useAuthStore();
-  const { users, addTask } = useTaskStore();
+  const { users } = useTaskStore();
   const [loading, setLoading] = useState(false);
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string>("");
@@ -50,6 +50,7 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!currentUser) return;
+    if (loading) return; // prevent double-submit
     if (!name.trim()) { toast.error("Tên nhiệm vụ không được để trống."); return; }
     if (!mainPerformerId) { toast.error("Vui lòng chọn người thực hiện chính."); return; }
 
@@ -114,7 +115,7 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
       };
 
       const created = await createTask(newTask);
-      addTask(created);
+      // No addTask() — the Firestore realtime listener in layout.tsx will pick it up automatically
       toast.success(
         canAutoApprove
           ? `Đã tạo nhiệm vụ "${created.name}"`

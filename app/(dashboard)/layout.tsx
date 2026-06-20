@@ -37,8 +37,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   useEffect(() => {
     if (!currentUser) return;
 
-    const unsubTasks = subscribeTasks((tasks: Task[]) => {
-      const visible = tasks.filter((t) => isTaskVisible(t, currentUser.id, currentUser.role));
+    const unsubTasks = subscribeTasks((allTasks: Task[]) => {
+      // Deduplicate by ID (guards against Strict Mode double-fire or optimistic+server overlap)
+      const seen = new Set<string>();
+      const deduped = allTasks.filter((t) => { if (seen.has(t.id)) return false; seen.add(t.id); return true; });
+      const visible = deduped.filter((t) => isTaskVisible(t, currentUser.id, currentUser.role));
       setTasks(visible);
     });
     const unsubUsers = subscribeUsers((users: User[]) => setUsers(users));

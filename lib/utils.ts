@@ -74,7 +74,7 @@ export function statusLabel(status: string) {
   const labels: Record<string, string> = {
     todo: "Chờ thực hiện",
     in_progress: "Đang thực hiện",
-    review: "Chờ duyệt",
+    review: "Đang xét duyệt",
     done: "Hoàn thành",
     cancelled: "Đã hủy",
   };

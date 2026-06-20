@@ -8,6 +8,7 @@ import { TaskListView } from "@/components/tasks/TaskListView";
 import { CreateTaskModal } from "@/components/tasks/CreateTaskModal";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useAuthStore } from "@/stores/useAuthStore";
+import { hasPermission } from "@/lib/rbac/permissions";
 import type { Task, TaskStatus, TaskViewMode } from "@/types";
 import { useRouter } from "next/navigation";
 
@@ -24,6 +25,9 @@ export default function TasksPage() {
   const { currentUser } = useAuthStore();
   const [showCreate, setShowCreate] = useState(false);
   const [createStatus, setCreateStatus] = useState<TaskStatus>("todo");
+
+  const canApprove = !!(currentUser && hasPermission(currentUser.role, "task:approve"));
+  const pendingApprovalCount = canApprove ? tasks.filter((t) => !t.approved).length : 0;
 
   const filteredTasks = useMemo(() => {
     let result = tasks;
@@ -106,7 +110,7 @@ export default function TasksPage() {
           { label: "Tác vụ của tôi", action: () => setFilters({ assigneeId: currentUser?.id }) },
           { label: "Rủi ro", action: () => setFilters({ riskOnly: true }) },
           { label: "Khẩn cấp", action: () => setFilters({ priority: ["urgent"] }) },
-          { label: "Chờ duyệt", action: () => setFilters({ status: ["review"] }) },
+          { label: "Đang xét duyệt", action: () => setFilters({ status: ["review"] }) },
         ].map((chip) => (
           <button
             key={chip.label}
@@ -116,6 +120,19 @@ export default function TasksPage() {
             {chip.label}
           </button>
         ))}
+
+        {/* Approval chip — only visible to managers */}
+        {canApprove && pendingApprovalCount > 0 && (
+          <button
+            onClick={() => setFilters({ status: undefined, riskOnly: false })}
+            className="px-3 py-1.5 text-xs font-semibold bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-300 dark:border-yellow-700 text-yellow-700 dark:text-yellow-300 rounded-full hover:bg-yellow-100 transition flex items-center gap-1.5"
+          >
+            Cần phê duyệt
+            <span className="bg-yellow-500 text-white rounded-full px-1.5 py-0.5 text-[9px] font-bold leading-none">
+              {pendingApprovalCount}
+            </span>
+          </button>
+        )}
       </div>
 
       {/* Main content */}
