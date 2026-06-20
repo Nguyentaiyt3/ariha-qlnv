@@ -66,12 +66,7 @@ export default function LoginPage() {
       toast.success("Đăng ký thành công! Tài khoản của bạn đang chờ Admin phân quyền.");
       router.push("/dashboard");
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "";
-      if (msg.includes("email-already-in-use")) {
-        toast.error("Email này đã được đăng ký. Vui lòng đăng nhập.");
-      } else {
-        toast.error("Đăng ký thất bại. Vui lòng thử lại.");
-      }
+      toast.error(err instanceof Error ? err.message : "Đăng ký thất bại. Vui lòng thử lại.");
     } finally {
       setLoading(false);
     }
