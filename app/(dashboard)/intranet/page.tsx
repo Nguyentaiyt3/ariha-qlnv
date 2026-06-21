@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
 import {
   Globe, Plus, Send, Loader2, Pin, MessageSquare,
   ChevronDown, ChevronUp, Hash, Lock, Megaphone, CheckCircle2, XCircle, Clock,
+  Search, Users, X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn, getInitials, avatarColor } from "@/lib/utils";
@@ -17,7 +18,7 @@ import {
   getAnnouncementComments, addAnnouncementComment,
   subscribeChannels, saveChannel, subscribeChannelMessages, sendChannelMessage,
 } from "@/lib/firebase/firestore";
-import type { Announcement, Channel, ChannelMessage, AnnouncementComment } from "@/types";
+import type { Announcement, Channel, ChannelMessage, AnnouncementComment, User } from "@/types";
 
 // ── Announcement card ─────────────────────────────────────────────────────────
 const EMOJIS = ["👍", "❤️", "🎉", "🙌", "💡"];
@@ -307,6 +308,256 @@ function ChannelChat({ channel, currentUser }: { channel: Channel; currentUser: 
   );
 }
 
+// ── Create channel modal ──────────────────────────────────────────────────────
+function CreateChannelModal({
+  currentUser,
+  allUsers,
+  onSave,
+  onClose,
+}: {
+  currentUser: { id: string; name: string };
+  allUsers: User[];
+  onSave: (name: string, type: Channel["type"], memberIds: string[], description?: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [type, setType] = useState<Channel["type"]>("private");
+  const [search, setSearch] = useState("");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+
+  const otherUsers = useMemo(
+    () => allUsers.filter((u) => u.id !== currentUser.id),
+    [allUsers, currentUser.id]
+  );
+
+  const filtered = useMemo(() => {
+    if (!search.trim()) return otherUsers;
+    const q = search.toLowerCase();
+    return otherUsers.filter(
+      (u) => u.name.toLowerCase().includes(q) || u.department?.toLowerCase().includes(q)
+    );
+  }, [otherUsers, search]);
+
+  function toggle(id: string) {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  }
+
+  function selectAll() {
+    setSelectedIds(otherUsers.map((u) => u.id));
+  }
+  function clearAll() {
+    setSelectedIds([]);
+  }
+
+  async function handleSave() {
+    if (!name.trim()) { toast.error("Vui lòng nhập tên nhóm."); return; }
+    if (selectedIds.length === 0) { toast.error("Vui lòng chọn ít nhất 1 thành viên."); return; }
+    setSaving(true);
+    try {
+      await onSave(name.trim(), type, [currentUser.id, ...selectedIds], description.trim() || undefined);
+      onClose();
+    } catch {
+      toast.error("Tạo nhóm thất bại.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-lg flex flex-col max-h-[90vh]">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border)] shrink-0">
+          <h2 className="font-bold text-[var(--foreground)]">Tạo nhóm chat mới</h2>
+          <button onClick={onClose} className="p-1 text-slate-400 hover:text-slate-600 transition">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          {/* Name + type row */}
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1 block">Tên nhóm *</label>
+              <input
+                autoFocus
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="vd: marketing-q3, dev-team..."
+                className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1 block">Mô tả (tuỳ chọn)</label>
+              <input
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Mục đích của nhóm..."
+                className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            {/* Type selector */}
+            <div>
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5 block">Loại nhóm</label>
+              <div className="flex gap-2">
+                {([
+                  { key: "private", icon: Lock, label: "Riêng tư", desc: "Chỉ thành viên được chọn" },
+                  { key: "public", icon: Hash, label: "Công khai", desc: "Mọi người đều thấy" },
+                ] as const).map((opt) => (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => setType(opt.key)}
+                    className={cn(
+                      "flex-1 flex items-start gap-2.5 px-3 py-2.5 rounded-xl border text-left transition",
+                      type === opt.key
+                        ? "border-blue-500 bg-blue-50 dark:bg-blue-900/20"
+                        : "border-[var(--border)] hover:border-blue-300"
+                    )}
+                  >
+                    <opt.icon className={cn("w-4 h-4 mt-0.5 shrink-0", type === opt.key ? "text-blue-600" : "text-slate-400")} />
+                    <div>
+                      <p className={cn("text-sm font-semibold", type === opt.key ? "text-blue-700 dark:text-blue-300" : "text-[var(--foreground)]")}>{opt.label}</p>
+                      <p className="text-[10px] text-slate-400 mt-0.5">{opt.desc}</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Member picker */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide flex items-center gap-1.5">
+                <Users className="w-3.5 h-3.5" /> Thêm thành viên
+                {selectedIds.length > 0 && (
+                  <span className="px-1.5 py-0.5 bg-blue-600 text-white text-[10px] font-bold rounded-full">
+                    {selectedIds.length}
+                  </span>
+                )}
+              </label>
+              <div className="flex gap-2 text-[10px]">
+                <button type="button" onClick={selectAll} className="text-blue-500 hover:underline">Chọn tất cả</button>
+                <span className="text-slate-300">|</span>
+                <button type="button" onClick={clearAll} className="text-slate-400 hover:underline">Bỏ chọn</button>
+              </div>
+            </div>
+
+            {/* Selected chips */}
+            {selectedIds.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mb-2 p-2 bg-[var(--muted)] rounded-xl">
+                {selectedIds.map((id) => {
+                  const u = allUsers.find((x) => x.id === id);
+                  return (
+                    <span
+                      key={id}
+                      className="flex items-center gap-1 px-2 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 text-xs rounded-full"
+                    >
+                      {u?.name ?? id}
+                      <button type="button" onClick={() => toggle(id)} className="hover:text-red-600 leading-none">
+                        ×
+                      </button>
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Search input */}
+            <div className="relative mb-2">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Tìm theo tên hoặc phòng ban..."
+                className="w-full pl-8 pr-3 py-1.5 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+
+            {/* Creator row (non-removable) */}
+            <div className="flex items-center gap-2.5 px-2.5 py-2 mb-0.5 rounded-xl bg-[var(--muted)] opacity-70">
+              <div className={cn("w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white shrink-0", avatarColor(currentUser.name))}>
+                {getInitials(currentUser.name)}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-[var(--foreground)] truncate">{currentUser.name}</p>
+                <p className="text-[10px] text-slate-400">Người tạo · luôn là thành viên</p>
+              </div>
+              <div className="w-4 h-4 rounded border border-blue-600 bg-blue-600 flex items-center justify-center shrink-0">
+                <span className="text-white text-[9px] font-bold">✓</span>
+              </div>
+            </div>
+
+            {/* User list */}
+            <div className="max-h-52 overflow-y-auto space-y-0.5 pr-1">
+              {filtered.length === 0 ? (
+                <p className="text-xs text-slate-400 text-center py-4">Không tìm thấy người dùng</p>
+              ) : (
+                filtered.map((u) => {
+                  const checked = selectedIds.includes(u.id);
+                  return (
+                    <button
+                      key={u.id}
+                      type="button"
+                      onClick={() => toggle(u.id)}
+                      className={cn(
+                        "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xl transition text-left",
+                        checked
+                          ? "bg-blue-50 dark:bg-blue-900/20"
+                          : "hover:bg-[var(--muted)]"
+                      )}
+                    >
+                      <div className={cn("w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white shrink-0", avatarColor(u.name))}>
+                        {u.avatar
+                          ? <img src={u.avatar} className="w-full h-full rounded-full object-cover" alt="" />
+                          : getInitials(u.name)}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className={cn("text-sm font-medium truncate", checked ? "text-blue-700 dark:text-blue-300" : "text-[var(--foreground)]")}>
+                          {u.name}
+                        </p>
+                        {u.department && (
+                          <p className="text-[10px] text-slate-400 truncate">{u.department}</p>
+                        )}
+                      </div>
+                      <div className={cn(
+                        "w-4 h-4 rounded border flex items-center justify-center shrink-0 transition",
+                        checked ? "bg-blue-600 border-blue-600" : "border-slate-300 dark:border-slate-600"
+                      )}>
+                        {checked && <span className="text-white text-[9px] font-bold">✓</span>}
+                      </div>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="flex gap-3 px-5 py-4 border-t border-[var(--border)] shrink-0">
+          <button onClick={onClose} className="flex-1 py-2 border border-[var(--border)] rounded-xl text-sm text-[var(--foreground)] hover:bg-[var(--muted)] transition">
+            Huỷ
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving || !name.trim() || selectedIds.length === 0}
+            className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-xl text-sm font-semibold transition flex items-center justify-center gap-2"
+          >
+            {saving && <Loader2 className="w-4 h-4 animate-spin" />}
+            Tạo nhóm {selectedIds.length > 0 && `(${selectedIds.length + 1} người)`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function IntranetPage() {
   const { currentUser } = useAuthStore();
@@ -324,9 +575,8 @@ export default function IntranetPage() {
   const [postPinned, setPostPinned] = useState(false);
   const [posting, setPosting] = useState(false);
 
-  // New channel form
+  // New channel modal
   const [showNewChannel, setShowNewChannel] = useState(false);
-  const [channelName, setChannelName] = useState("");
 
   const canCreate = !!(currentUser && hasPermission(currentUser.role, "intranet:create"));
   const canApprovePost = !!(currentUser && hasPermission(currentUser.role, "intranet:approve"));
@@ -401,21 +651,26 @@ export default function IntranetPage() {
     }
   }
 
-  async function handleCreateChannel() {
-    if (!channelName.trim() || !currentUser) return;
+  async function handleCreateChannel(
+    name: string,
+    type: Channel["type"],
+    memberIds: string[],
+    description?: string,
+  ) {
+    if (!currentUser) return;
     const ch: Channel = {
       id: generateId("ch"),
-      name: channelName.trim().toLowerCase().replace(/\s+/g, "-"),
-      type: "public",
-      memberIds: users.map((u) => u.id),
+      name: name.toLowerCase().replace(/\s+/g, "-"),
+      description,
+      type,
+      memberIds,
       createdBy: currentUser.id,
       createdAt: new Date().toISOString(),
     };
     await saveChannel(ch);
     setChannels((prev) => [ch, ...prev]);
     setActiveChannelId(ch.id);
-    setChannelName(""); setShowNewChannel(false);
-    toast.success(`Đã tạo kênh #${ch.name}`);
+    toast.success(`Đã tạo nhóm #${ch.name} với ${memberIds.length} thành viên.`);
   }
 
   // Birthday reminder banner
@@ -526,24 +781,15 @@ export default function IntranetPage() {
           {/* Channel sidebar */}
           <div className="w-56 shrink-0 flex flex-col gap-2">
             <div className="flex items-center justify-between">
-              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Kênh</p>
-              <button onClick={() => setShowNewChannel((v) => !v)} className="p-1 text-slate-400 hover:text-blue-500 transition">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Nhóm chat</p>
+              <button
+                onClick={() => setShowNewChannel(true)}
+                title="Tạo nhóm mới"
+                className="p-1 text-slate-400 hover:text-blue-500 transition"
+              >
                 <Plus className="w-4 h-4" />
               </button>
             </div>
-            {showNewChannel && (
-              <div className="flex gap-1">
-                <input
-                  value={channelName}
-                  onChange={(e) => setChannelName(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleCreateChannel()}
-                  placeholder="tên-kênh"
-                  className="flex-1 px-2 py-1 text-xs border border-[var(--border)] rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none"
-                  autoFocus
-                />
-                <button onClick={handleCreateChannel} className="px-2 py-1 bg-blue-600 text-white text-xs rounded-lg">+</button>
-              </div>
-            )}
             <div className="space-y-1 overflow-y-auto">
               {channels.length === 0 && <p className="text-xs text-slate-400 py-3">Chưa có kênh nào</p>}
               {channels.map((ch) => (
@@ -580,6 +826,16 @@ export default function IntranetPage() {
             )}
           </div>
         </div>
+      )}
+
+      {/* Create channel modal */}
+      {showNewChannel && currentUser && (
+        <CreateChannelModal
+          currentUser={currentUser}
+          allUsers={users}
+          onSave={handleCreateChannel}
+          onClose={() => setShowNewChannel(false)}
+        />
       )}
     </div>
   );
