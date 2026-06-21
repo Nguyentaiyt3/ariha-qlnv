@@ -696,7 +696,7 @@ export async function sendChannelMessage(channelId: string, msg: Omit<ChannelMes
 
 export async function updateChannel(id: string, data: Partial<Channel>): Promise<void> {
   const db = getDb();
-  await updateDoc(doc(db, "channels", id), data as DocumentData);
+  await updateDoc(doc(db, "channels", id), deepStrip(data) as DocumentData);
 }
 
 export async function deleteChannel(id: string): Promise<void> {
