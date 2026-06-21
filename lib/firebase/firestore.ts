@@ -412,11 +412,17 @@ export async function updateRequest(id: string, updates: Partial<WorkRequest>): 
 
 export function subscribeRequests(userId: string, isManager: boolean, callback: (reqs: WorkRequest[]) => void) {
   const db = getDb();
+  // Avoid composite index requirement: filter/sort client-side for non-manager queries
   const q = isManager
     ? query(collection(db, "requests"), orderBy("createdAt", "desc"), limit(100))
-    : query(collection(db, "requests"), where("submittedBy", "==", userId), orderBy("createdAt", "desc"));
+    : query(collection(db, "requests"), where("submittedBy", "==", userId));
   return onSnapshot(q,
-    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as WorkRequest))),
+    (snap) => {
+      const reqs = snap.docs
+        .map((d) => ({ id: d.id, ...d.data() } as WorkRequest))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      callback(reqs);
+    },
     (err) => console.error("[subscribeRequests]", err.code)
   );
 }
