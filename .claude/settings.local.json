@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(find \"D:/ARiHA\" -maxdepth 3 -type f 2>/dev/null | sort)"
+      "Bash(find \"D:/ARiHA\" -maxdepth 3 -type f 2>/dev/null | sort)",
+      "Bash(mkdir -p \"D:\\\\ARiHA WorkHub\\\\app\\\\\\(dashboard\\)\\\\requests\\\\[id]\")",
+      "PowerShell(git -C \"D:\\\\ARiHA WorkHub\" diff .claude/settings.local.json)"
     ]
   }
 }
