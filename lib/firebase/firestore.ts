@@ -404,7 +404,7 @@ export async function getRequest(id: string): Promise<WorkRequest | null> {
 
 export async function saveRequest(r: WorkRequest): Promise<void> {
   const db = getDb();
-  await setDoc(doc(db, "requests", r.id), { ...r, updatedAt: new Date().toISOString() }, { merge: true });
+  await setDoc(doc(db, "requests", r.id), deepStrip({ ...r, updatedAt: new Date().toISOString() }), { merge: true });
 }
 
 export async function updateRequest(id: string, updates: Partial<WorkRequest>): Promise<void> {
@@ -439,7 +439,7 @@ export async function getFolders(): Promise<DocFolder[]> {
 
 export async function saveFolder(f: DocFolder): Promise<void> {
   const db = getDb();
-  await setDoc(doc(db, "folders", f.id), f, { merge: true });
+  await setDoc(doc(db, "folders", f.id), deepStrip(f), { merge: true });
 }
 
 export async function deleteFolder(id: string): Promise<void> {
@@ -458,7 +458,7 @@ export async function getDocuments(folderId: string | null): Promise<WorkDocumen
 
 export async function saveDocument(doc_: WorkDocument): Promise<void> {
   const db = getDb();
-  await setDoc(doc(db, "documents", doc_.id), { ...doc_, updatedAt: new Date().toISOString() }, { merge: true });
+  await setDoc(doc(db, "documents", doc_.id), deepStrip({ ...doc_, updatedAt: new Date().toISOString() }), { merge: true });
 }
 
 export async function deleteDocument(id: string): Promise<void> {
@@ -492,7 +492,7 @@ export async function getAnnouncements(): Promise<Announcement[]> {
 
 export async function saveAnnouncement(a: Announcement): Promise<void> {
   const db = getDb();
-  await setDoc(doc(db, "announcements", a.id), { ...a, updatedAt: new Date().toISOString() }, { merge: true });
+  await setDoc(doc(db, "announcements", a.id), deepStrip({ ...a, updatedAt: new Date().toISOString() }), { merge: true });
 }
 
 export async function deleteAnnouncement(id: string): Promise<void> {
