@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo } from "react";
 import {
   GitBranch, Save, Plus, Trash2, ArrowUp, ArrowDown,
   Loader2, Clock, CheckCircle2, XCircle, LayoutGrid, List,
-  ChevronRight, Send,
+  ChevronRight, Send, AlertCircle,
 } from "lucide-react";
 import {
   getWorkflows, saveWorkflow, deleteWorkflow, approveWorkflow, addNotification,
@@ -55,9 +55,17 @@ export default function WorkflowPage() {
   const canApprove = !!(currentUser && hasPermission(currentUser.role, "workflow:approve"));
   const canCreate  = !!(currentUser && hasPermission(currentUser.role, "workflow:create"));
 
+  // Workflows waiting for manager approval (shown to managers)
   const pendingWorkflows = useMemo(
     () => canApprove ? workflows.filter((w) => w.status === "pending") : [],
     [workflows, canApprove]
+  );
+  // My own pending workflows (visible to creator regardless of role)
+  const myPendingWorkflows = useMemo(
+    () => !canApprove
+      ? workflows.filter((w) => w.status === "pending" && w.createdBy === currentUser?.id)
+      : [],
+    [workflows, canApprove, currentUser?.id]
   );
   const publishedWorkflows = useMemo(
     () => workflows.filter((w) => w.status === "published" || w.status === undefined),
@@ -66,11 +74,12 @@ export default function WorkflowPage() {
   const selectedWorkflow = workflows.find((w) => w.id === selectedId) ?? null;
 
   useEffect(() => {
-    getWorkflows(canApprove)
+    if (!currentUser) return;
+    getWorkflows(canApprove, currentUser.id)
       .then(setWorkflows)
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [canApprove]);
+  }, [canApprove, currentUser?.id]);
 
   // ── Navigation helpers ──────────────────────────────────────
   function goList() {
@@ -272,8 +281,18 @@ export default function WorkflowPage() {
   // VIEW: VISUAL MODE (full canvas)
   // ═══════════════════════════════════════════════════════════
   if (pageView === "visual") {
+    const visualIsPending = !isNew && selectedWorkflow?.status === "pending";
     return (
       <div className="flex flex-col" style={{ height: "calc(100vh - 64px)" }}>
+        {/* Pending banner */}
+        {visualIsPending && (
+          <div className="flex items-center gap-2 px-4 py-2 bg-amber-50 dark:bg-amber-900/15 border-b border-amber-200 dark:border-amber-700 shrink-0">
+            <AlertCircle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+            <p className="text-xs text-amber-700 dark:text-amber-400 font-medium">
+              Sơ đồ đang chờ phê duyệt — quản lý sẽ xét duyệt trước khi công khai.
+            </p>
+          </div>
+        )}
         {/* Mini header */}
         <div className="flex items-center gap-2 px-4 py-2.5 border-b border-[var(--border)] bg-[var(--card)] shrink-0 flex-wrap">
           {/* Back */}
@@ -351,13 +370,28 @@ export default function WorkflowPage() {
   // VIEW: FORM MODE (create / edit)
   // ═══════════════════════════════════════════════════════════
   if (pageView === "form") {
+    const isPending = !isNew && selectedWorkflow?.status === "pending";
     const saveLabel = isNew
       ? (canApprove ? "Tạo & Xuất bản" : "Gửi đề nghị phê duyệt")
+      : isPending
+      ? "Cập nhật & Gửi lại phê duyệt"
       : "Cập nhật quy trình";
-    const SaveIcon = isNew && !canApprove ? Send : Save;
+    const SaveIcon = (isNew || isPending) && !canApprove ? Send : Save;
 
     return (
       <div className="max-w-3xl mx-auto px-4 py-6 space-y-5">
+        {/* Pending approval banner */}
+        {isPending && (
+          <div className="flex items-start gap-3 px-4 py-3 bg-amber-50 dark:bg-amber-900/15 border border-amber-200 dark:border-amber-700 rounded-xl">
+            <AlertCircle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-semibold text-amber-700 dark:text-amber-400">Đang chờ phê duyệt</p>
+              <p className="text-xs text-amber-600 dark:text-amber-500 mt-0.5">
+                Quy trình này đã được gửi đến quản lý và đang chờ xét duyệt. Bạn vẫn có thể chỉnh sửa và gửi lại.
+              </p>
+            </div>
+          </div>
+        )}
         {/* Header */}
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-2 text-sm">
@@ -642,12 +676,55 @@ export default function WorkflowPage() {
         </div>
       )}
 
+      {/* My pending workflows (creator sees own) */}
+      {!loading && myPendingWorkflows.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-semibold text-amber-600 dark:text-amber-400 flex items-center gap-1.5 uppercase tracking-wider">
+            <AlertCircle className="w-3.5 h-3.5" /> Đang chờ phê duyệt ({myPendingWorkflows.length})
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {myPendingWorkflows.map((wf) => (
+              <div
+                key={wf.id}
+                className="p-4 bg-amber-50/60 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800 rounded-2xl"
+              >
+                <div className="flex items-start justify-between gap-2 mb-2">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-[var(--foreground)] truncate">{wf.name}</p>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      {wf.department && `${wf.department} · `}{wf.steps.length} bước
+                    </p>
+                  </div>
+                  <span className="shrink-0 px-2 py-0.5 text-[10px] font-semibold rounded-full bg-amber-100 dark:bg-amber-900/30 text-amber-600 flex items-center gap-1">
+                    <Clock className="w-2.5 h-2.5" /> Chờ duyệt
+                  </span>
+                </div>
+                <div className="flex gap-2 mt-3">
+                  <button
+                    onClick={() => openEdit(wf.id, "form")}
+                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 border border-amber-200 dark:border-amber-700 text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/20 text-xs font-medium rounded-lg transition"
+                  >
+                    <List className="w-3.5 h-3.5" /> Chỉnh sửa
+                  </button>
+                  <button
+                    onClick={() => openEdit(wf.id, "visual")}
+                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-amber-100 dark:bg-amber-900/20 hover:bg-amber-200 text-amber-700 dark:text-amber-400 text-xs font-medium rounded-lg transition"
+                  >
+                    <LayoutGrid className="w-3.5 h-3.5" /> Xem sơ đồ
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Workflow list */}
       {loading ? (
         <div className="flex justify-center py-10">
           <Loader2 className="w-6 h-6 animate-spin text-blue-500" />
         </div>
-      ) : publishedWorkflows.length === 0 ? (
+      ) : publishedWorkflows.length === 0 && myPendingWorkflows.length === 0 ? (
         <div className="text-center py-16 border-2 border-dashed border-[var(--border)] rounded-2xl space-y-3">
           <GitBranch className="w-10 h-10 text-slate-300 mx-auto" />
           <p className="text-slate-400 text-sm">Chưa có quy trình nào.</p>
@@ -660,7 +737,7 @@ export default function WorkflowPage() {
             </button>
           )}
         </div>
-      ) : (
+      ) : publishedWorkflows.length > 0 ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {publishedWorkflows.map((wf) => (
             <div
@@ -721,7 +798,7 @@ export default function WorkflowPage() {
             </div>
           ))}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

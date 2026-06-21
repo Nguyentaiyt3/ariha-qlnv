@@ -319,12 +319,17 @@ export async function approveCalendarEvent(id: string, approve: boolean, reason?
 
 // ─── WORKFLOWS ────────────────────────────────────────────────
 
-export async function getWorkflows(canApprove = false): Promise<Workflow[]> {
+export async function getWorkflows(canApprove = false, currentUserId?: string): Promise<Workflow[]> {
   const db = getDb();
   const snap = await getDocs(query(collection(db, "workflows"), orderBy("createdAt", "desc")));
   return snap.docs
     .map((d) => ({ id: d.id, ...d.data() } as Workflow))
-    .filter((w) => canApprove || w.status === "published" || w.status === undefined);
+    .filter((w) =>
+      canApprove ||
+      w.status === "published" ||
+      w.status === undefined ||
+      (currentUserId && w.createdBy === currentUserId)
+    );
 }
 
 export async function saveWorkflow(workflow: Workflow): Promise<void> {
