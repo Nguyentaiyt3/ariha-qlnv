@@ -14,7 +14,7 @@ import {
   getRequestTemplates, subscribeRequests, saveRequest,
 } from "@/lib/firebase/firestore";
 import { generateId } from "@/lib/utils";
-import type { RequestTemplate, WorkRequest, RequestStatus } from "@/types";
+import type { RequestTemplate, RequestStatus } from "@/types";
 
 // ── Built-in default templates (seed nếu chưa có trong Firestore) ──────────
 const DEFAULT_TEMPLATES: Omit<RequestTemplate, "id" | "createdBy" | "createdAt">[] = [
@@ -89,12 +89,10 @@ function CreateRequestModal({
   template,
   currentUser,
   onClose,
-  onCreated,
 }: {
   template: RequestTemplate;
   currentUser: { id: string; name: string; avatar?: string; department?: string };
   onClose: () => void;
-  onCreated: (r: WorkRequest) => void;
 }) {
   const [form, setForm] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
@@ -127,8 +125,7 @@ function CreateRequestModal({
       };
       await saveRequest(req);
       toast.success("Đã gửi đơn thành công!");
-      onCreated(req);
-      onClose();
+      onClose(); // subscribeRequests will update the list in real-time
     } catch {
       toast.error("Gửi đơn thất bại.");
     } finally {
@@ -380,7 +377,6 @@ export default function RequestsPage() {
           template={activeTemplate}
           currentUser={currentUser}
           onClose={() => setActiveTemplate(null)}
-          onCreated={(r) => setRequests((prev) => [r, ...prev])}
         />
       )}
     </div>
