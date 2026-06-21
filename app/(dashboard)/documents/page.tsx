@@ -5,6 +5,7 @@ import {
   FolderOpen, Folder, FileText, Image, Film, File,
   Plus, Loader2, Search, ChevronRight,
   Trash2, Upload, Link2, ExternalLink, Home, CheckCircle2, XCircle, Clock,
+  Users, ChevronDown, ChevronUp,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn, generateId } from "@/lib/utils";
@@ -14,9 +15,10 @@ import {
   getFolders, saveFolder, deleteFolder,
   saveDocument, deleteDocument, subscribeDocuments,
   getPendingDocuments, approveDocument, addNotification,
+  getUsers, getTasks,
 } from "@/lib/firebase/firestore";
 import { uploadFile } from "@/lib/firebase/storage";
-import type { DocFolder, WorkDocument, DocFileType } from "@/types";
+import type { DocFolder, WorkDocument, DocFileType, User, Task } from "@/types";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function fileIcon(type: DocFileType) {
@@ -48,6 +50,235 @@ function mimeToDocFileType(mime: string): DocFileType {
   return "other";
 }
 
+// ── ShareWithPicker ───────────────────────────────────────────────────────────
+type ShareMode = "single" | "multi" | "task";
+
+function ShareWithPicker({
+  allUsers,
+  allTasks,
+  selected,
+  onChange,
+}: {
+  allUsers: User[];
+  allTasks: Task[];
+  selected: string[];
+  onChange: (ids: string[]) => void;
+}) {
+  const [mode, setMode] = useState<ShareMode>("multi");
+  const [search, setSearch] = useState("");
+  const [taskId, setTaskId] = useState("");
+  const [open, setOpen] = useState(false);
+
+  const filtered = useMemo(() => {
+    if (!search) return allUsers;
+    const q = search.toLowerCase();
+    return allUsers.filter(
+      (u) => u.name.toLowerCase().includes(q) || u.department?.toLowerCase().includes(q)
+    );
+  }, [allUsers, search]);
+
+  function toggle(id: string) {
+    if (mode === "single") {
+      onChange(selected.includes(id) ? [] : [id]);
+    } else {
+      onChange(selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id]);
+    }
+  }
+
+  function addTaskMembers() {
+    const task = allTasks.find((t) => t.id === taskId);
+    if (!task) return;
+    const memberIds = Array.from(
+      new Set(
+        [task.mainPerformerId, task.creatorId, ...task.stakeholders.map((s) => s.userId)].filter(
+          Boolean
+        )
+      )
+    );
+    onChange(Array.from(new Set([...selected, ...memberIds])));
+  }
+
+  const selectedTask = allTasks.find((t) => t.id === taskId);
+  const taskMemberIds = selectedTask
+    ? Array.from(
+        new Set(
+          [
+            selectedTask.mainPerformerId,
+            selectedTask.creatorId,
+            ...selectedTask.stakeholders.map((s) => s.userId),
+          ].filter(Boolean)
+        )
+      )
+    : [];
+
+  return (
+    <div className="border border-[var(--border)] rounded-xl overflow-hidden">
+      {/* Toggle header */}
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between px-3 py-2.5 bg-[var(--muted)] hover:bg-slate-100 dark:hover:bg-slate-800 transition text-sm font-medium text-[var(--foreground)]"
+      >
+        <span className="flex items-center gap-2">
+          <Users className="w-4 h-4 text-blue-500" />
+          Chia sẻ với
+          {selected.length > 0 && (
+            <span className="px-1.5 py-0.5 text-[10px] font-semibold bg-blue-600 text-white rounded-full">
+              {selected.length}
+            </span>
+          )}
+        </span>
+        {open ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+      </button>
+
+      {open && (
+        <div className="p-3 space-y-2.5">
+          {/* Mode tabs */}
+          <div className="flex rounded-lg overflow-hidden border border-[var(--border)]">
+            {(
+              [
+                { key: "single", label: "Một người" },
+                { key: "multi", label: "Nhiều người" },
+                { key: "task", label: "Nhóm nhiệm vụ" },
+              ] as { key: ShareMode; label: string }[]
+            ).map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => {
+                  setMode(tab.key);
+                  setSearch("");
+                  setTaskId("");
+                  onChange([]);
+                }}
+                className={cn(
+                  "flex-1 py-1.5 text-xs font-medium transition",
+                  mode === tab.key
+                    ? "bg-blue-600 text-white"
+                    : "text-[var(--foreground)] hover:bg-[var(--muted)]"
+                )}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Selected chips */}
+          {selected.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {selected.map((id) => {
+                const u = allUsers.find((x) => x.id === id);
+                return (
+                  <span
+                    key={id}
+                    className="flex items-center gap-1 px-2 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 text-xs rounded-full"
+                  >
+                    {u?.name ?? id}
+                    <button
+                      type="button"
+                      onClick={() => onChange(selected.filter((x) => x !== id))}
+                      className="hover:text-red-600 leading-none"
+                    >
+                      ×
+                    </button>
+                  </span>
+                );
+              })}
+            </div>
+          )}
+
+          {mode === "task" ? (
+            <div className="space-y-2">
+              <select
+                value={taskId}
+                onChange={(e) => setTaskId(e.target.value)}
+                className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">-- Chọn nhiệm vụ --</option>
+                {allTasks.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+
+              {taskId && (
+                <>
+                  <p className="text-xs text-slate-500">
+                    {taskMemberIds.length} thành viên:{" "}
+                    {taskMemberIds.map((id) => allUsers.find((u) => u.id === id)?.name ?? id).join(", ")}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={addTaskMembers}
+                    className="w-full py-1.5 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 text-blue-700 dark:text-blue-300 text-xs rounded-lg hover:bg-blue-100 transition"
+                  >
+                    + Thêm tất cả thành viên
+                  </button>
+                </>
+              )}
+            </div>
+          ) : (
+            <>
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Tìm người..."
+                className="w-full px-3 py-1.5 text-sm border border-[var(--border)] rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <div className="max-h-40 overflow-y-auto space-y-0.5 pr-1">
+                {filtered.length === 0 ? (
+                  <p className="text-xs text-slate-400 text-center py-3">Không tìm thấy người dùng</p>
+                ) : (
+                  filtered.map((u) => (
+                    <button
+                      key={u.id}
+                      type="button"
+                      onClick={() => toggle(u.id)}
+                      className={cn(
+                        "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm transition text-left",
+                        selected.includes(u.id)
+                          ? "bg-blue-50 dark:bg-blue-900/20"
+                          : "hover:bg-[var(--muted)]"
+                      )}
+                    >
+                      <div
+                        className={cn(
+                          "w-4 h-4 rounded border flex items-center justify-center shrink-0 transition",
+                          selected.includes(u.id)
+                            ? "bg-blue-600 border-blue-600"
+                            : "border-slate-300 dark:border-slate-600"
+                        )}
+                      >
+                        {selected.includes(u.id) && (
+                          <span className="text-white text-[9px] font-bold leading-none">✓</span>
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <p
+                          className={cn(
+                            "font-medium leading-tight truncate",
+                            selected.includes(u.id) ? "text-blue-700 dark:text-blue-300" : "text-[var(--foreground)]"
+                          )}
+                        >
+                          {u.name}
+                        </p>
+                        {u.department && (
+                          <p className="text-[10px] text-slate-400 truncate">{u.department}</p>
+                        )}
+                      </div>
+                    </button>
+                  ))
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Add link modal ────────────────────────────────────────────────────────────
 function AddLinkModal({
   folderId,
@@ -64,9 +295,20 @@ function AddLinkModal({
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   const [saving, setSaving] = useState(false);
+  const [sharedUserIds, setSharedUserIds] = useState<string[]>([]);
+  const [allUsers, setAllUsers] = useState<User[]>([]);
+  const [allTasks, setAllTasks] = useState<Task[]>([]);
+
+  useEffect(() => {
+    getUsers().then(setAllUsers);
+    getTasks().then(setAllTasks);
+  }, []);
 
   async function handleSave() {
-    if (!url.trim() || !name.trim()) { toast.error("Vui lòng điền tên và đường dẫn."); return; }
+    if (!url.trim() || !name.trim()) {
+      toast.error("Vui lòng điền tên và đường dẫn.");
+      return;
+    }
     setSaving(true);
     try {
       const doc_: WorkDocument = {
@@ -82,13 +324,15 @@ function AddLinkModal({
         department: currentUser.department,
         tags: [],
         sharedWithRoles: ["staff", "teamLead", "director", "hrAdmin"],
-        sharedWithUsers: [],
+        sharedWithUsers: sharedUserIds,
         downloadCount: 0,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
       await saveDocument(doc_);
-      toast.success(canApprove ? "Đã thêm liên kết." : "Đã gửi tài liệu. Chờ quản lý phê duyệt để công khai.");
+      toast.success(
+        canApprove ? "Đã thêm liên kết." : "Đã gửi tài liệu. Chờ quản lý phê duyệt để công khai."
+      );
       onClose();
     } catch {
       toast.error("Lưu thất bại.");
@@ -99,20 +343,46 @@ function AddLinkModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4">
+      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4 max-h-[90vh] overflow-y-auto">
         <h2 className="font-bold text-[var(--foreground)]">Thêm liên kết tài liệu</h2>
         <div className="space-y-3">
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Tên tài liệu *"
-            className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500" />
-          <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://..."
-            className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500" />
-          <input value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Mô tả (tuỳ chọn)"
-            className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Tên tài liệu *"
+            className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <input
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="https://..."
+            className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <input
+            value={desc}
+            onChange={(e) => setDesc(e.target.value)}
+            placeholder="Mô tả (tuỳ chọn)"
+            className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <ShareWithPicker
+            allUsers={allUsers}
+            allTasks={allTasks}
+            selected={sharedUserIds}
+            onChange={setSharedUserIds}
+          />
         </div>
         <div className="flex gap-3 pt-2">
-          <button onClick={onClose} className="flex-1 py-2 border border-[var(--border)] rounded-xl text-sm text-[var(--foreground)] hover:bg-[var(--muted)] transition">Huỷ</button>
-          <button onClick={handleSave} disabled={saving}
-            className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-xl text-sm font-semibold transition flex items-center justify-center gap-2">
+          <button
+            onClick={onClose}
+            className="flex-1 py-2 border border-[var(--border)] rounded-xl text-sm text-[var(--foreground)] hover:bg-[var(--muted)] transition"
+          >
+            Huỷ
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-xl text-sm font-semibold transition flex items-center justify-center gap-2"
+          >
             {saving && <Loader2 className="w-4 h-4 animate-spin" />} Lưu
           </button>
         </div>
@@ -136,9 +406,20 @@ function UploadFileModal({
   const [file, setFile] = useState<File | null>(null);
   const [desc, setDesc] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [sharedUserIds, setSharedUserIds] = useState<string[]>([]);
+  const [allUsers, setAllUsers] = useState<User[]>([]);
+  const [allTasks, setAllTasks] = useState<Task[]>([]);
+
+  useEffect(() => {
+    getUsers().then(setAllUsers);
+    getTasks().then(setAllTasks);
+  }, []);
 
   async function handleUpload() {
-    if (!file) { toast.error("Vui lòng chọn tệp."); return; }
+    if (!file) {
+      toast.error("Vui lòng chọn tệp.");
+      return;
+    }
     setUploading(true);
     try {
       const url = await uploadFile(file, "documents");
@@ -157,13 +438,15 @@ function UploadFileModal({
         department: currentUser.department,
         tags: [],
         sharedWithRoles: ["staff", "teamLead", "director", "hrAdmin"],
-        sharedWithUsers: [],
+        sharedWithUsers: sharedUserIds,
         downloadCount: 0,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
       await saveDocument(doc_);
-      toast.success(canApprove ? "Đã tải lên tài liệu." : "Đã gửi tài liệu. Chờ quản lý phê duyệt để công khai.");
+      toast.success(
+        canApprove ? "Đã tải lên tài liệu." : "Đã gửi tài liệu. Chờ quản lý phê duyệt để công khai."
+      );
       onClose();
     } catch {
       toast.error("Tải lên thất bại.");
@@ -174,28 +457,131 @@ function UploadFileModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4">
+      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4 max-h-[90vh] overflow-y-auto">
         <h2 className="font-bold text-[var(--foreground)]">Tải lên tài liệu</h2>
         <div className="space-y-3">
-          <label className={cn(
-            "flex flex-col items-center gap-2 p-6 border-2 border-dashed rounded-xl cursor-pointer transition",
-            file ? "border-blue-400 bg-blue-50 dark:bg-blue-900/10" : "border-[var(--border)] hover:border-blue-300"
-          )}>
+          <label
+            className={cn(
+              "flex flex-col items-center gap-2 p-6 border-2 border-dashed rounded-xl cursor-pointer transition",
+              file
+                ? "border-blue-400 bg-blue-50 dark:bg-blue-900/10"
+                : "border-[var(--border)] hover:border-blue-300"
+            )}
+          >
             <Upload className={cn("w-8 h-8", file ? "text-blue-500" : "text-slate-400")} />
             <span className="text-sm text-center text-[var(--foreground)]">
               {file ? file.name : "Nhấn để chọn tệp"}
             </span>
             {file && <span className="text-xs text-slate-400">{formatSize(file.size)}</span>}
-            <input type="file" className="hidden" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+            <input
+              type="file"
+              className="hidden"
+              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            />
           </label>
-          <input value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Mô tả (tuỳ chọn)"
-            className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          <input
+            value={desc}
+            onChange={(e) => setDesc(e.target.value)}
+            placeholder="Mô tả (tuỳ chọn)"
+            className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <ShareWithPicker
+            allUsers={allUsers}
+            allTasks={allTasks}
+            selected={sharedUserIds}
+            onChange={setSharedUserIds}
+          />
         </div>
         <div className="flex gap-3 pt-2">
-          <button onClick={onClose} className="flex-1 py-2 border border-[var(--border)] rounded-xl text-sm text-[var(--foreground)] hover:bg-[var(--muted)] transition">Huỷ</button>
-          <button onClick={handleUpload} disabled={uploading || !file}
-            className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-xl text-sm font-semibold transition flex items-center justify-center gap-2">
+          <button
+            onClick={onClose}
+            className="flex-1 py-2 border border-[var(--border)] rounded-xl text-sm text-[var(--foreground)] hover:bg-[var(--muted)] transition"
+          >
+            Huỷ
+          </button>
+          <button
+            onClick={handleUpload}
+            disabled={uploading || !file}
+            className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-xl text-sm font-semibold transition flex items-center justify-center gap-2"
+          >
             {uploading && <Loader2 className="w-4 h-4 animate-spin" />} Tải lên
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Create folder modal ───────────────────────────────────────────────────────
+function CreateFolderModal({
+  currentUser,
+  onSave,
+  onClose,
+}: {
+  currentUser: { id: string; name: string; department?: string };
+  onSave: (name: string, sharedUserIds: string[]) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [folderName, setFolderName] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [sharedUserIds, setSharedUserIds] = useState<string[]>([]);
+  const [allUsers, setAllUsers] = useState<User[]>([]);
+  const [allTasks, setAllTasks] = useState<Task[]>([]);
+
+  useEffect(() => {
+    getUsers().then(setAllUsers);
+    getTasks().then(setAllTasks);
+  }, []);
+
+  async function handleSave() {
+    if (!folderName.trim()) {
+      toast.error("Vui lòng nhập tên thư mục.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await onSave(folderName.trim(), sharedUserIds);
+      onClose();
+    } catch {
+      toast.error("Tạo thư mục thất bại.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+        <h2 className="font-bold text-[var(--foreground)]">Tạo thư mục mới</h2>
+        <div className="space-y-3">
+          <input
+            autoFocus
+            value={folderName}
+            onChange={(e) => setFolderName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleSave()}
+            placeholder="Tên thư mục *"
+            className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <ShareWithPicker
+            allUsers={allUsers}
+            allTasks={allTasks}
+            selected={sharedUserIds}
+            onChange={setSharedUserIds}
+          />
+        </div>
+        <div className="flex gap-3 pt-2">
+          <button
+            onClick={onClose}
+            className="flex-1 py-2 border border-[var(--border)] rounded-xl text-sm text-[var(--foreground)] hover:bg-[var(--muted)] transition"
+          >
+            Huỷ
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-xl text-sm font-semibold transition flex items-center justify-center gap-2"
+          >
+            {saving && <Loader2 className="w-4 h-4 animate-spin" />} Tạo thư mục
           </button>
         </div>
       </div>
@@ -214,7 +600,6 @@ export default function DocumentsPage() {
   const [search, setSearch] = useState("");
   const [showAddLink, setShowAddLink] = useState(false);
   const [showUpload, setShowUpload] = useState(false);
-  const [newFolderName, setNewFolderName] = useState("");
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [approvingId, setApprovingId] = useState<string | null>(null);
   const [rejectingDoc, setRejectingDoc] = useState<{ id: string; reason: string } | null>(null);
@@ -229,10 +614,15 @@ export default function DocumentsPage() {
 
   useEffect(() => {
     setLoading(true);
-    const unsub = subscribeDocuments(currentFolderId, (docs) => {
-      setDocuments(docs);
-      setLoading(false);
-    }, currentUser?.id, canApprove);
+    const unsub = subscribeDocuments(
+      currentFolderId,
+      (docs) => {
+        setDocuments(docs);
+        setLoading(false);
+      },
+      currentUser?.id,
+      canApprove
+    );
     return () => unsub();
   }, [currentFolderId, currentUser?.id, canApprove]);
 
@@ -241,18 +631,19 @@ export default function DocumentsPage() {
     getPendingDocuments().then(setPendingDocs);
   }, [canApprove]);
 
-  const subFolders = useMemo(() =>
-    folders.filter((f) => f.parentId === currentFolderId),
+  const subFolders = useMemo(
+    () => folders.filter((f) => f.parentId === currentFolderId),
     [folders, currentFolderId]
   );
 
   const filteredDocs = useMemo(() => {
     if (!search) return documents;
     const q = search.toLowerCase();
-    return documents.filter((d) => d.name.toLowerCase().includes(q) || d.description?.toLowerCase().includes(q));
+    return documents.filter(
+      (d) => d.name.toLowerCase().includes(q) || d.description?.toLowerCase().includes(q)
+    );
   }, [documents, search]);
 
-  // Breadcrumb path
   const breadcrumb = useMemo(() => {
     const path: DocFolder[] = [];
     let id = currentFolderId;
@@ -265,22 +656,21 @@ export default function DocumentsPage() {
     return path;
   }, [currentFolderId, folders]);
 
-  async function handleCreateFolder() {
-    if (!newFolderName.trim() || !currentUser) return;
+  async function handleCreateFolder(name: string, sharedUserIds: string[]) {
+    if (!currentUser) return;
     const f: DocFolder = {
       id: generateId("folder"),
-      name: newFolderName.trim(),
+      name,
       parentId: currentFolderId,
       ownerId: currentUser.id,
       department: currentUser.department,
       sharedWithRoles: ["staff", "teamLead", "director", "hrAdmin"],
+      sharedWithUsers: sharedUserIds,
       color: "#3b82f6",
       createdAt: new Date().toISOString(),
     };
     await saveFolder(f);
     setFolders((prev) => [...prev, f]);
-    setNewFolderName("");
-    setShowNewFolder(false);
     toast.success("Đã tạo thư mục.");
   }
 
@@ -371,7 +761,10 @@ export default function DocumentsPage() {
           </h2>
           <div className="space-y-2">
             {pendingDocs.map((doc_) => (
-              <div key={doc_.id} className="bg-white dark:bg-slate-900 rounded-xl border border-amber-100 dark:border-amber-800 overflow-hidden">
+              <div
+                key={doc_.id}
+                className="bg-white dark:bg-slate-900 rounded-xl border border-amber-100 dark:border-amber-800 overflow-hidden"
+              >
                 <div className="flex items-center gap-3 p-3">
                   {fileIcon(doc_.fileType)}
                   <div className="flex-1 min-w-0">
@@ -380,10 +773,20 @@ export default function DocumentsPage() {
                       {doc_.ownerName} · {new Date(doc_.createdAt).toLocaleDateString("vi-VN")}
                       {doc_.description && ` · ${doc_.description}`}
                     </p>
+                    {doc_.sharedWithUsers && doc_.sharedWithUsers.length > 0 && (
+                      <p className="text-xs text-blue-500 mt-0.5 flex items-center gap-1">
+                        <Users className="w-3 h-3" />
+                        Chia sẻ với {doc_.sharedWithUsers.length} người
+                      </p>
+                    )}
                   </div>
                   <div className="flex gap-2 shrink-0">
                     <button
-                      onClick={() => setRejectingDoc(rejectingDoc?.id === doc_.id ? null : { id: doc_.id, reason: "" })}
+                      onClick={() =>
+                        setRejectingDoc(
+                          rejectingDoc?.id === doc_.id ? null : { id: doc_.id, reason: "" }
+                        )
+                      }
                       disabled={approvingId === doc_.id}
                       className="flex items-center gap-1 px-2.5 py-1.5 border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-50 rounded-lg text-xs font-medium transition"
                     >
@@ -394,14 +797,20 @@ export default function DocumentsPage() {
                       disabled={approvingId === doc_.id}
                       className="flex items-center gap-1 px-2.5 py-1.5 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg text-xs font-medium transition"
                     >
-                      {approvingId === doc_.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                      {approvingId === doc_.id ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                      )}
                       Duyệt
                     </button>
                   </div>
                 </div>
                 {rejectingDoc?.id === doc_.id && (
                   <div className="px-3 pb-3 pt-0 space-y-2 border-t border-red-100 dark:border-red-900 bg-red-50 dark:bg-red-900/10">
-                    <p className="text-xs font-medium text-red-600 pt-2">Lý do từ chối <span className="text-red-500">*</span></p>
+                    <p className="text-xs font-medium text-red-600 pt-2">
+                      Lý do từ chối <span className="text-red-500">*</span>
+                    </p>
                     <textarea
                       autoFocus
                       rows={2}
@@ -419,7 +828,10 @@ export default function DocumentsPage() {
                       </button>
                       <button
                         onClick={() => {
-                          if (!rejectingDoc.reason.trim()) { toast.error("Vui lòng nhập lý do từ chối."); return; }
+                          if (!rejectingDoc.reason.trim()) {
+                            toast.error("Vui lòng nhập lý do từ chối.");
+                            return;
+                          }
                           handleApproveDoc(doc_.id, false, rejectingDoc.reason.trim());
                         }}
                         disabled={approvingId === doc_.id}
@@ -448,7 +860,10 @@ export default function DocumentsPage() {
         {breadcrumb.map((f) => (
           <span key={f.id} className="flex items-center gap-1">
             <ChevronRight className="w-3 h-3 text-slate-300" />
-            <button onClick={() => setCurrentFolderId(f.id)} className="text-slate-400 hover:text-blue-500 transition">
+            <button
+              onClick={() => setCurrentFolderId(f.id)}
+              className="text-slate-400 hover:text-blue-500 transition"
+            >
               {f.name}
             </button>
           </span>
@@ -466,23 +881,6 @@ export default function DocumentsPage() {
         />
       </div>
 
-      {/* New folder input */}
-      {showNewFolder && (
-        <div className="flex gap-2 items-center p-3 bg-blue-50 dark:bg-blue-900/10 border border-blue-200 rounded-xl">
-          <Folder className="w-4 h-4 text-blue-500 shrink-0" />
-          <input
-            autoFocus
-            value={newFolderName}
-            onChange={(e) => setNewFolderName(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleCreateFolder()}
-            placeholder="Tên thư mục..."
-            className="flex-1 text-sm bg-transparent border-none outline-none text-[var(--foreground)]"
-          />
-          <button onClick={handleCreateFolder} className="px-3 py-1 bg-blue-600 text-white text-xs rounded-lg">Tạo</button>
-          <button onClick={() => { setShowNewFolder(false); setNewFolderName(""); }} className="text-slate-400 hover:text-slate-600 text-xs">Huỷ</button>
-        </div>
-      )}
-
       {/* Sub-folders */}
       {subFolders.length > 0 && (
         <div>
@@ -495,10 +893,20 @@ export default function DocumentsPage() {
                 onClick={() => setCurrentFolderId(f.id)}
               >
                 <Folder className="w-8 h-8 text-amber-500 shrink-0" />
-                <span className="text-sm font-medium text-[var(--foreground)] truncate">{f.name}</span>
+                <div className="flex-1 min-w-0">
+                  <span className="text-sm font-medium text-[var(--foreground)] truncate block">{f.name}</span>
+                  {f.sharedWithUsers && f.sharedWithUsers.length > 0 && (
+                    <span className="text-[10px] text-blue-500 flex items-center gap-0.5">
+                      <Users className="w-2.5 h-2.5" /> {f.sharedWithUsers.length} người
+                    </span>
+                  )}
+                </div>
                 {canManage && (
                   <button
-                    onClick={(e) => { e.stopPropagation(); handleDeleteFolder(f.id); }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeleteFolder(f.id);
+                    }}
                     className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 p-1 text-red-400 hover:text-red-600 transition"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
@@ -512,24 +920,33 @@ export default function DocumentsPage() {
 
       {/* Documents */}
       <div>
-        {subFolders.length > 0 && <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Tài liệu</p>}
+        {subFolders.length > 0 && (
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Tài liệu</p>
+        )}
         {loading ? (
-          <div className="flex justify-center py-16"><Loader2 className="w-7 h-7 animate-spin text-blue-500" /></div>
+          <div className="flex justify-center py-16">
+            <Loader2 className="w-7 h-7 animate-spin text-blue-500" />
+          </div>
         ) : filteredDocs.length === 0 ? (
           <div className="flex flex-col items-center gap-3 py-16 text-slate-400 border-2 border-dashed border-[var(--border)] rounded-2xl">
             <FolderOpen className="w-12 h-12" />
             <p className="font-medium">Thư mục trống</p>
-            {canCreate && <p className="text-sm">Nhấn "Tải lên" hoặc "Thêm liên kết" để thêm tài liệu đầu tiên</p>}
+            {canCreate && (
+              <p className="text-sm">Nhấn "Tải lên" hoặc "Thêm liên kết" để thêm tài liệu đầu tiên</p>
+            )}
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {filteredDocs.map((doc_) => (
-              <div key={doc_.id} className={cn(
-                "group relative flex flex-col gap-3 p-4 bg-[var(--card)] border rounded-xl transition",
-                doc_.status === "pending"
-                  ? "border-amber-300 bg-amber-50/30 dark:bg-amber-900/10"
-                  : "border-[var(--border)] hover:border-blue-300"
-              )}>
+              <div
+                key={doc_.id}
+                className={cn(
+                  "group relative flex flex-col gap-3 p-4 bg-[var(--card)] border rounded-xl transition",
+                  doc_.status === "pending"
+                    ? "border-amber-300 bg-amber-50/30 dark:bg-amber-900/10"
+                    : "border-[var(--border)] hover:border-blue-300"
+                )}
+              >
                 {doc_.status === "pending" && (
                   <span className="absolute top-3 right-3 px-2 py-0.5 text-[10px] font-semibold bg-amber-100 text-amber-700 rounded-full border border-amber-200">
                     Chờ duyệt
@@ -539,11 +956,19 @@ export default function DocumentsPage() {
                   {fileIcon(doc_.fileType)}
                   <div className="flex-1 min-w-0 pr-14">
                     <p className="text-sm font-semibold text-[var(--foreground)] truncate">{doc_.name}</p>
-                    {doc_.description && <p className="text-xs text-slate-400 mt-0.5 line-clamp-2">{doc_.description}</p>}
+                    {doc_.description && (
+                      <p className="text-xs text-slate-400 mt-0.5 line-clamp-2">{doc_.description}</p>
+                    )}
                     <p className="text-[10px] text-slate-400 mt-1">
                       {doc_.ownerName} · {new Date(doc_.createdAt).toLocaleDateString("vi-VN")}
                       {doc_.fileSize ? ` · ${formatSize(doc_.fileSize)}` : ""}
                     </p>
+                    {doc_.sharedWithUsers && doc_.sharedWithUsers.length > 0 && (
+                      <p className="text-[10px] text-blue-500 mt-0.5 flex items-center gap-0.5">
+                        <Users className="w-2.5 h-2.5" />
+                        Chia sẻ với {doc_.sharedWithUsers.length} người
+                      </p>
+                    )}
                   </div>
                 </div>
 
@@ -558,7 +983,9 @@ export default function DocumentsPage() {
                     {doc_.fileType === "link" ? "Mở liên kết" : "Tải xuống"}
                   </a>
                   {doc_.tags.map((tag) => (
-                    <span key={tag} className="px-2 py-0.5 text-[10px] bg-[var(--muted)] text-slate-500 rounded-full">{tag}</span>
+                    <span key={tag} className="px-2 py-0.5 text-[10px] bg-[var(--muted)] text-slate-500 rounded-full">
+                      {tag}
+                    </span>
                   ))}
                 </div>
 
@@ -576,6 +1003,7 @@ export default function DocumentsPage() {
         )}
       </div>
 
+      {/* Modals */}
       {showAddLink && currentUser && (
         <AddLinkModal
           folderId={currentFolderId}
@@ -591,6 +1019,14 @@ export default function DocumentsPage() {
           currentUser={currentUser}
           canApprove={canApprove}
           onClose={() => setShowUpload(false)}
+        />
+      )}
+
+      {showNewFolder && currentUser && (
+        <CreateFolderModal
+          currentUser={currentUser}
+          onSave={handleCreateFolder}
+          onClose={() => setShowNewFolder(false)}
         />
       )}
     </div>

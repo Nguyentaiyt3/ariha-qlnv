@@ -591,6 +591,7 @@ export interface DocFolder {
   ownerId: string;
   department?: string;
   sharedWithRoles: UserRole[];
+  sharedWithUsers?: string[];
   color?: string;
   createdAt: string;
 }

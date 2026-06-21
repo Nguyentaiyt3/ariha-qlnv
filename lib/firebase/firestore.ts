@@ -524,7 +524,14 @@ export function subscribeDocuments(folderId: string | null, callback: (docs: Wor
     (snap) => {
       const docs = snap.docs
         .map((d) => ({ id: d.id, ...d.data() } as WorkDocument))
-        .filter((d) => canApprove || d.status === "published" || d.status === undefined || d.ownerId === userId)
+        .filter(
+          (d) =>
+            canApprove ||
+            d.status === "published" ||
+            d.status === undefined ||
+            d.ownerId === userId ||
+            (userId && d.sharedWithUsers?.includes(userId))
+        )
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
       callback(docs);
     },
