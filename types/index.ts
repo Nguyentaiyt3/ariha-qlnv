@@ -15,6 +15,10 @@ export interface User {
   avatar?: string;
   phone?: string;
   position?: string;
+  birthday?: string;
+  joinDate?: string;
+  exitDate?: string;
+  bio?: string;
   createdAt: string;
   dashboardProfiles?: DashboardProfile[];
   notificationPrefs?: NotificationPrefs;
@@ -339,6 +343,12 @@ export type NotificationType =
   | "risk_flag"
   | "completion_proposal"
   | "completion_reviewed"
+  | "request_submitted"
+  | "request_approved"
+  | "request_rejected"
+  | "birthday_reminder"
+  | "announcement_new"
+  | "channel_message"
   | "digest";
 
 export interface Notification {
@@ -484,4 +494,152 @@ export interface ApiResponse<T> {
   data?: T;
   error?: string;
   success: boolean;
+}
+
+// ─── REQUESTS / ĐƠN TỪ ──────────────────────────────────────
+
+export type RequestType =
+  | "leave"           // Nghỉ phép
+  | "overtime"        // Tăng ca
+  | "expense"         // Hoàn ứng chi phí
+  | "equipment"       // Mượn / cấp thiết bị
+  | "training"        // Đăng ký đào tạo
+  | "wfh"             // Làm việc từ xa
+  | "custom";         // Đơn tùy biến
+
+export type RequestStatus = "pending" | "approved" | "rejected" | "cancelled";
+
+export interface RequestFieldDef {
+  key: string;
+  label: string;
+  type: "text" | "textarea" | "date" | "daterange" | "number" | "select" | "file";
+  required: boolean;
+  placeholder?: string;
+  options?: string[];
+}
+
+export interface RequestTemplate {
+  id: string;
+  name: string;
+  type: RequestType;
+  description?: string;
+  icon?: string;
+  fields: RequestFieldDef[];
+  approverRole: UserRole;
+  isActive: boolean;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface WorkRequest {
+  id: string;
+  templateId: string;
+  templateName: string;
+  type: RequestType;
+  title: string;
+  submittedBy: string;
+  submittedByName: string;
+  submittedByAvatar?: string;
+  department?: string;
+  formData: Record<string, string | number | string[]>;
+  status: RequestStatus;
+  reviewedBy?: string;
+  reviewedByName?: string;
+  reviewedAt?: string;
+  reviewComment?: string;
+  attachments?: Attachment[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ─── DOCUMENTS / TÀI LIỆU ────────────────────────────────────
+
+export type DocFileType = "image" | "pdf" | "word" | "excel" | "powerpoint" | "video" | "link" | "other";
+
+export interface DocFolder {
+  id: string;
+  name: string;
+  parentId: string | null;
+  ownerId: string;
+  department?: string;
+  sharedWithRoles: UserRole[];
+  color?: string;
+  createdAt: string;
+}
+
+export interface WorkDocument {
+  id: string;
+  name: string;
+  description?: string;
+  folderId: string | null;
+  fileUrl: string;
+  fileType: DocFileType;
+  fileSize?: number;
+  mimeType?: string;
+  ownerId: string;
+  ownerName: string;
+  department?: string;
+  tags: string[];
+  sharedWithRoles: UserRole[];
+  sharedWithUsers: string[];
+  taskId?: string;
+  downloadCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ─── INTRANET / MẠNG NỘI BỘ ──────────────────────────────────
+
+export interface Announcement {
+  id: string;
+  title: string;
+  content: string;
+  authorId: string;
+  authorName: string;
+  authorRole: UserRole;
+  authorAvatar?: string;
+  targetRoles: UserRole[];
+  attachments: Attachment[];
+  reactions: Record<string, string[]>; // emoji → userIds[]
+  pinned: boolean;
+  commentsCount: number;
+  viewedBy: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AnnouncementComment {
+  id: string;
+  announcementId: string;
+  authorId: string;
+  authorName: string;
+  authorAvatar?: string;
+  content: string;
+  createdAt: string;
+}
+
+export interface Channel {
+  id: string;
+  name: string;
+  description?: string;
+  type: "public" | "private" | "department";
+  department?: string;
+  memberIds: string[];
+  createdBy: string;
+  lastMessageAt?: string;
+  lastMessagePreview?: string;
+  createdAt: string;
+}
+
+export interface ChannelMessage {
+  id: string;
+  channelId: string;
+  senderId: string;
+  senderName: string;
+  senderAvatar?: string;
+  content: string;
+  attachments: Attachment[];
+  reactions: Record<string, string[]>;
+  timestamp: string;
+  edited?: boolean;
 }

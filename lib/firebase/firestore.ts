@@ -22,6 +22,9 @@ import { getDb } from "./config";
 import type {
   User, Task, Message, Notification, EmailLog, CalendarEvent,
   Workflow, MilestoneConfig, KPIFramework, Evaluation, AuditEvent,
+  RequestTemplate, WorkRequest,
+  DocFolder, WorkDocument,
+  Announcement, AnnouncementComment, Channel, ChannelMessage,
 } from "@/types";
 import { generateId } from "@/lib/utils";
 
@@ -363,4 +366,215 @@ export async function getEvaluations(userId: string): Promise<Evaluation[]> {
 export async function saveEvaluation(evaluation: Evaluation): Promise<void> {
   const db = getDb();
   await setDoc(doc(db, "evaluations", evaluation.id), evaluation, { merge: true });
+}
+
+// ─── REQUEST TEMPLATES ────────────────────────────────────────
+
+export async function getRequestTemplates(): Promise<RequestTemplate[]> {
+  const db = getDb();
+  const snap = await getDocs(query(collection(db, "requestTemplates"), where("isActive", "==", true), orderBy("createdAt", "asc")));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as RequestTemplate));
+}
+
+export async function saveRequestTemplate(t: RequestTemplate): Promise<void> {
+  const db = getDb();
+  await setDoc(doc(db, "requestTemplates", t.id), t, { merge: true });
+}
+
+export async function deleteRequestTemplate(id: string): Promise<void> {
+  const db = getDb();
+  await updateDoc(doc(db, "requestTemplates", id), { isActive: false });
+}
+
+// ─── WORK REQUESTS / ĐƠN TỪ ─────────────────────────────────
+
+export async function getRequests(constraints: QueryConstraint[] = []): Promise<WorkRequest[]> {
+  const db = getDb();
+  const snap = await getDocs(query(collection(db, "requests"), orderBy("createdAt", "desc"), ...constraints));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as WorkRequest));
+}
+
+export async function getRequest(id: string): Promise<WorkRequest | null> {
+  const db = getDb();
+  const snap = await getDoc(doc(db, "requests", id));
+  return snap.exists() ? ({ id: snap.id, ...snap.data() } as WorkRequest) : null;
+}
+
+export async function saveRequest(r: WorkRequest): Promise<void> {
+  const db = getDb();
+  await setDoc(doc(db, "requests", r.id), { ...r, updatedAt: new Date().toISOString() }, { merge: true });
+}
+
+export async function updateRequest(id: string, updates: Partial<WorkRequest>): Promise<void> {
+  const db = getDb();
+  await updateDoc(doc(db, "requests", id), { ...updates, updatedAt: new Date().toISOString() });
+}
+
+export function subscribeRequests(userId: string, isManager: boolean, callback: (reqs: WorkRequest[]) => void) {
+  const db = getDb();
+  const q = isManager
+    ? query(collection(db, "requests"), orderBy("createdAt", "desc"), limit(100))
+    : query(collection(db, "requests"), where("submittedBy", "==", userId), orderBy("createdAt", "desc"));
+  return onSnapshot(q,
+    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as WorkRequest))),
+    (err) => console.error("[subscribeRequests]", err.code)
+  );
+}
+
+// ─── DOCUMENTS / TÀI LIỆU ────────────────────────────────────
+
+export async function getFolders(): Promise<DocFolder[]> {
+  const db = getDb();
+  const snap = await getDocs(query(collection(db, "folders"), orderBy("createdAt", "asc")));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as DocFolder));
+}
+
+export async function saveFolder(f: DocFolder): Promise<void> {
+  const db = getDb();
+  await setDoc(doc(db, "folders", f.id), f, { merge: true });
+}
+
+export async function deleteFolder(id: string): Promise<void> {
+  const db = getDb();
+  await deleteDoc(doc(db, "folders", id));
+}
+
+export async function getDocuments(folderId: string | null): Promise<WorkDocument[]> {
+  const db = getDb();
+  const q = folderId === null
+    ? query(collection(db, "documents"), where("folderId", "==", null), orderBy("createdAt", "desc"))
+    : query(collection(db, "documents"), where("folderId", "==", folderId), orderBy("createdAt", "desc"));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as WorkDocument));
+}
+
+export async function saveDocument(doc_: WorkDocument): Promise<void> {
+  const db = getDb();
+  await setDoc(doc(db, "documents", doc_.id), { ...doc_, updatedAt: new Date().toISOString() }, { merge: true });
+}
+
+export async function deleteDocument(id: string): Promise<void> {
+  const db = getDb();
+  await deleteDoc(doc(db, "documents", id));
+}
+
+export function subscribeDocuments(folderId: string | null, callback: (docs: WorkDocument[]) => void) {
+  const db = getDb();
+  const q = folderId === null
+    ? query(collection(db, "documents"), where("folderId", "==", null), orderBy("createdAt", "desc"))
+    : query(collection(db, "documents"), where("folderId", "==", folderId), orderBy("createdAt", "desc"));
+  return onSnapshot(q,
+    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as WorkDocument))),
+    (err) => console.error("[subscribeDocuments]", err.code)
+  );
+}
+
+// ─── ANNOUNCEMENTS / MẠng NỘI BỘ ────────────────────────────
+
+export async function getAnnouncements(): Promise<Announcement[]> {
+  const db = getDb();
+  const snap = await getDocs(query(collection(db, "announcements"), orderBy("pinned", "desc"), orderBy("createdAt", "desc"), limit(50)));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Announcement));
+}
+
+export async function saveAnnouncement(a: Announcement): Promise<void> {
+  const db = getDb();
+  await setDoc(doc(db, "announcements", a.id), { ...a, updatedAt: new Date().toISOString() }, { merge: true });
+}
+
+export async function deleteAnnouncement(id: string): Promise<void> {
+  const db = getDb();
+  await deleteDoc(doc(db, "announcements", id));
+}
+
+export async function reactToAnnouncement(announcementId: string, emoji: string, userId: string, add: boolean): Promise<void> {
+  const db = getDb();
+  const ref = doc(db, "announcements", announcementId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return;
+  const reactions: Record<string, string[]> = (snap.data().reactions as Record<string, string[]>) ?? {};
+  const users = reactions[emoji] ?? [];
+  reactions[emoji] = add ? [...new Set([...users, userId])] : users.filter((u) => u !== userId);
+  if (reactions[emoji].length === 0) delete reactions[emoji];
+  await updateDoc(ref, { reactions });
+}
+
+export async function markAnnouncementViewed(announcementId: string, userId: string): Promise<void> {
+  const db = getDb();
+  const ref = doc(db, "announcements", announcementId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return;
+  const viewedBy: string[] = snap.data().viewedBy ?? [];
+  if (!viewedBy.includes(userId)) {
+    await updateDoc(ref, { viewedBy: [...viewedBy, userId] });
+  }
+}
+
+export function subscribeAnnouncements(callback: (items: Announcement[]) => void) {
+  const db = getDb();
+  return onSnapshot(
+    query(collection(db, "announcements"), orderBy("pinned", "desc"), orderBy("createdAt", "desc"), limit(50)),
+    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Announcement))),
+    (err) => console.error("[subscribeAnnouncements]", err.code)
+  );
+}
+
+export async function getAnnouncementComments(announcementId: string): Promise<AnnouncementComment[]> {
+  const db = getDb();
+  const snap = await getDocs(query(collection(db, "announcements", announcementId, "comments"), orderBy("createdAt", "asc")));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as AnnouncementComment));
+}
+
+export async function addAnnouncementComment(announcementId: string, comment: Omit<AnnouncementComment, "id">): Promise<void> {
+  const db = getDb();
+  const id = generateId("ac");
+  await setDoc(doc(db, "announcements", announcementId, "comments", id), { ...comment, id });
+  await updateDoc(doc(db, "announcements", announcementId), { commentsCount: (await getDoc(doc(db, "announcements", announcementId))).data()?.commentsCount + 1 ?? 1 });
+}
+
+// ─── CHANNELS / NHÓM CHAT ────────────────────────────────────
+
+export async function getChannels(userId: string): Promise<Channel[]> {
+  const db = getDb();
+  const [publicSnap, memberSnap] = await Promise.all([
+    getDocs(query(collection(db, "channels"), where("type", "==", "public"), orderBy("lastMessageAt", "desc"))),
+    getDocs(query(collection(db, "channels"), where("memberIds", "array-contains", userId), orderBy("lastMessageAt", "desc"))),
+  ]);
+  const map = new Map<string, Channel>();
+  [...publicSnap.docs, ...memberSnap.docs].forEach((d) => map.set(d.id, { id: d.id, ...d.data() } as Channel));
+  return Array.from(map.values()).sort((a, b) => (b.lastMessageAt ?? "").localeCompare(a.lastMessageAt ?? ""));
+}
+
+export async function saveChannel(ch: Channel): Promise<void> {
+  const db = getDb();
+  await setDoc(doc(db, "channels", ch.id), ch, { merge: true });
+}
+
+export function subscribeChannels(userId: string, callback: (channels: Channel[]) => void) {
+  const db = getDb();
+  return onSnapshot(
+    query(collection(db, "channels"), where("memberIds", "array-contains", userId), orderBy("lastMessageAt", "desc")),
+    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Channel))),
+    (err) => console.error("[subscribeChannels]", err.code)
+  );
+}
+
+export function subscribeChannelMessages(channelId: string, callback: (msgs: ChannelMessage[]) => void) {
+  const db = getDb();
+  return onSnapshot(
+    query(collection(db, "channels", channelId, "messages"), orderBy("timestamp", "asc"), limit(100)),
+    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as ChannelMessage))),
+    (err) => console.error("[subscribeChannelMessages]", err.code)
+  );
+}
+
+export async function sendChannelMessage(channelId: string, msg: Omit<ChannelMessage, "id">): Promise<void> {
+  const db = getDb();
+  const id = generateId("cmsg");
+  const message: ChannelMessage = { ...msg, id };
+  await setDoc(doc(db, "channels", channelId, "messages", id), message);
+  await updateDoc(doc(db, "channels", channelId), {
+    lastMessageAt: msg.timestamp,
+    lastMessagePreview: msg.content.slice(0, 80),
+  });
 }

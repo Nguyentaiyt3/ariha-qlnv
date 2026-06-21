@@ -5,7 +5,7 @@ import Link from "next/link";
 import {
   LayoutDashboard, CheckSquare, Calendar, TrendingUp, Users,
   GitBranch, BarChart3, Bell, Settings, LogOut, Building2,
-  ChevronLeft, ChevronRight, X
+  ChevronLeft, ChevronRight, X, FileText, FolderOpen, Globe,
 } from "lucide-react";
 import { cn, getInitials, avatarColor, roleLabel } from "@/lib/utils";
 import { getVisibleNavItems } from "@/lib/rbac/permissions";
@@ -16,7 +16,7 @@ import { toast } from "sonner";
 
 const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
   LayoutDashboard, CheckSquare, Calendar, TrendingUp, Users,
-  GitBranch, BarChart3, Bell, Settings,
+  GitBranch, BarChart3, Bell, Settings, FileText, FolderOpen, Globe,
 };
 
 interface SidebarProps {
