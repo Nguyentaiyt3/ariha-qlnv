@@ -1,4 +1,4 @@
-import { ref, uploadString, getDownloadURL, deleteObject, listAll } from "firebase/storage";
+import { ref, uploadString, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import { getFirebaseStorage } from "./config";
 import { generateId } from "@/lib/utils";
 
@@ -16,6 +16,16 @@ export async function uploadBase64File(
 
   const base64Data = base64.includes(",") ? base64.split(",")[1] : base64;
   await uploadString(storageRef, base64Data, "base64", { contentType: mimeType });
+  return await getDownloadURL(storageRef);
+}
+
+export async function uploadFile(file: File, folder = "uploads"): Promise<string> {
+  const storage = getFirebaseStorage();
+  const id = generateId("file");
+  const ext = file.name.split(".").pop() ?? "bin";
+  const path = `${folder}/${id}.${ext}`;
+  const storageRef = ref(storage, path);
+  await uploadBytes(storageRef, file, { contentType: file.type });
   return await getDownloadURL(storageRef);
 }
 

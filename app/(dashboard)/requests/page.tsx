@@ -4,7 +4,7 @@ import { useEffect, useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import {
   FileText, Plus, Clock, CheckCircle2, XCircle, Loader2,
-  ChevronRight, Filter, Search, Inbox,
+  ChevronRight, Search, Inbox, Paperclip, X as XIcon, FileIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -13,8 +13,9 @@ import { hasPermission } from "@/lib/rbac/permissions";
 import {
   getRequestTemplates, subscribeRequests, saveRequest,
 } from "@/lib/firebase/firestore";
+import { uploadFile } from "@/lib/firebase/storage";
 import { generateId } from "@/lib/utils";
-import type { RequestTemplate, RequestStatus } from "@/types";
+import type { RequestTemplate, RequestStatus, Attachment } from "@/types";
 
 // ── Built-in default templates (seed nếu chưa có trong Firestore) ──────────
 const DEFAULT_TEMPLATES: Omit<RequestTemplate, "id" | "createdBy" | "createdAt">[] = [
@@ -95,7 +96,27 @@ function CreateRequestModal({
   onClose: () => void;
 }) {
   const [form, setForm] = useState<Record<string, string>>({});
+  const [files, setFiles] = useState<File[]>([]);
   const [saving, setSaving] = useState(false);
+
+  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const picked = Array.from(e.target.files ?? []);
+    setFiles((prev) => {
+      const existing = new Set(prev.map((f) => f.name + f.size));
+      return [...prev, ...picked.filter((f) => !existing.has(f.name + f.size))];
+    });
+    e.target.value = "";
+  }
+
+  function removeFile(idx: number) {
+    setFiles((prev) => prev.filter((_, i) => i !== idx));
+  }
+
+  function formatBytes(bytes: number) {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -107,7 +128,15 @@ function CreateRequestModal({
     }
     setSaving(true);
     try {
-      const req: WorkRequest = {
+      // Upload all attachments first
+      const attachments: Attachment[] = await Promise.all(
+        files.map(async (file) => {
+          const url = await uploadFile(file, "requests");
+          return { id: generateId("att"), name: file.name, url, type: file.type, size: file.size };
+        })
+      );
+
+      const req = {
         id: generateId("req"),
         templateId: template.id,
         templateName: template.name,
@@ -118,14 +147,14 @@ function CreateRequestModal({
         submittedByAvatar: currentUser.avatar,
         department: currentUser.department,
         formData: form,
-        status: "pending",
-        attachments: [],
+        status: "pending" as const,
+        attachments,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
       await saveRequest(req);
       toast.success("Đã gửi đơn thành công!");
-      onClose(); // subscribeRequests will update the list in real-time
+      onClose();
     } catch {
       toast.error("Gửi đơn thất bại.");
     } finally {
@@ -181,6 +210,32 @@ function CreateRequestModal({
               )}
             </div>
           ))}
+
+          {/* Attachments */}
+          <div className="space-y-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+            <label className="text-sm font-medium text-[var(--foreground)] flex items-center gap-1.5">
+              <Paperclip className="w-4 h-4 text-slate-400" /> Minh chứng đính kèm
+            </label>
+            <label className="flex items-center gap-2 px-3 py-2.5 border border-dashed border-slate-300 dark:border-slate-600 rounded-xl cursor-pointer hover:border-blue-400 hover:bg-blue-50/50 dark:hover:bg-blue-900/10 transition">
+              <Paperclip className="w-4 h-4 text-blue-500 shrink-0" />
+              <span className="text-sm text-slate-500">Chọn file (ảnh, PDF, Word…)</span>
+              <input type="file" multiple className="hidden" onChange={handleFileChange} accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt" />
+            </label>
+            {files.length > 0 && (
+              <ul className="space-y-1.5">
+                {files.map((file, idx) => (
+                  <li key={idx} className="flex items-center gap-2 px-3 py-2 bg-slate-50 dark:bg-slate-900 rounded-xl text-sm">
+                    <FileIcon className="w-4 h-4 text-blue-400 shrink-0" />
+                    <span className="flex-1 truncate text-[var(--foreground)]">{file.name}</span>
+                    <span className="text-xs text-slate-400 shrink-0">{formatBytes(file.size)}</span>
+                    <button type="button" onClick={() => removeFile(idx)} className="text-slate-300 hover:text-red-500 transition shrink-0">
+                      <XIcon className="w-4 h-4" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </form>
 
         <div className="p-5 border-t border-slate-200 dark:border-slate-700 flex gap-3">
@@ -192,8 +247,14 @@ function CreateRequestModal({
             disabled={saving}
             className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-xl text-sm font-semibold transition flex items-center justify-center gap-2"
           >
-            {saving && <Loader2 className="w-4 h-4 animate-spin" />}
-            Gửi đơn
+            {saving ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                {files.length > 0 ? "Đang tải lên..." : "Đang gửi..."}
+              </>
+            ) : (
+              <>Gửi đơn{files.length > 0 ? ` (${files.length} file)` : ""}</>
+            )}
           </button>
         </div>
       </div>
