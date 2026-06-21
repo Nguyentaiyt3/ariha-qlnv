@@ -85,6 +85,17 @@ const STATUS_CONFIG: Record<RequestStatus, { label: string; color: string; Icon:
   cancelled: { label: "Đã huỷ",      color: "text-slate-500 bg-slate-50 border-slate-200",   Icon: XCircle },
 };
 
+// ── helpers ──────────────────────────────────────────────────────────────────
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+type PendingFile = { kind: "file"; file: File; preview?: string };
+type PendingLink = { kind: "link"; url: string; name: string };
+type PendingAttachment = PendingFile | PendingLink;
+
 // ── CreateRequestModal ────────────────────────────────────────────────────────
 function CreateRequestModal({
   template,
@@ -96,26 +107,41 @@ function CreateRequestModal({
   onClose: () => void;
 }) {
   const [form, setForm] = useState<Record<string, string>>({});
-  const [files, setFiles] = useState<File[]>([]);
+  const [pending, setPending] = useState<PendingAttachment[]>([]);
+  const [linkUrl, setLinkUrl] = useState("");
+  const [linkName, setLinkName] = useState("");
+  const [showLinkInput, setShowLinkInput] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const picked = Array.from(e.target.files ?? []);
-    setFiles((prev) => {
-      const existing = new Set(prev.map((f) => f.name + f.size));
-      return [...prev, ...picked.filter((f) => !existing.has(f.name + f.size))];
+  function addFiles(fileList: FileList | null) {
+    if (!fileList) return;
+    const picked = Array.from(fileList);
+    setPending((prev) => {
+      const existing = new Set(prev.filter((p): p is PendingFile => p.kind === "file").map((p) => p.file.name + p.file.size));
+      const newFiles: PendingFile[] = picked
+        .filter((f) => !existing.has(f.name + f.size))
+        .map((file) => {
+          const preview = file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined;
+          return { kind: "file", file, preview };
+        });
+      return [...prev, ...newFiles];
     });
-    e.target.value = "";
   }
 
-  function removeFile(idx: number) {
-    setFiles((prev) => prev.filter((_, i) => i !== idx));
+  function addLink() {
+    const url = linkUrl.trim();
+    if (!url) return;
+    if (!/^https?:\/\/.+/.test(url)) { toast.error("Link phải bắt đầu bằng http:// hoặc https://"); return; }
+    setPending((prev) => [...prev, { kind: "link", url, name: linkName.trim() || url }]);
+    setLinkUrl(""); setLinkName(""); setShowLinkInput(false);
   }
 
-  function formatBytes(bytes: number) {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  function remove(idx: number) {
+    setPending((prev) => {
+      const item = prev[idx];
+      if (item.kind === "file" && item.preview) URL.revokeObjectURL(item.preview);
+      return prev.filter((_, i) => i !== idx);
+    });
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -128,15 +154,17 @@ function CreateRequestModal({
     }
     setSaving(true);
     try {
-      // Upload all attachments first
       const attachments: Attachment[] = await Promise.all(
-        files.map(async (file) => {
-          const url = await uploadFile(file, "requests");
-          return { id: generateId("att"), name: file.name, url, type: file.type, size: file.size };
+        pending.map(async (p) => {
+          if (p.kind === "link") {
+            return { id: generateId("att"), name: p.name, url: p.url, type: "link" };
+          }
+          const url = await uploadFile(p.file, "requests");
+          return { id: generateId("att"), name: p.file.name, url, type: p.file.type, size: p.file.size };
         })
       );
 
-      const req = {
+      await saveRequest({
         id: generateId("req"),
         templateId: template.id,
         templateName: template.name,
@@ -147,12 +175,11 @@ function CreateRequestModal({
         submittedByAvatar: currentUser.avatar,
         department: currentUser.department,
         formData: form,
-        status: "pending" as const,
+        status: "pending",
         attachments,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-      };
-      await saveRequest(req);
+      });
       toast.success("Đã gửi đơn thành công!");
       onClose();
     } catch {
@@ -212,23 +239,99 @@ function CreateRequestModal({
           ))}
 
           {/* Attachments */}
-          <div className="space-y-2 pt-2 border-t border-slate-100 dark:border-slate-800">
-            <label className="text-sm font-medium text-[var(--foreground)] flex items-center gap-1.5">
+          <div className="space-y-3 pt-2 border-t border-slate-100 dark:border-slate-800">
+            <p className="text-sm font-medium text-[var(--foreground)] flex items-center gap-1.5">
               <Paperclip className="w-4 h-4 text-slate-400" /> Minh chứng đính kèm
-            </label>
-            <label className="flex items-center gap-2 px-3 py-2.5 border border-dashed border-slate-300 dark:border-slate-600 rounded-xl cursor-pointer hover:border-blue-400 hover:bg-blue-50/50 dark:hover:bg-blue-900/10 transition">
-              <Paperclip className="w-4 h-4 text-blue-500 shrink-0" />
-              <span className="text-sm text-slate-500">Chọn file (ảnh, PDF, Word…)</span>
-              <input type="file" multiple className="hidden" onChange={handleFileChange} accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt" />
-            </label>
-            {files.length > 0 && (
-              <ul className="space-y-1.5">
-                {files.map((file, idx) => (
-                  <li key={idx} className="flex items-center gap-2 px-3 py-2 bg-slate-50 dark:bg-slate-900 rounded-xl text-sm">
-                    <FileIcon className="w-4 h-4 text-blue-400 shrink-0" />
-                    <span className="flex-1 truncate text-[var(--foreground)]">{file.name}</span>
-                    <span className="text-xs text-slate-400 shrink-0">{formatBytes(file.size)}</span>
-                    <button type="button" onClick={() => removeFile(idx)} className="text-slate-300 hover:text-red-500 transition shrink-0">
+            </p>
+
+            {/* 4 source buttons */}
+            <div className="grid grid-cols-4 gap-2">
+              {/* File from device */}
+              <label className="flex flex-col items-center gap-1.5 p-3 border border-dashed border-slate-200 dark:border-slate-700 rounded-xl cursor-pointer hover:border-blue-400 hover:bg-blue-50/50 dark:hover:bg-blue-900/10 transition text-center">
+                <FileIcon className="w-5 h-5 text-blue-500" />
+                <span className="text-[11px] text-slate-500 leading-tight">Tệp tin</span>
+                <input type="file" multiple className="hidden"
+                  accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.zip,.rar"
+                  onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
+              </label>
+
+              {/* Image from gallery */}
+              <label className="flex flex-col items-center gap-1.5 p-3 border border-dashed border-slate-200 dark:border-slate-700 rounded-xl cursor-pointer hover:border-green-400 hover:bg-green-50/50 dark:hover:bg-green-900/10 transition text-center">
+                <span className="text-xl leading-none">🖼️</span>
+                <span className="text-[11px] text-slate-500 leading-tight">Thư viện</span>
+                <input type="file" multiple className="hidden" accept="image/*"
+                  onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
+              </label>
+
+              {/* Camera capture */}
+              <label className="flex flex-col items-center gap-1.5 p-3 border border-dashed border-slate-200 dark:border-slate-700 rounded-xl cursor-pointer hover:border-purple-400 hover:bg-purple-50/50 dark:hover:bg-purple-900/10 transition text-center">
+                <span className="text-xl leading-none">📷</span>
+                <span className="text-[11px] text-slate-500 leading-tight">Camera</span>
+                <input type="file" className="hidden" accept="image/*" capture="environment"
+                  onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }} />
+              </label>
+
+              {/* Link */}
+              <button type="button"
+                onClick={() => setShowLinkInput((v) => !v)}
+                className="flex flex-col items-center gap-1.5 p-3 border border-dashed border-slate-200 dark:border-slate-700 rounded-xl hover:border-orange-400 hover:bg-orange-50/50 dark:hover:bg-orange-900/10 transition text-center">
+                <span className="text-xl leading-none">🔗</span>
+                <span className="text-[11px] text-slate-500 leading-tight">Link URL</span>
+              </button>
+            </div>
+
+            {/* Link input */}
+            {showLinkInput && (
+              <div className="space-y-2 p-3 bg-orange-50 dark:bg-orange-900/10 border border-orange-200 dark:border-orange-800 rounded-xl">
+                <input
+                  value={linkUrl}
+                  onChange={(e) => setLinkUrl(e.target.value)}
+                  placeholder="https://..."
+                  className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-orange-400"
+                />
+                <input
+                  value={linkName}
+                  onChange={(e) => setLinkName(e.target.value)}
+                  placeholder="Tên hiển thị (tuỳ chọn)"
+                  className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-orange-400"
+                />
+                <div className="flex gap-2">
+                  <button type="button" onClick={addLink}
+                    className="flex-1 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-xs font-semibold rounded-lg transition">
+                    Thêm link
+                  </button>
+                  <button type="button" onClick={() => { setShowLinkInput(false); setLinkUrl(""); setLinkName(""); }}
+                    className="px-3 py-1.5 border border-slate-200 dark:border-slate-700 text-xs rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+                    Huỷ
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Pending list */}
+            {pending.length > 0 && (
+              <ul className="space-y-2">
+                {pending.map((item, idx) => (
+                  <li key={idx} className="flex items-center gap-2 px-3 py-2 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                    {item.kind === "link" ? (
+                      <>
+                        <span className="text-base leading-none shrink-0">🔗</span>
+                        <span className="flex-1 truncate text-sm text-blue-600 dark:text-blue-400">{item.name}</span>
+                      </>
+                    ) : item.preview ? (
+                      <>
+                        <img src={item.preview} alt="" className="w-8 h-8 rounded object-cover shrink-0 border border-slate-200" />
+                        <span className="flex-1 truncate text-sm text-[var(--foreground)]">{item.file.name}</span>
+                        <span className="text-xs text-slate-400 shrink-0">{formatBytes(item.file.size)}</span>
+                      </>
+                    ) : (
+                      <>
+                        <FileIcon className="w-4 h-4 text-blue-400 shrink-0" />
+                        <span className="flex-1 truncate text-sm text-[var(--foreground)]">{item.file.name}</span>
+                        <span className="text-xs text-slate-400 shrink-0">{formatBytes(item.file.size)}</span>
+                      </>
+                    )}
+                    <button type="button" onClick={() => remove(idx)} className="text-slate-300 hover:text-red-500 transition shrink-0 ml-1">
                       <XIcon className="w-4 h-4" />
                     </button>
                   </li>
@@ -250,10 +353,10 @@ function CreateRequestModal({
             {saving ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
-                {files.length > 0 ? "Đang tải lên..." : "Đang gửi..."}
+                {pending.some((p) => p.kind === "file") ? "Đang tải lên..." : "Đang gửi..."}
               </>
             ) : (
-              <>Gửi đơn{files.length > 0 ? ` (${files.length} file)` : ""}</>
+              <>Gửi đơn{pending.length > 0 ? ` (${pending.length} đính kèm)` : ""}</>
             )}
           </button>
         </div>

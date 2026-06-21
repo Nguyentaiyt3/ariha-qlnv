@@ -158,30 +158,46 @@ export default function RequestDetailPage() {
         <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5 space-y-3">
           <h2 className="text-sm font-semibold text-[var(--foreground)] flex items-center gap-2">
             <Paperclip className="w-4 h-4 text-blue-500" /> Minh chứng đính kèm
-            <span className="text-xs font-normal text-slate-400">({request.attachments.length} file)</span>
+            <span className="text-xs font-normal text-slate-400">({request.attachments.length})</span>
           </h2>
-          <ul className="space-y-2">
-            {request.attachments.map((att) => (
-              <li key={att.id} className="flex items-center gap-3 px-3 py-2.5 bg-slate-50 dark:bg-slate-900 rounded-xl">
-                <FileText className="w-4 h-4 text-blue-400 shrink-0" />
-                <span className="flex-1 text-sm text-[var(--foreground)] truncate">{att.name}</span>
-                {att.size && (
-                  <span className="text-xs text-slate-400 shrink-0">
-                    {att.size < 1024 * 1024 ? `${(att.size / 1024).toFixed(1)} KB` : `${(att.size / (1024 * 1024)).toFixed(1)} MB`}
-                  </span>
-                )}
-                <a
-                  href={att.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  download={att.name}
-                  className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-blue-600 border border-blue-200 rounded-lg hover:bg-blue-50 transition shrink-0"
-                >
-                  <Download className="w-3.5 h-3.5" /> Tải về
+
+          {/* Image grid */}
+          {request.attachments.some((a) => a.type.startsWith("image/")) && (
+            <div className="grid grid-cols-3 gap-2">
+              {request.attachments.filter((a) => a.type.startsWith("image/")).map((att) => (
+                <a key={att.id} href={att.url} target="_blank" rel="noopener noreferrer"
+                  className="block aspect-square rounded-xl overflow-hidden border border-[var(--border)] hover:opacity-90 transition">
+                  <img src={att.url} alt={att.name} className="w-full h-full object-cover" />
                 </a>
-              </li>
-            ))}
-          </ul>
+              ))}
+            </div>
+          )}
+
+          {/* Non-image files + links */}
+          {request.attachments.filter((a) => !a.type.startsWith("image/")).length > 0 && (
+            <ul className="space-y-2">
+              {request.attachments.filter((a) => !a.type.startsWith("image/")).map((att) => (
+                <li key={att.id} className="flex items-center gap-3 px-3 py-2.5 bg-slate-50 dark:bg-slate-900 rounded-xl">
+                  {att.type === "link"
+                    ? <span className="text-base leading-none shrink-0">🔗</span>
+                    : <FileText className="w-4 h-4 text-blue-400 shrink-0" />}
+                  <span className="flex-1 text-sm text-[var(--foreground)] truncate">{att.name}</span>
+                  {att.size && (
+                    <span className="text-xs text-slate-400 shrink-0">
+                      {att.size < 1024 * 1024 ? `${(att.size / 1024).toFixed(1)} KB` : `${(att.size / (1024 * 1024)).toFixed(1)} MB`}
+                    </span>
+                  )}
+                  <a href={att.url} target="_blank" rel="noopener noreferrer"
+                    {...(att.type !== "link" && { download: att.name })}
+                    className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-blue-600 border border-blue-200 rounded-lg hover:bg-blue-50 transition shrink-0">
+                    {att.type === "link"
+                      ? <><span>Mở</span></>
+                      : <><Download className="w-3.5 h-3.5" /> Tải về</>}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 
