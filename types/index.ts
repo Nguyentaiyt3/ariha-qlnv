@@ -252,11 +252,30 @@ export interface WorkflowStep {
   durationDays?: number;
 }
 
+export interface WorkflowNode {
+  id: string;
+  name: string;
+  description?: string;
+  department?: string;
+  status: "todo" | "in_progress" | "done" | "blocked";
+  position: { x: number; y: number };
+}
+
+export interface WorkflowEdge {
+  id: string;
+  source: string;
+  target: string; // nodeId or "ext::workflowId::nodeId"
+  label?: string;
+}
+
 export interface Workflow {
   id: string;
   name: string;
   description?: string;
   steps: WorkflowStep[];
+  nodes?: WorkflowNode[];
+  edges?: WorkflowEdge[];
+  departments?: string[];
   department?: string;
   status: "pending" | "published";
   createdBy: string;
