@@ -4,7 +4,7 @@ import { useEffect, useState, useRef, useMemo } from "react";
 import {
   Globe, Plus, Send, Loader2, Pin, MessageSquare,
   ChevronDown, ChevronUp, Hash, Lock, Megaphone, CheckCircle2, XCircle, Clock,
-  Search, Users, X,
+  Search, Users, X, Settings, Trash2, UserPlus, UserMinus,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn, getInitials, avatarColor } from "@/lib/utils";
@@ -16,7 +16,8 @@ import {
   subscribeAnnouncements, saveAnnouncement, deleteAnnouncement,
   reactToAnnouncement, markAnnouncementViewed, approveAnnouncement, addNotification,
   getAnnouncementComments, addAnnouncementComment,
-  subscribeChannels, saveChannel, subscribeChannelMessages, sendChannelMessage,
+  subscribeChannels, saveChannel, updateChannel, deleteChannel,
+  subscribeChannelMessages, sendChannelMessage,
 } from "@/lib/firebase/firestore";
 import type { Announcement, Channel, ChannelMessage, AnnouncementComment, User } from "@/types";
 
@@ -558,6 +559,358 @@ function CreateChannelModal({
   );
 }
 
+// ── Manage channel modal ──────────────────────────────────────────────────────
+function ManageChannelModal({
+  channel,
+  allUsers,
+  currentUser,
+  canManage,
+  onUpdate,
+  onDelete,
+  onClose,
+}: {
+  channel: Channel;
+  allUsers: User[];
+  currentUser: { id: string; name: string };
+  canManage: boolean;
+  onUpdate: (id: string, data: Partial<Channel>) => Promise<void>;
+  onDelete: (id: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [tab, setTab] = useState<"members" | "settings">("members");
+  const [name, setName] = useState(channel.name);
+  const [description, setDescription] = useState(channel.description ?? "");
+  const [memberIds, setMemberIds] = useState<string[]>(channel.memberIds);
+  const [search, setSearch] = useState("");
+  const [addSearch, setAddSearch] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const isCreator = channel.createdBy === currentUser.id;
+  const canEdit = isCreator || canManage;
+
+  // Current members with user info
+  const currentMembers = useMemo(
+    () =>
+      memberIds
+        .map((id) => allUsers.find((u) => u.id === id))
+        .filter(Boolean) as User[],
+    [memberIds, allUsers]
+  );
+
+  const filteredMembers = useMemo(() => {
+    if (!search.trim()) return currentMembers;
+    const q = search.toLowerCase();
+    return currentMembers.filter(
+      (u) => u.name.toLowerCase().includes(q) || u.department?.toLowerCase().includes(q)
+    );
+  }, [currentMembers, search]);
+
+  // Users not yet in the group
+  const nonMembers = useMemo(
+    () => allUsers.filter((u) => !memberIds.includes(u.id)),
+    [allUsers, memberIds]
+  );
+
+  const filteredNonMembers = useMemo(() => {
+    if (!addSearch.trim()) return nonMembers;
+    const q = addSearch.toLowerCase();
+    return nonMembers.filter(
+      (u) => u.name.toLowerCase().includes(q) || u.department?.toLowerCase().includes(q)
+    );
+  }, [nonMembers, addSearch]);
+
+  function removeMember(id: string) {
+    if (id === channel.createdBy) return; // creator cannot be removed
+    setMemberIds((prev) => prev.filter((x) => x !== id));
+  }
+
+  function addMember(id: string) {
+    setMemberIds((prev) => [...prev, id]);
+    setAddSearch("");
+  }
+
+  async function handleSave() {
+    if (!name.trim()) { toast.error("Tên nhóm không được để trống."); return; }
+    if (memberIds.length < 2) { toast.error("Nhóm cần ít nhất 2 thành viên."); return; }
+    setSaving(true);
+    try {
+      await onUpdate(channel.id, {
+        name: name.trim().toLowerCase().replace(/\s+/g, "-"),
+        description: description.trim() || undefined,
+        memberIds,
+      });
+      toast.success("Đã cập nhật nhóm chat.");
+      onClose();
+    } catch {
+      toast.error("Cập nhật thất bại.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete() {
+    setDeleting(true);
+    try {
+      await onDelete(channel.id);
+      toast.success(`Đã xoá nhóm #${channel.name}.`);
+      onClose();
+    } catch {
+      toast.error("Xoá nhóm thất bại.");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-lg flex flex-col max-h-[90vh]">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border)] shrink-0">
+          <div className="flex items-center gap-2">
+            {channel.type === "private" ? <Lock className="w-4 h-4 text-slate-400" /> : <Hash className="w-4 h-4 text-slate-400" />}
+            <h2 className="font-bold text-[var(--foreground)]">{channel.name}</h2>
+          </div>
+          <button onClick={onClose} className="p-1 text-slate-400 hover:text-slate-600 transition">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex border-b border-[var(--border)] shrink-0">
+          {([
+            { key: "members", label: `Thành viên (${memberIds.length})`, icon: Users },
+            { key: "settings", label: "Cài đặt nhóm", icon: Settings },
+          ] as const).map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className={cn(
+                "flex-1 flex items-center justify-center gap-1.5 py-2.5 text-sm font-medium border-b-2 transition",
+                tab === t.key
+                  ? "border-blue-500 text-blue-600 dark:text-blue-400"
+                  : "border-transparent text-slate-400 hover:text-[var(--foreground)]"
+              )}
+            >
+              <t.icon className="w-3.5 h-3.5" />
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          {/* ── MEMBERS TAB ── */}
+          {tab === "members" && (
+            <>
+              {/* Search existing members */}
+              <div>
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5 block">
+                  Thành viên hiện tại
+                </label>
+                <div className="relative mb-2">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                  <input
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder="Tìm trong nhóm..."
+                    className="w-full pl-8 pr-3 py-1.5 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div className="space-y-0.5 max-h-44 overflow-y-auto pr-1">
+                  {filteredMembers.map((u) => {
+                    const isOwner = u.id === channel.createdBy;
+                    return (
+                      <div
+                        key={u.id}
+                        className="flex items-center gap-2.5 px-2.5 py-2 rounded-xl hover:bg-[var(--muted)] group"
+                      >
+                        <div className={cn("w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white shrink-0", avatarColor(u.name))}>
+                          {u.avatar
+                            ? <img src={u.avatar} className="w-full h-full rounded-full object-cover" alt="" />
+                            : getInitials(u.name)}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-[var(--foreground)] truncate">
+                            {u.name}
+                            {isOwner && (
+                              <span className="ml-1.5 px-1.5 py-0.5 text-[10px] bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300 rounded-full font-semibold">
+                                Người tạo
+                              </span>
+                            )}
+                          </p>
+                          {u.department && <p className="text-[10px] text-slate-400 truncate">{u.department}</p>}
+                        </div>
+                        {canEdit && !isOwner && (
+                          <button
+                            onClick={() => removeMember(u.id)}
+                            title="Xoá khỏi nhóm"
+                            className="opacity-0 group-hover:opacity-100 p-1.5 text-red-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition"
+                          >
+                            <UserMinus className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {filteredMembers.length === 0 && (
+                    <p className="text-xs text-slate-400 text-center py-3">Không tìm thấy thành viên</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Add new members */}
+              {canEdit && (
+                <div>
+                  <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5 flex items-center gap-1.5">
+                    <UserPlus className="w-3.5 h-3.5" /> Thêm thành viên mới
+                    {nonMembers.length > 0 && (
+                      <span className="text-slate-400 font-normal">· {nonMembers.length} người chưa trong nhóm</span>
+                    )}
+                  </label>
+                  {nonMembers.length === 0 ? (
+                    <p className="text-xs text-slate-400 py-2">Tất cả người dùng đã là thành viên.</p>
+                  ) : (
+                    <>
+                      <div className="relative mb-2">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                        <input
+                          value={addSearch}
+                          onChange={(e) => setAddSearch(e.target.value)}
+                          placeholder="Tìm người để thêm..."
+                          className="w-full pl-8 pr-3 py-1.5 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div className="space-y-0.5 max-h-36 overflow-y-auto pr-1">
+                        {filteredNonMembers.map((u) => (
+                          <button
+                            key={u.id}
+                            type="button"
+                            onClick={() => addMember(u.id)}
+                            className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xl hover:bg-blue-50 dark:hover:bg-blue-900/20 transition text-left group"
+                          >
+                            <div className={cn("w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white shrink-0", avatarColor(u.name))}>
+                              {u.avatar
+                                ? <img src={u.avatar} className="w-full h-full rounded-full object-cover" alt="" />
+                                : getInitials(u.name)}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-[var(--foreground)] truncate">{u.name}</p>
+                              {u.department && <p className="text-[10px] text-slate-400 truncate">{u.department}</p>}
+                            </div>
+                            <span className="opacity-0 group-hover:opacity-100 flex items-center gap-1 text-[10px] text-blue-600 font-semibold transition">
+                              <UserPlus className="w-3 h-3" /> Thêm
+                            </span>
+                          </button>
+                        ))}
+                        {filteredNonMembers.length === 0 && (
+                          <p className="text-xs text-slate-400 text-center py-3">Không tìm thấy người dùng</p>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ── SETTINGS TAB ── */}
+          {tab === "settings" && (
+            <div className="space-y-4">
+              <div>
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1 block">Tên nhóm *</label>
+                <input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  disabled={!canEdit}
+                  placeholder="tên-nhóm"
+                  className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1 block">Mô tả</label>
+                <textarea
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  disabled={!canEdit}
+                  rows={3}
+                  placeholder="Mục đích của nhóm..."
+                  className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none disabled:opacity-50"
+                />
+              </div>
+
+              {/* Danger zone */}
+              {canEdit && (
+                <div className="border border-red-200 dark:border-red-800 rounded-xl p-4 space-y-2">
+                  <p className="text-xs font-semibold text-red-600">Vùng nguy hiểm</p>
+                  {!confirmDelete ? (
+                    <button
+                      onClick={() => setConfirmDelete(true)}
+                      className="flex items-center gap-2 px-3 py-2 border border-red-300 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl text-sm transition w-full"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      Xoá nhóm chat này
+                    </button>
+                  ) : (
+                    <div className="space-y-2">
+                      <p className="text-xs text-red-600 font-medium">
+                        Xác nhận xoá? Tất cả tin nhắn trong nhóm sẽ bị mất vĩnh viễn.
+                      </p>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setConfirmDelete(false)}
+                          className="flex-1 py-1.5 border border-[var(--border)] rounded-xl text-xs text-[var(--foreground)] hover:bg-[var(--muted)] transition"
+                        >
+                          Huỷ
+                        </button>
+                        <button
+                          onClick={handleDelete}
+                          disabled={deleting}
+                          className="flex-1 py-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white rounded-xl text-xs font-semibold transition flex items-center justify-center gap-1"
+                        >
+                          {deleting && <Loader2 className="w-3 h-3 animate-spin" />}
+                          Xoá vĩnh viễn
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        {canEdit && (
+          <div className="flex gap-3 px-5 py-4 border-t border-[var(--border)] shrink-0">
+            <button
+              onClick={onClose}
+              className="flex-1 py-2 border border-[var(--border)] rounded-xl text-sm text-[var(--foreground)] hover:bg-[var(--muted)] transition"
+            >
+              Đóng
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-xl text-sm font-semibold transition flex items-center justify-center gap-2"
+            >
+              {saving && <Loader2 className="w-4 h-4 animate-spin" />}
+              Lưu thay đổi
+            </button>
+          </div>
+        )}
+        {!canEdit && (
+          <div className="px-5 py-4 border-t border-[var(--border)] shrink-0">
+            <button onClick={onClose} className="w-full py-2 border border-[var(--border)] rounded-xl text-sm text-[var(--foreground)] hover:bg-[var(--muted)] transition">
+              Đóng
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function IntranetPage() {
   const { currentUser } = useAuthStore();
@@ -575,11 +928,13 @@ export default function IntranetPage() {
   const [postPinned, setPostPinned] = useState(false);
   const [posting, setPosting] = useState(false);
 
-  // New channel modal
+  // Channel modals
   const [showNewChannel, setShowNewChannel] = useState(false);
+  const [managingChannel, setManagingChannel] = useState<Channel | null>(null);
 
   const canCreate = !!(currentUser && hasPermission(currentUser.role, "intranet:create"));
   const canApprovePost = !!(currentUser && hasPermission(currentUser.role, "intranet:approve"));
+  const canManageChannels = !!(currentUser && hasPermission(currentUser.role, "intranet:manage"));
   const uid = currentUser?.id ?? "";
 
   useEffect(() => {
@@ -671,6 +1026,19 @@ export default function IntranetPage() {
     setChannels((prev) => [ch, ...prev]);
     setActiveChannelId(ch.id);
     toast.success(`Đã tạo nhóm #${ch.name} với ${memberIds.length} thành viên.`);
+  }
+
+  async function handleUpdateChannel(id: string, data: Partial<Channel>) {
+    await updateChannel(id, data);
+    setChannels((prev) => prev.map((ch) => (ch.id === id ? { ...ch, ...data } : ch)));
+    if (managingChannel?.id === id) setManagingChannel((prev) => prev ? { ...prev, ...data } : prev);
+  }
+
+  async function handleDeleteChannel(id: string) {
+    await deleteChannel(id);
+    setChannels((prev) => prev.filter((ch) => ch.id !== id));
+    if (activeChannelId === id) setActiveChannelId(null);
+    setManagingChannel(null);
   }
 
   // Birthday reminder banner
@@ -792,18 +1160,38 @@ export default function IntranetPage() {
             </div>
             <div className="space-y-1 overflow-y-auto">
               {channels.length === 0 && <p className="text-xs text-slate-400 py-3">Chưa có kênh nào</p>}
-              {channels.map((ch) => (
-                <button
-                  key={ch.id}
-                  onClick={() => setActiveChannelId(ch.id)}
-                  className={cn("w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm transition text-left",
-                    activeChannelId === ch.id ? "bg-blue-600 text-white" : "text-slate-400 hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
-                  )}
-                >
-                  {ch.type === "private" ? <Lock className="w-3.5 h-3.5 shrink-0" /> : <Hash className="w-3.5 h-3.5 shrink-0" />}
-                  <span className="truncate">{ch.name}</span>
-                </button>
-              ))}
+              {channels.map((ch) => {
+                const canEdit = ch.createdBy === uid || canManageChannels;
+                const isActive = activeChannelId === ch.id;
+                return (
+                  <div key={ch.id} className="group relative">
+                    <button
+                      onClick={() => setActiveChannelId(ch.id)}
+                      className={cn(
+                        "w-full flex items-center gap-2 pl-3 pr-8 py-2 rounded-xl text-sm transition text-left",
+                        isActive ? "bg-blue-600 text-white" : "text-slate-400 hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
+                      )}
+                    >
+                      {ch.type === "private" ? <Lock className="w-3.5 h-3.5 shrink-0" /> : <Hash className="w-3.5 h-3.5 shrink-0" />}
+                      <span className="truncate">{ch.name}</span>
+                    </button>
+                    {canEdit && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setManagingChannel(ch); }}
+                        title="Quản lý nhóm"
+                        className={cn(
+                          "absolute right-1.5 top-1/2 -translate-y-1/2 p-1 rounded-lg transition opacity-0 group-hover:opacity-100",
+                          isActive
+                            ? "text-white/70 hover:text-white hover:bg-white/10"
+                            : "text-slate-400 hover:text-slate-600 hover:bg-[var(--muted)]"
+                        )}
+                      >
+                        <Settings className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
 
@@ -812,9 +1200,27 @@ export default function IntranetPage() {
             {activeChannel && currentUser ? (
               <>
                 <div className="flex items-center gap-2 px-4 py-3 border-b border-[var(--border)] shrink-0">
-                  <Hash className="w-4 h-4 text-slate-400" />
+                  {activeChannel.type === "private"
+                    ? <Lock className="w-4 h-4 text-slate-400" />
+                    : <Hash className="w-4 h-4 text-slate-400" />}
                   <span className="font-semibold text-sm text-[var(--foreground)]">{activeChannel.name}</span>
-                  <span className="text-xs text-slate-400 ml-1">· {activeChannel.memberIds.length} thành viên</span>
+                  <span className="text-xs text-slate-400">
+                    · {activeChannel.memberIds.length} thành viên
+                  </span>
+                  {activeChannel.description && (
+                    <span className="text-xs text-slate-400 truncate hidden sm:block">
+                      · {activeChannel.description}
+                    </span>
+                  )}
+                  {(activeChannel.createdBy === uid || canManageChannels) && (
+                    <button
+                      onClick={() => setManagingChannel(activeChannel)}
+                      title="Quản lý nhóm"
+                      className="ml-auto p-1.5 text-slate-400 hover:text-slate-600 hover:bg-[var(--muted)] rounded-lg transition"
+                    >
+                      <Settings className="w-4 h-4" />
+                    </button>
+                  )}
                 </div>
                 <ChannelChat channel={activeChannel} currentUser={currentUser} />
               </>
@@ -835,6 +1241,19 @@ export default function IntranetPage() {
           allUsers={users}
           onSave={handleCreateChannel}
           onClose={() => setShowNewChannel(false)}
+        />
+      )}
+
+      {/* Manage channel modal */}
+      {managingChannel && currentUser && (
+        <ManageChannelModal
+          channel={managingChannel}
+          allUsers={users}
+          currentUser={currentUser}
+          canManage={canManageChannels}
+          onUpdate={handleUpdateChannel}
+          onDelete={handleDeleteChannel}
+          onClose={() => setManagingChannel(null)}
         />
       )}
     </div>

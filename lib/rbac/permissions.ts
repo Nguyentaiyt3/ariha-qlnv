@@ -122,6 +122,7 @@ const ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "intranet:create",
     "intranet:post",
     "intranet:approve",
+    "intranet:manage",
     "intranet:comment",
     "workflow:read",
     "workflow:create",

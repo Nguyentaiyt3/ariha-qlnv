@@ -693,3 +693,13 @@ export async function sendChannelMessage(channelId: string, msg: Omit<ChannelMes
     lastMessagePreview: msg.content.slice(0, 80),
   });
 }
+
+export async function updateChannel(id: string, data: Partial<Channel>): Promise<void> {
+  const db = getDb();
+  await updateDoc(doc(db, "channels", id), data as DocumentData);
+}
+
+export async function deleteChannel(id: string): Promise<void> {
+  const db = getDb();
+  await deleteDoc(doc(db, "channels", id));
+}
