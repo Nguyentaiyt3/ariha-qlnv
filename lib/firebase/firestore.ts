@@ -372,8 +372,10 @@ export async function saveEvaluation(evaluation: Evaluation): Promise<void> {
 
 export async function getRequestTemplates(): Promise<RequestTemplate[]> {
   const db = getDb();
-  const snap = await getDocs(query(collection(db, "requestTemplates"), where("isActive", "==", true), orderBy("createdAt", "asc")));
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as RequestTemplate));
+  const snap = await getDocs(query(collection(db, "requestTemplates"), where("isActive", "==", true)));
+  return snap.docs
+    .map((d) => ({ id: d.id, ...d.data() } as RequestTemplate))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 export async function saveRequestTemplate(t: RequestTemplate): Promise<void> {
@@ -447,11 +449,11 @@ export async function deleteFolder(id: string): Promise<void> {
 
 export async function getDocuments(folderId: string | null): Promise<WorkDocument[]> {
   const db = getDb();
-  const q = folderId === null
-    ? query(collection(db, "documents"), where("folderId", "==", null), orderBy("createdAt", "desc"))
-    : query(collection(db, "documents"), where("folderId", "==", folderId), orderBy("createdAt", "desc"));
+  const q = query(collection(db, "documents"), where("folderId", "==", folderId));
   const snap = await getDocs(q);
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as WorkDocument));
+  return snap.docs
+    .map((d) => ({ id: d.id, ...d.data() } as WorkDocument))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 export async function saveDocument(doc_: WorkDocument): Promise<void> {
@@ -466,11 +468,14 @@ export async function deleteDocument(id: string): Promise<void> {
 
 export function subscribeDocuments(folderId: string | null, callback: (docs: WorkDocument[]) => void) {
   const db = getDb();
-  const q = folderId === null
-    ? query(collection(db, "documents"), where("folderId", "==", null), orderBy("createdAt", "desc"))
-    : query(collection(db, "documents"), where("folderId", "==", folderId), orderBy("createdAt", "desc"));
+  const q = query(collection(db, "documents"), where("folderId", "==", folderId));
   return onSnapshot(q,
-    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as WorkDocument))),
+    (snap) => {
+      const docs = snap.docs
+        .map((d) => ({ id: d.id, ...d.data() } as WorkDocument))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      callback(docs);
+    },
     (err) => console.error("[subscribeDocuments]", err.code)
   );
 }
@@ -479,8 +484,10 @@ export function subscribeDocuments(folderId: string | null, callback: (docs: Wor
 
 export async function getAnnouncements(): Promise<Announcement[]> {
   const db = getDb();
-  const snap = await getDocs(query(collection(db, "announcements"), orderBy("pinned", "desc"), orderBy("createdAt", "desc"), limit(50)));
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Announcement));
+  const snap = await getDocs(query(collection(db, "announcements"), orderBy("createdAt", "desc"), limit(50)));
+  return snap.docs
+    .map((d) => ({ id: d.id, ...d.data() } as Announcement))
+    .sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || b.createdAt.localeCompare(a.createdAt));
 }
 
 export async function saveAnnouncement(a: Announcement): Promise<void> {
@@ -519,8 +526,13 @@ export async function markAnnouncementViewed(announcementId: string, userId: str
 export function subscribeAnnouncements(callback: (items: Announcement[]) => void) {
   const db = getDb();
   return onSnapshot(
-    query(collection(db, "announcements"), orderBy("pinned", "desc"), orderBy("createdAt", "desc"), limit(50)),
-    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Announcement))),
+    query(collection(db, "announcements"), orderBy("createdAt", "desc"), limit(50)),
+    (snap) => {
+      const items = snap.docs
+        .map((d) => ({ id: d.id, ...d.data() } as Announcement))
+        .sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || b.createdAt.localeCompare(a.createdAt));
+      callback(items);
+    },
     (err) => console.error("[subscribeAnnouncements]", err.code)
   );
 }
@@ -543,8 +555,8 @@ export async function addAnnouncementComment(announcementId: string, comment: Om
 export async function getChannels(userId: string): Promise<Channel[]> {
   const db = getDb();
   const [publicSnap, memberSnap] = await Promise.all([
-    getDocs(query(collection(db, "channels"), where("type", "==", "public"), orderBy("lastMessageAt", "desc"))),
-    getDocs(query(collection(db, "channels"), where("memberIds", "array-contains", userId), orderBy("lastMessageAt", "desc"))),
+    getDocs(query(collection(db, "channels"), where("type", "==", "public"))),
+    getDocs(query(collection(db, "channels"), where("memberIds", "array-contains", userId))),
   ]);
   const map = new Map<string, Channel>();
   [...publicSnap.docs, ...memberSnap.docs].forEach((d) => map.set(d.id, { id: d.id, ...d.data() } as Channel));
@@ -559,8 +571,13 @@ export async function saveChannel(ch: Channel): Promise<void> {
 export function subscribeChannels(userId: string, callback: (channels: Channel[]) => void) {
   const db = getDb();
   return onSnapshot(
-    query(collection(db, "channels"), where("memberIds", "array-contains", userId), orderBy("lastMessageAt", "desc")),
-    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Channel))),
+    query(collection(db, "channels"), where("memberIds", "array-contains", userId)),
+    (snap) => {
+      const channels = snap.docs
+        .map((d) => ({ id: d.id, ...d.data() } as Channel))
+        .sort((a, b) => (b.lastMessageAt ?? b.createdAt).localeCompare(a.lastMessageAt ?? a.createdAt));
+      callback(channels);
+    },
     (err) => console.error("[subscribeChannels]", err.code)
   );
 }
