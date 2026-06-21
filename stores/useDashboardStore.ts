@@ -13,6 +13,7 @@ interface DashboardState {
   setActiveProfile: (id: string) => void;
   updateWidgets: (profileId: string, widgets: WidgetConfig[]) => void;
   addProfile: (name: string, widgets: WidgetConfig[]) => DashboardProfile;
+  renameProfile: (id: string, name: string) => void;
   deleteProfile: (id: string) => void;
   toggleEditMode: () => void;
   toggleWidgetVisibility: (profileId: string, widgetId: string) => void;
@@ -52,6 +53,13 @@ export const useDashboardStore = create<DashboardState>()(
         set((state) => ({ profiles: [...state.profiles, newProfile] }));
         return newProfile;
       },
+
+      renameProfile: (id, name) =>
+        set((state) => ({
+          profiles: state.profiles.map((p) =>
+            p.id === id ? { ...p, name: name.trim() || p.name } : p
+          ),
+        })),
 
       deleteProfile: (id) =>
         set((state) => ({

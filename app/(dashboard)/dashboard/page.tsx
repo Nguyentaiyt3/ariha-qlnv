@@ -1,14 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { LayoutDashboard, Settings2, Plus, Eye, Check } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { LayoutDashboard, Settings2, Plus, Eye, Check, Pencil, X, Trash2 } from "lucide-react";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useDashboardStore } from "@/stores/useDashboardStore";
 import DashboardGrid from "@/components/dashboard/DashboardGrid";
 import type { WidgetConfig, WidgetType } from "@/types";
 import { DEFAULT_DASHBOARD_LAYOUTS } from "@/lib/rbac/permissions";
 import { generateId } from "@/lib/utils";
-import { saveUser } from "@/lib/firebase/firestore";
 
 const WIDGET_LABELS: Partial<Record<WidgetType, string>> = {
   my_tasks:          "Nhiệm vụ của tôi",
@@ -24,31 +23,138 @@ const WIDGET_LABELS: Partial<Record<WidgetType, string>> = {
 
 function buildDefaultWidgets(role: string): WidgetConfig[] {
   const layout = DEFAULT_DASHBOARD_LAYOUTS[role as keyof typeof DEFAULT_DASHBOARD_LAYOUTS] ?? DEFAULT_DASHBOARD_LAYOUTS.staff;
-  return layout.map((l, i) => ({
+  return layout.map((l) => ({
     id: generateId("widget"),
     type: l.type as WidgetType,
-    x: l.x,
-    y: l.y,
-    w: l.w,
-    h: l.h,
+    x: l.x, y: l.y, w: l.w, h: l.h,
     visible: true,
   }));
 }
 
+// ── Inline-renameable profile tab ─────────────────────────────────
+function ProfileTab({
+  id, name, isActive, canDelete,
+  onActivate, onRename, onDelete,
+}: {
+  id: string; name: string; isActive: boolean; canDelete: boolean;
+  onActivate: () => void;
+  onRename: (id: string, name: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [editing, setEditing]   = useState(false);
+  const [draft,   setDraft]     = useState(name);
+  const [hovered, setHovered]   = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  function startEdit(e: React.MouseEvent) {
+    e.stopPropagation();
+    setDraft(name);
+    setEditing(true);
+    setTimeout(() => { inputRef.current?.select(); }, 0);
+  }
+
+  function commitRename() {
+    const trimmed = draft.trim();
+    if (trimmed && trimmed !== name) onRename(id, trimmed);
+    setEditing(false);
+  }
+
+  function cancelEdit() {
+    setDraft(name);
+    setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <div className="flex items-center gap-1">
+        <input
+          ref={inputRef}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter")  { e.preventDefault(); commitRename(); }
+            if (e.key === "Escape") { e.preventDefault(); cancelEdit();   }
+          }}
+          onBlur={commitRename}
+          className="px-2.5 py-1.5 text-sm border-2 border-blue-500 rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none w-32"
+          autoFocus
+        />
+        <button
+          onMouseDown={(e) => { e.preventDefault(); commitRename(); }}
+          className="p-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shrink-0"
+        >
+          <Check className="w-3.5 h-3.5" />
+        </button>
+        <button
+          onMouseDown={(e) => { e.preventDefault(); cancelEdit(); }}
+          className="p-1.5 text-[var(--muted-foreground)] hover:text-[var(--foreground)] rounded-lg border border-[var(--border)] shrink-0"
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="relative flex items-center group"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <button
+        onClick={onActivate}
+        onDoubleClick={startEdit}
+        title="Nhấp đúp để đổi tên"
+        className={`px-3 py-1.5 text-sm rounded-lg font-medium transition-colors pr-6 ${
+          isActive
+            ? "bg-blue-600 text-white"
+            : "bg-[var(--muted)] text-[var(--muted-foreground)] hover:bg-[var(--border)]"
+        }`}
+      >
+        {name}
+      </button>
+
+      {/* Edit pencil — appears on hover, right of text */}
+      {hovered && !isActive && (
+        <button
+          onClick={startEdit}
+          title="Đổi tên"
+          className="absolute right-1 p-0.5 rounded text-[var(--muted-foreground)] hover:text-blue-500 transition-colors"
+        >
+          <Pencil className="w-3 h-3" />
+        </button>
+      )}
+      {hovered && isActive && (
+        <button
+          onClick={startEdit}
+          title="Đổi tên"
+          className="absolute right-1 p-0.5 rounded text-blue-200 hover:text-white transition-colors"
+        >
+          <Pencil className="w-3 h-3" />
+        </button>
+      )}
+
+      {/* Delete (×) — only if multiple profiles, shown on hover when active */}
+      {canDelete && isActive && hovered && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onDelete(id); }}
+          title="Xóa profile này"
+          className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-red-500 text-white rounded-full flex items-center justify-center hover:bg-red-600 transition-colors z-10"
+        >
+          <X className="w-2.5 h-2.5" />
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ── Page ──────────────────────────────────────────────────────────
 export default function DashboardPage() {
   const { currentUser } = useAuthStore();
   const {
-    profiles,
-    activeProfileId,
-    isEditMode,
-    setProfiles,
-    setActiveProfile,
-    updateWidgets,
-    addProfile,
-    deleteProfile,
-    toggleEditMode,
-    toggleWidgetVisibility,
-    getActiveProfile,
+    profiles, activeProfileId, isEditMode,
+    setActiveProfile, updateWidgets, addProfile, renameProfile, deleteProfile,
+    toggleEditMode, toggleWidgetVisibility, getActiveProfile,
   } = useDashboardStore();
 
   const [newProfileName, setNewProfileName] = useState("");
@@ -98,61 +204,73 @@ export default function DashboardPage() {
     setShowProfileInput(false);
   };
 
-  const hiddenWidgets = activeProfile?.widgets.filter((w) => !w.visible) ?? [];
-  const allWidgetTypes: WidgetType[] = ["my_tasks", "support_tasks", "analytics_summary", "deadline_alert", "team_leaderboard", "kpi_week", "calendar_mini", "workload_heatmap", "internal_messages"];
+  const handleDeleteProfile = (id: string) => {
+    if (profiles.length <= 1) return; // keep at least 1
+    const next = profiles.find((p) => p.id !== id);
+    deleteProfile(id);
+    if (next) setActiveProfile(next.id);
+  };
+
+  const hiddenWidgets  = activeProfile?.widgets.filter((w) => !w.visible) ?? [];
+  const allWidgetTypes: WidgetType[] = [
+    "my_tasks", "support_tasks", "analytics_summary",
+    "deadline_alert", "team_leaderboard", "kpi_week",
+    "calendar_mini", "workload_heatmap", "internal_messages",
+  ];
   const existingTypes = activeProfile?.widgets.map((w) => w.type) ?? [];
-  const addableTypes = allWidgetTypes.filter((t) => !existingTypes.includes(t));
+  const addableTypes  = allWidgetTypes.filter((t) => !existingTypes.includes(t));
 
   const handleAddWidget = (type: WidgetType) => {
     if (!activeProfile) return;
     const newWidget: WidgetConfig = {
-      id: generateId("widget"),
-      type,
-      x: 0,
-      y: 0,
-      w: 1,
-      h: 1,
-      visible: true,
+      id: generateId("widget"), type, x: 0, y: 0, w: 2, h: 2, visible: true,
     };
     updateWidgets(activeProfile.id, [...activeProfile.widgets, newWidget]);
   };
 
   return (
-    <div className="px-4 py-6">
+    <div className="px-4 py-4 sm:px-6 sm:py-6">
       {/* Header */}
-      <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
         <h1 className="text-2xl font-bold text-[var(--foreground)] flex items-center gap-2">
           <LayoutDashboard className="w-6 h-6 text-blue-500" />
           Dashboard
         </h1>
 
-        {/* Profile tabs */}
+        {/* Profile tabs + add */}
         <div className="flex items-center gap-2 flex-wrap">
           {profiles.map((p) => (
-            <button
+            <ProfileTab
               key={p.id}
-              onClick={() => setActiveProfile(p.id)}
-              className={`px-3 py-1.5 text-sm rounded-lg font-medium transition-colors ${
-                p.id === activeProfileId
-                  ? "bg-blue-600 text-white"
-                  : "bg-[var(--muted)] text-[var(--muted-foreground)] hover:bg-[var(--border)]"
-              }`}
-            >
-              {p.name}
-            </button>
+              id={p.id}
+              name={p.name}
+              isActive={p.id === activeProfileId}
+              canDelete={profiles.length > 1}
+              onActivate={() => setActiveProfile(p.id)}
+              onRename={renameProfile}
+              onDelete={handleDeleteProfile}
+            />
           ))}
+
           {showProfileInput ? (
             <div className="flex items-center gap-1.5">
               <input
                 value={newProfileName}
                 onChange={(e) => setNewProfileName(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleAddProfile()}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter")  handleAddProfile();
+                  if (e.key === "Escape") { setShowProfileInput(false); setNewProfileName(""); }
+                }}
                 autoFocus
                 placeholder="Tên profile..."
                 className="px-2.5 py-1.5 text-sm border border-[var(--border)] rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500 w-32"
               />
               <button onClick={handleAddProfile} className="p-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
                 <Check className="w-3.5 h-3.5" />
+              </button>
+              <button onClick={() => { setShowProfileInput(false); setNewProfileName(""); }}
+                className="p-1.5 text-[var(--muted-foreground)] hover:text-[var(--foreground)] border border-[var(--border)] rounded-lg">
+                <X className="w-3.5 h-3.5" />
               </button>
             </div>
           ) : (
@@ -180,7 +298,7 @@ export default function DashboardPage() {
         </button>
       </div>
 
-      {/* Hidden widgets restore panel */}
+      {/* Hidden / addable widgets panel */}
       {isEditMode && (hiddenWidgets.length > 0 || addableTypes.length > 0) && (
         <div className="mb-4 p-3 bg-[var(--card)] border border-[var(--border)] rounded-xl">
           <p className="text-xs font-medium text-[var(--muted-foreground)] mb-2">
