@@ -3,8 +3,8 @@
 import { useEffect, useState, useMemo } from "react";
 import {
   FolderOpen, Folder, FileText, Image, Film, File,
-  Plus, Loader2, Search, ChevronRight, Download,
-  Trash2, Upload, Link2, ExternalLink, Home,
+  Plus, Loader2, Search, ChevronRight,
+  Trash2, Upload, Link2, ExternalLink, Home, CheckCircle2, XCircle, Clock,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn, generateId } from "@/lib/utils";
@@ -12,8 +12,10 @@ import { useAuthStore } from "@/stores/useAuthStore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import {
   getFolders, saveFolder, deleteFolder,
-  getDocuments, saveDocument, deleteDocument, subscribeDocuments,
+  saveDocument, deleteDocument, subscribeDocuments,
+  getPendingDocuments, approveDocument,
 } from "@/lib/firebase/firestore";
+import { uploadFile } from "@/lib/firebase/storage";
 import type { DocFolder, WorkDocument, DocFileType } from "@/types";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -36,15 +38,27 @@ function formatSize(bytes?: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function mimeToDocFileType(mime: string): DocFileType {
+  if (mime.startsWith("image/")) return "image";
+  if (mime === "application/pdf") return "pdf";
+  if (mime.includes("word") || mime.includes("document")) return "word";
+  if (mime.includes("excel") || mime.includes("spreadsheet")) return "excel";
+  if (mime.includes("powerpoint") || mime.includes("presentation")) return "other";
+  if (mime.startsWith("video/")) return "video";
+  return "other";
+}
+
 // ── Add link modal ────────────────────────────────────────────────────────────
 function AddLinkModal({
   folderId,
   currentUser,
+  canApprove,
   onClose,
   onAdded,
 }: {
   folderId: string | null;
   currentUser: { id: string; name: string; department?: string };
+  canApprove: boolean;
   onClose: () => void;
   onAdded: (d: WorkDocument) => void;
 }) {
@@ -64,6 +78,7 @@ function AddLinkModal({
         folderId,
         fileUrl: url.trim(),
         fileType: "link",
+        status: canApprove ? "published" : "pending",
         ownerId: currentUser.id,
         ownerName: currentUser.name,
         department: currentUser.department,
@@ -75,7 +90,7 @@ function AddLinkModal({
         updatedAt: new Date().toISOString(),
       };
       await saveDocument(doc_);
-      toast.success("Đã thêm liên kết.");
+      toast.success(canApprove ? "Đã thêm liên kết." : "Đã gửi tài liệu. Chờ quản lý phê duyệt để công khai.");
       onAdded(doc_);
       onClose();
     } catch {
@@ -109,20 +124,109 @@ function AddLinkModal({
   );
 }
 
+// ── Upload file modal ─────────────────────────────────────────────────────────
+function UploadFileModal({
+  folderId,
+  currentUser,
+  canApprove,
+  onClose,
+  onAdded,
+}: {
+  folderId: string | null;
+  currentUser: { id: string; name: string; department?: string };
+  canApprove: boolean;
+  onClose: () => void;
+  onAdded: (d: WorkDocument) => void;
+}) {
+  const [file, setFile] = useState<File | null>(null);
+  const [desc, setDesc] = useState("");
+  const [uploading, setUploading] = useState(false);
+
+  async function handleUpload() {
+    if (!file) { toast.error("Vui lòng chọn tệp."); return; }
+    setUploading(true);
+    try {
+      const url = await uploadFile(file, "documents");
+      const doc_: WorkDocument = {
+        id: generateId("doc"),
+        name: file.name,
+        description: desc.trim() || undefined,
+        folderId,
+        fileUrl: url,
+        fileType: mimeToDocFileType(file.type),
+        status: canApprove ? "published" : "pending",
+        fileSize: file.size,
+        mimeType: file.type,
+        ownerId: currentUser.id,
+        ownerName: currentUser.name,
+        department: currentUser.department,
+        tags: [],
+        sharedWithRoles: ["staff", "teamLead", "director", "hrAdmin"],
+        sharedWithUsers: [],
+        downloadCount: 0,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      await saveDocument(doc_);
+      toast.success(canApprove ? "Đã tải lên tài liệu." : "Đã gửi tài liệu. Chờ quản lý phê duyệt để công khai.");
+      onAdded(doc_);
+      onClose();
+    } catch {
+      toast.error("Tải lên thất bại.");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4">
+        <h2 className="font-bold text-[var(--foreground)]">Tải lên tài liệu</h2>
+        <div className="space-y-3">
+          <label className={cn(
+            "flex flex-col items-center gap-2 p-6 border-2 border-dashed rounded-xl cursor-pointer transition",
+            file ? "border-blue-400 bg-blue-50 dark:bg-blue-900/10" : "border-[var(--border)] hover:border-blue-300"
+          )}>
+            <Upload className={cn("w-8 h-8", file ? "text-blue-500" : "text-slate-400")} />
+            <span className="text-sm text-center text-[var(--foreground)]">
+              {file ? file.name : "Nhấn để chọn tệp"}
+            </span>
+            {file && <span className="text-xs text-slate-400">{formatSize(file.size)}</span>}
+            <input type="file" className="hidden" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+          </label>
+          <input value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Mô tả (tuỳ chọn)"
+            className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="flex-1 py-2 border border-[var(--border)] rounded-xl text-sm text-[var(--foreground)] hover:bg-[var(--muted)] transition">Huỷ</button>
+          <button onClick={handleUpload} disabled={uploading || !file}
+            className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-xl text-sm font-semibold transition flex items-center justify-center gap-2">
+            {uploading && <Loader2 className="w-4 h-4 animate-spin" />} Tải lên
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function DocumentsPage() {
   const { currentUser } = useAuthStore();
   const [folders, setFolders] = useState<DocFolder[]>([]);
   const [documents, setDocuments] = useState<WorkDocument[]>([]);
+  const [pendingDocs, setPendingDocs] = useState<WorkDocument[]>([]);
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [showAddLink, setShowAddLink] = useState(false);
+  const [showUpload, setShowUpload] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
   const [showNewFolder, setShowNewFolder] = useState(false);
+  const [approvingId, setApprovingId] = useState<string | null>(null);
 
   const canCreate = !!(currentUser && hasPermission(currentUser.role, "document:create"));
   const canManage = !!(currentUser && hasPermission(currentUser.role, "document:manage"));
+  const canApprove = !!(currentUser && hasPermission(currentUser.role, "document:approve"));
 
   useEffect(() => {
     getFolders().then(setFolders);
@@ -133,9 +237,14 @@ export default function DocumentsPage() {
     const unsub = subscribeDocuments(currentFolderId, (docs) => {
       setDocuments(docs);
       setLoading(false);
-    });
+    }, currentUser?.id, canApprove);
     return () => unsub();
-  }, [currentFolderId]);
+  }, [currentFolderId, currentUser?.id, canApprove]);
+
+  useEffect(() => {
+    if (!canApprove) return;
+    getPendingDocuments().then(setPendingDocs);
+  }, [canApprove]);
 
   const subFolders = useMemo(() =>
     folders.filter((f) => f.parentId === currentFolderId),
@@ -194,6 +303,19 @@ export default function DocumentsPage() {
     toast.success("Đã xóa tài liệu.");
   }
 
+  async function handleApproveDoc(id: string, approve: boolean) {
+    setApprovingId(id);
+    try {
+      await approveDocument(id, approve);
+      setPendingDocs((prev) => prev.filter((d) => d.id !== id));
+      toast.success(approve ? "Đã duyệt tài liệu." : "Đã từ chối tài liệu.");
+    } catch {
+      toast.error("Thao tác thất bại.");
+    } finally {
+      setApprovingId(null);
+    }
+  }
+
   return (
     <div className="px-4 py-6 max-w-5xl mx-auto space-y-5">
       {/* Header */}
@@ -215,13 +337,61 @@ export default function DocumentsPage() {
             </button>
             <button
               onClick={() => setShowAddLink(true)}
-              className="flex items-center gap-1.5 px-3 py-2 text-sm font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition"
+              className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium border border-[var(--border)] bg-[var(--card)] text-[var(--foreground)] hover:border-blue-300 hover:text-blue-600 rounded-xl transition"
             >
               <Link2 className="w-4 h-4" /> Thêm liên kết
+            </button>
+            <button
+              onClick={() => setShowUpload(true)}
+              className="flex items-center gap-1.5 px-3 py-2 text-sm font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition"
+            >
+              <Upload className="w-4 h-4" /> Tải lên
             </button>
           </div>
         )}
       </div>
+
+      {/* Pending docs approval — managers only */}
+      {canApprove && pendingDocs.length > 0 && (
+        <div className="border border-amber-200 bg-amber-50 dark:bg-amber-900/10 rounded-2xl p-4 space-y-3">
+          <h2 className="text-sm font-semibold text-amber-700 dark:text-amber-400 flex items-center gap-2">
+            <Clock className="w-4 h-4" />
+            Tài liệu chờ duyệt ({pendingDocs.length})
+          </h2>
+          <div className="space-y-2">
+            {pendingDocs.map((doc_) => (
+              <div key={doc_.id} className="flex items-center gap-3 p-3 bg-white dark:bg-slate-900 rounded-xl border border-amber-100 dark:border-amber-800">
+                {fileIcon(doc_.fileType)}
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-[var(--foreground)] truncate">{doc_.name}</p>
+                  <p className="text-xs text-slate-400">
+                    {doc_.ownerName} · {new Date(doc_.createdAt).toLocaleDateString("vi-VN")}
+                    {doc_.description && ` · ${doc_.description}`}
+                  </p>
+                </div>
+                <div className="flex gap-2 shrink-0">
+                  <button
+                    onClick={() => handleApproveDoc(doc_.id, false)}
+                    disabled={approvingId === doc_.id}
+                    className="flex items-center gap-1 px-2.5 py-1.5 border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-50 rounded-lg text-xs font-medium transition"
+                  >
+                    {approvingId === doc_.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <XCircle className="w-3.5 h-3.5" />}
+                    Từ chối
+                  </button>
+                  <button
+                    onClick={() => handleApproveDoc(doc_.id, true)}
+                    disabled={approvingId === doc_.id}
+                    className="flex items-center gap-1 px-2.5 py-1.5 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg text-xs font-medium transition"
+                  >
+                    {approvingId === doc_.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                    Duyệt
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Breadcrumb */}
       <div className="flex items-center gap-1 text-sm flex-wrap">
@@ -305,18 +475,31 @@ export default function DocumentsPage() {
           <div className="flex flex-col items-center gap-3 py-16 text-slate-400 border-2 border-dashed border-[var(--border)] rounded-2xl">
             <FolderOpen className="w-12 h-12" />
             <p className="font-medium">Thư mục trống</p>
-            {canCreate && <p className="text-sm">Nhấn "Thêm liên kết" để thêm tài liệu đầu tiên</p>}
+            {canCreate && <p className="text-sm">Nhấn "Tải lên" hoặc "Thêm liên kết" để thêm tài liệu đầu tiên</p>}
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {filteredDocs.map((doc_) => (
-              <div key={doc_.id} className="group relative flex flex-col gap-3 p-4 bg-[var(--card)] border border-[var(--border)] rounded-xl hover:border-blue-300 transition">
+              <div key={doc_.id} className={cn(
+                "group relative flex flex-col gap-3 p-4 bg-[var(--card)] border rounded-xl transition",
+                doc_.status === "pending"
+                  ? "border-amber-300 bg-amber-50/30 dark:bg-amber-900/10"
+                  : "border-[var(--border)] hover:border-blue-300"
+              )}>
+                {doc_.status === "pending" && (
+                  <span className="absolute top-3 right-3 px-2 py-0.5 text-[10px] font-semibold bg-amber-100 text-amber-700 rounded-full border border-amber-200">
+                    Chờ duyệt
+                  </span>
+                )}
                 <div className="flex items-start gap-3">
                   {fileIcon(doc_.fileType)}
-                  <div className="flex-1 min-w-0">
+                  <div className="flex-1 min-w-0 pr-14">
                     <p className="text-sm font-semibold text-[var(--foreground)] truncate">{doc_.name}</p>
                     {doc_.description && <p className="text-xs text-slate-400 mt-0.5 line-clamp-2">{doc_.description}</p>}
-                    <p className="text-[10px] text-slate-400 mt-1">{doc_.ownerName} · {new Date(doc_.createdAt).toLocaleDateString("vi-VN")}</p>
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      {doc_.ownerName} · {new Date(doc_.createdAt).toLocaleDateString("vi-VN")}
+                      {doc_.fileSize ? ` · ${formatSize(doc_.fileSize)}` : ""}
+                    </p>
                   </div>
                 </div>
 
@@ -338,7 +521,7 @@ export default function DocumentsPage() {
                 {(canManage || doc_.ownerId === currentUser?.id) && (
                   <button
                     onClick={() => handleDeleteDoc(doc_.id)}
-                    className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 p-1 text-red-400 hover:text-red-600 transition"
+                    className="absolute bottom-3 right-3 opacity-0 group-hover:opacity-100 p-1 text-red-400 hover:text-red-600 transition"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
@@ -353,7 +536,18 @@ export default function DocumentsPage() {
         <AddLinkModal
           folderId={currentFolderId}
           currentUser={currentUser}
+          canApprove={canApprove}
           onClose={() => setShowAddLink(false)}
+          onAdded={(d) => setDocuments((prev) => [d, ...prev])}
+        />
+      )}
+
+      {showUpload && currentUser && (
+        <UploadFileModal
+          folderId={currentFolderId}
+          currentUser={currentUser}
+          canApprove={canApprove}
+          onClose={() => setShowUpload(false)}
           onAdded={(d) => setDocuments((prev) => [d, ...prev])}
         />
       )}

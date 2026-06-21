@@ -258,7 +258,9 @@ export interface Workflow {
   description?: string;
   steps: WorkflowStep[];
   department?: string;
+  status: "pending" | "published";
   createdBy: string;
+  createdByName: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -396,6 +398,7 @@ export type CalendarEventType = "internal" | "google" | "meeting";
 export interface CalendarEvent {
   id: string;
   userId: string;
+  userName: string;
   title: string;
   description?: string;
   start: string;
@@ -405,6 +408,7 @@ export interface CalendarEvent {
   taskId?: string;
   meetLink?: string;
   location?: string;
+  status: "pending" | "published";
   changeRequest?: CalendarChangeRequest;
   googleEventId?: string;
   color?: string;
@@ -527,7 +531,9 @@ export interface RequestTemplate {
   fields: RequestFieldDef[];
   approverRole: UserRole;
   isActive: boolean;
+  status: "pending" | "published";
   createdBy: string;
+  createdByName?: string;
   createdAt: string;
 }
 
@@ -574,6 +580,7 @@ export interface WorkDocument {
   folderId: string | null;
   fileUrl: string;
   fileType: DocFileType;
+  status: "pending" | "published";
   fileSize?: number;
   mimeType?: string;
   ownerId: string;
@@ -597,6 +604,7 @@ export interface Announcement {
   authorId: string;
   authorName: string;
   authorRole: UserRole;
+  status: "pending" | "published";
   authorAvatar?: string;
   targetRoles: UserRole[];
   attachments: Attachment[];

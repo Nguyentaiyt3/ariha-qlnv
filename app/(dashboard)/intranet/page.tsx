@@ -2,8 +2,8 @@
 
 import { useEffect, useState, useRef } from "react";
 import {
-  Globe, Plus, Send, Loader2, Pin, Heart, MessageSquare,
-  ChevronDown, ChevronUp, Hash, Users, Lock, Megaphone,
+  Globe, Plus, Send, Loader2, Pin, MessageSquare,
+  ChevronDown, ChevronUp, Hash, Lock, Megaphone, CheckCircle2, XCircle, Clock,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn, getInitials, avatarColor } from "@/lib/utils";
@@ -13,7 +13,7 @@ import { useTaskStore } from "@/stores/useTaskStore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import {
   subscribeAnnouncements, saveAnnouncement, deleteAnnouncement,
-  reactToAnnouncement, markAnnouncementViewed,
+  reactToAnnouncement, markAnnouncementViewed, approveAnnouncement,
   getAnnouncementComments, addAnnouncementComment,
   subscribeChannels, saveChannel, subscribeChannelMessages, sendChannelMessage,
 } from "@/lib/firebase/firestore";
@@ -22,10 +22,12 @@ import type { Announcement, Channel, ChannelMessage, AnnouncementComment } from 
 // ── Announcement card ─────────────────────────────────────────────────────────
 const EMOJIS = ["👍", "❤️", "🎉", "🙌", "💡"];
 
-function AnnouncementCard({ item, currentUserId, canDelete }: {
+function AnnouncementCard({ item, currentUserId, canDelete, canApprove, onApprove }: {
   item: Announcement;
   currentUserId: string;
   canDelete: boolean;
+  canApprove?: boolean;
+  onApprove?: (id: string, approve: boolean) => void;
 }) {
   const [showComments, setShowComments] = useState(false);
   const [comments, setComments] = useState<AnnouncementComment[]>([]);
@@ -79,8 +81,29 @@ function AnnouncementCard({ item, currentUserId, canDelete }: {
   }
 
   return (
-    <div className={cn("bg-[var(--card)] border border-[var(--border)] rounded-2xl overflow-hidden", item.pinned && "border-amber-300 dark:border-amber-600")}>
-      {item.pinned && (
+    <div className={cn(
+      "bg-[var(--card)] border rounded-2xl overflow-hidden",
+      item.status === "pending" ? "border-amber-300 dark:border-amber-600 opacity-90" : "border-[var(--border)]",
+      item.pinned && item.status !== "pending" && "border-amber-300 dark:border-amber-600"
+    )}>
+      {item.status === "pending" && (
+        <div className="flex items-center justify-between px-4 py-1.5 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-700">
+          <span className="flex items-center gap-1.5 text-amber-700 dark:text-amber-400 text-xs font-semibold">
+            <Clock className="w-3 h-3" /> Chờ phê duyệt
+          </span>
+          {canApprove && (
+            <div className="flex gap-1.5">
+              <button onClick={() => onApprove?.(item.id, true)} className="flex items-center gap-1 px-2 py-0.5 bg-green-600 hover:bg-green-700 text-white text-[10px] font-semibold rounded-md transition">
+                <CheckCircle2 className="w-3 h-3" /> Duyệt
+              </button>
+              <button onClick={() => onApprove?.(item.id, false)} className="flex items-center gap-1 px-2 py-0.5 bg-red-500 hover:bg-red-600 text-white text-[10px] font-semibold rounded-md transition">
+                <XCircle className="w-3 h-3" /> Từ chối
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+      {item.pinned && item.status === "published" && (
         <div className="flex items-center gap-1.5 px-4 py-1.5 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 text-xs font-semibold border-b border-amber-200 dark:border-amber-700">
           <Pin className="w-3 h-3" /> Đã ghim
         </div>
@@ -269,15 +292,28 @@ export default function IntranetPage() {
   const [showNewChannel, setShowNewChannel] = useState(false);
   const [channelName, setChannelName] = useState("");
 
-  const canPost = !!(currentUser && hasPermission(currentUser.role, "intranet:post"));
+  const canCreate = !!(currentUser && hasPermission(currentUser.role, "intranet:create"));
+  const canApprovePost = !!(currentUser && hasPermission(currentUser.role, "intranet:approve"));
   const uid = currentUser?.id ?? "";
 
   useEffect(() => {
     if (!currentUser) return;
-    const unsubA = subscribeAnnouncements((items) => { setAnnouncements(items); setLoading(false); });
+    const unsubA = subscribeAnnouncements(
+      (items) => { setAnnouncements(items); setLoading(false); },
+      uid, canApprovePost,
+    );
     const unsubC = subscribeChannels(uid, setChannels);
     return () => { unsubA(); unsubC(); };
-  }, [currentUser, uid]);
+  }, [currentUser, uid, canApprovePost]);
+
+  async function handleApproveAnnouncement(id: string, approve: boolean) {
+    try {
+      await approveAnnouncement(id, approve);
+      toast.success(approve ? "Đã duyệt và công khai bản tin." : "Đã từ chối bản tin.");
+    } catch {
+      toast.error("Thao tác thất bại.");
+    }
+  }
 
   const activeChannel = channels.find((c) => c.id === activeChannelId) ?? null;
 
@@ -300,12 +336,13 @@ export default function IntranetPage() {
         pinned: postPinned,
         commentsCount: 0,
         viewedBy: [currentUser.id],
+        status: canApprovePost ? "published" : "pending",
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
       await saveAnnouncement(a);
       setPostTitle(""); setPostContent(""); setPostPinned(false); setShowPostForm(false);
-      toast.success("Đã đăng thông báo.");
+      toast.success(canApprovePost ? "Đã đăng bản tin." : "Đã gửi bản tin. Chờ quản lý phê duyệt để công khai.");
     } catch {
       toast.error("Đăng thất bại.");
     } finally {
@@ -355,9 +392,9 @@ export default function IntranetPage() {
               <Hash className="w-4 h-4 inline mr-1" />Nhóm chat
             </button>
           </div>
-          {canPost && tab === "feed" && (
+          {canCreate && tab === "feed" && (
             <button onClick={() => setShowPostForm((v) => !v)} className="flex items-center gap-1.5 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-xl transition">
-              <Plus className="w-4 h-4" /> Đăng thông báo
+              <Plus className="w-4 h-4" /> Đăng bản tin
             </button>
           )}
         </div>
@@ -417,11 +454,16 @@ export default function IntranetPage() {
             <div className="flex flex-col items-center gap-3 py-20 text-slate-400">
               <Megaphone className="w-12 h-12" />
               <p className="font-medium">Chưa có thông báo nào</p>
-              {canPost && <p className="text-sm">Nhấn "Đăng thông báo" để bắt đầu</p>}
+              {canCreate && <p className="text-sm">Nhấn "Đăng thông báo" để bắt đầu</p>}
             </div>
           ) : (
             announcements.map((a) => (
-              <AnnouncementCard key={a.id} item={a} currentUserId={uid} canDelete={canPost} />
+              <AnnouncementCard
+                key={a.id} item={a} currentUserId={uid}
+                canDelete={canApprovePost || a.authorId === uid}
+                canApprove={canApprovePost}
+                onApprove={handleApproveAnnouncement}
+              />
             ))
           )}
         </div>

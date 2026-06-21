@@ -137,7 +137,8 @@ export default function MyTasksWidget() {
         t.mainPerformerId !== uid &&
         (t.stakeholders ?? []).some((s) => s.userId === uid),
     );
-    const allMyTasks = [...new Map([...mainTasks, ...supportTasks].map((t) => [t.id, t])).values()];
+    const seen = new Set<string>();
+    const allMyTasks = [...mainTasks, ...supportTasks].filter((t) => { if (seen.has(t.id)) return false; seen.add(t.id); return true; });
     const overdueMain = mainTasks.filter((t) => isOverdue(t.deadlineBase) && t.status !== "done");
     const overdueSupport = supportTasks.filter((t) => isOverdue(t.deadlineBase) && t.status !== "done");
     return { mainTasks, supportTasks, allMyTasks, overdueMain, overdueSupport };

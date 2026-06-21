@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { GitBranch, Save, Plus, Trash2, ArrowUp, ArrowDown, Loader2 } from "lucide-react";
-import { getWorkflows, saveWorkflow, deleteWorkflow } from "@/lib/firebase/firestore";
+import { useState, useEffect, useMemo } from "react";
+import { GitBranch, Save, Plus, Trash2, ArrowUp, ArrowDown, Loader2, Clock, CheckCircle2, XCircle } from "lucide-react";
+import { getWorkflows, saveWorkflow, deleteWorkflow, approveWorkflow } from "@/lib/firebase/firestore";
 import type { Workflow, WorkflowStep } from "@/types";
 import { generateId } from "@/lib/utils";
 import { useAuthStore } from "@/stores/useAuthStore";
+import { hasPermission } from "@/lib/rbac/permissions";
 import { toast } from "sonner";
 
 export default function WorkflowPage() {
@@ -18,13 +19,27 @@ export default function WorkflowPage() {
   const [steps, setSteps] = useState<WorkflowStep[]>([]);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [approvingId, setApprovingId] = useState<string | null>(null);
+
+  const canApprove = !!(currentUser && hasPermission(currentUser.role, "workflow:approve"));
+  const canCreate = !!(currentUser && hasPermission(currentUser.role, "workflow:create"));
+
+  const pendingWorkflows = useMemo(
+    () => canApprove ? workflows.filter((w) => w.status === "pending") : [],
+    [workflows, canApprove]
+  );
+
+  const publishedWorkflows = useMemo(
+    () => workflows.filter((w) => w.status === "published" || w.status === undefined),
+    [workflows]
+  );
 
   useEffect(() => {
-    getWorkflows()
+    getWorkflows(canApprove)
       .then(setWorkflows)
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, []);
+  }, [canApprove]);
 
   function loadWorkflow(id: string) {
     const wf = workflows.find((w) => w.id === id);
@@ -82,22 +97,42 @@ export default function WorkflowPage() {
         description: description.trim() || undefined,
         department: department.trim() || undefined,
         steps: steps.map((s, i) => ({ ...s, order: i + 1 })),
+        status: existing?.status === "published" ? "published" : (canApprove ? "published" : "pending"),
         createdBy: existing?.createdBy ?? currentUser.id,
+        createdByName: existing?.createdByName ?? currentUser.name,
         createdAt: existing?.createdAt ?? new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
       await saveWorkflow(wf);
       if (selectedId) {
         setWorkflows((ws) => ws.map((w) => (w.id === selectedId ? wf : w)));
+        toast.success("Đã cập nhật quy trình.");
       } else {
         setWorkflows((ws) => [wf, ...ws]);
         setSelectedId(wf.id);
+        toast.success(canApprove ? "Đã tạo quy trình." : "Đã gửi quy trình. Chờ quản lý phê duyệt để công khai.");
       }
-      toast.success("Đã lưu quy trình");
     } catch {
       toast.error("Lưu thất bại");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleApproveWorkflow(id: string, approve: boolean) {
+    setApprovingId(id);
+    try {
+      await approveWorkflow(id, approve);
+      if (approve) {
+        setWorkflows((ws) => ws.map((w) => w.id === id ? { ...w, status: "published" as const } : w));
+      } else {
+        setWorkflows((ws) => ws.filter((w) => w.id !== id));
+      }
+      toast.success(approve ? "Đã duyệt quy trình." : "Đã từ chối quy trình.");
+    } catch {
+      toast.error("Thao tác thất bại.");
+    } finally {
+      setApprovingId(null);
     }
   }
 
@@ -122,34 +157,100 @@ export default function WorkflowPage() {
           <GitBranch className="w-5 h-5 text-blue-500" />
           Quản lý quy trình
         </h1>
-        <div className="flex gap-2 items-center">
-          <select
-            value={selectedId}
-            onChange={(e) => (e.target.value ? loadWorkflow(e.target.value) : newWorkflow())}
-            className="px-3 py-2 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="">+ Tạo quy trình mới</option>
-            {workflows.map((w) => (
-              <option key={w.id} value={w.id}>
-                {w.name}
-              </option>
-            ))}
-          </select>
-          {selectedId && (
-            <button
-              onClick={handleDelete}
-              className="p-2 text-red-500 border border-red-200 hover:bg-red-50 rounded-xl transition"
-              title="Xóa quy trình"
+        {canCreate && (
+          <div className="flex gap-2 items-center">
+            <select
+              value={selectedId}
+              onChange={(e) => (e.target.value ? loadWorkflow(e.target.value) : newWorkflow())}
+              className="px-3 py-2 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              <Trash2 className="w-4 h-4" />
-            </button>
-          )}
-        </div>
+              <option value="">+ Tạo quy trình mới</option>
+              {publishedWorkflows.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.name}
+                </option>
+              ))}
+            </select>
+            {selectedId && (
+              <button
+                onClick={handleDelete}
+                className="p-2 text-red-500 border border-red-200 hover:bg-red-50 rounded-xl transition"
+                title="Xóa quy trình"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        )}
       </div>
+
+      {/* Pending workflows — managers only */}
+      {canApprove && pendingWorkflows.length > 0 && (
+        <div className="border border-amber-200 bg-amber-50 dark:bg-amber-900/10 rounded-2xl p-4 space-y-3">
+          <h2 className="text-sm font-semibold text-amber-700 dark:text-amber-400 flex items-center gap-2">
+            <Clock className="w-4 h-4" />
+            Quy trình chờ duyệt ({pendingWorkflows.length})
+          </h2>
+          <div className="space-y-2">
+            {pendingWorkflows.map((wf) => (
+              <div key={wf.id} className="flex items-center gap-3 p-3 bg-white dark:bg-slate-900 rounded-xl border border-amber-100 dark:border-amber-800">
+                <GitBranch className="w-5 h-5 text-blue-400 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-[var(--foreground)] truncate">{wf.name}</p>
+                  <p className="text-xs text-slate-400">
+                    {wf.createdByName} · {wf.steps.length} bước
+                    {wf.department && ` · ${wf.department}`}
+                  </p>
+                </div>
+                <div className="flex gap-2 shrink-0">
+                  <button
+                    onClick={() => handleApproveWorkflow(wf.id, false)}
+                    disabled={approvingId === wf.id}
+                    className="flex items-center gap-1 px-2.5 py-1.5 border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-50 rounded-lg text-xs font-medium transition"
+                  >
+                    {approvingId === wf.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <XCircle className="w-3.5 h-3.5" />}
+                    Từ chối
+                  </button>
+                  <button
+                    onClick={() => handleApproveWorkflow(wf.id, true)}
+                    disabled={approvingId === wf.id}
+                    className="flex items-center gap-1 px-2.5 py-1.5 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg text-xs font-medium transition"
+                  >
+                    {approvingId === wf.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                    Duyệt
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <div className="flex justify-center py-10">
           <Loader2 className="w-6 h-6 animate-spin text-blue-500" />
+        </div>
+      ) : !canCreate ? (
+        /* Published workflows list for read-only role */
+        <div className="space-y-3">
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Các quy trình đang áp dụng</p>
+          {publishedWorkflows.length === 0 ? (
+            <div className="text-center py-12 text-slate-400 border-2 border-dashed border-[var(--border)] rounded-2xl">Chưa có quy trình nào.</div>
+          ) : (
+            publishedWorkflows.map((wf) => (
+              <div key={wf.id} className="p-4 bg-[var(--card)] border border-[var(--border)] rounded-xl">
+                <p className="font-semibold text-[var(--foreground)]">{wf.name}</p>
+                {wf.description && <p className="text-xs text-slate-400 mt-0.5">{wf.description}</p>}
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {wf.steps.map((s) => (
+                    <span key={s.id} className="px-2.5 py-1 text-xs bg-blue-50 dark:bg-blue-900/20 text-blue-600 rounded-full">
+                      {s.order}. {s.name}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))
+          )}
         </div>
       ) : (
         <>
@@ -302,7 +403,7 @@ export default function WorkflowPage() {
             ) : (
               <Save className="w-4 h-4" />
             )}
-            {selectedId ? "Cập nhật quy trình" : "Tạo quy trình"}
+            {selectedId ? "Cập nhật quy trình" : (canApprove ? "Tạo quy trình" : "Gửi để duyệt")}
           </button>
         </>
       )}

@@ -4,7 +4,7 @@ import { useEffect, useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import {
   FileText, Plus, Clock, CheckCircle2, XCircle, Loader2,
-  ChevronRight, Search, Inbox, Paperclip, X as XIcon, FileIcon,
+  ChevronRight, Search, Inbox, Paperclip, X as XIcon, FileIcon, Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -12,10 +12,11 @@ import { useAuthStore } from "@/stores/useAuthStore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import {
   getRequestTemplates, subscribeRequests, saveRequest,
+  getPendingTemplates, approveRequestTemplate, saveRequestTemplate,
 } from "@/lib/firebase/firestore";
 import { uploadFile } from "@/lib/firebase/storage";
 import { generateId } from "@/lib/utils";
-import type { RequestTemplate, RequestStatus, Attachment } from "@/types";
+import type { RequestTemplate, RequestStatus, Attachment, RequestFieldDef, RequestType, WorkRequest } from "@/types";
 
 // ── Built-in default templates (seed nếu chưa có trong Firestore) ──────────
 const DEFAULT_TEMPLATES: Omit<RequestTemplate, "id" | "createdBy" | "createdAt">[] = [
@@ -26,6 +27,7 @@ const DEFAULT_TEMPLATES: Omit<RequestTemplate, "id" | "createdBy" | "createdAt">
     description: "Nghỉ phép năm, nghỉ ốm, nghỉ việc riêng",
     approverRole: "teamLead",
     isActive: true,
+    status: "published",
     fields: [
       { key: "leaveType", label: "Loại nghỉ", type: "select", required: true, options: ["Nghỉ phép năm", "Nghỉ ốm", "Nghỉ việc riêng", "Nghỉ thai sản"] },
       { key: "fromDate", label: "Từ ngày", type: "date", required: true },
@@ -41,6 +43,7 @@ const DEFAULT_TEMPLATES: Omit<RequestTemplate, "id" | "createdBy" | "createdAt">
     description: "Đăng ký làm thêm giờ ngoài giờ hành chính",
     approverRole: "teamLead",
     isActive: true,
+    status: "published",
     fields: [
       { key: "date", label: "Ngày tăng ca", type: "date", required: true },
       { key: "fromTime", label: "Từ giờ", type: "text", required: true, placeholder: "18:00" },
@@ -55,6 +58,7 @@ const DEFAULT_TEMPLATES: Omit<RequestTemplate, "id" | "createdBy" | "createdAt">
     description: "Hoàn lại chi phí công tác, tiếp khách, mua sắm",
     approverRole: "director",
     isActive: true,
+    status: "published",
     fields: [
       { key: "expenseType", label: "Loại chi phí", type: "select", required: true, options: ["Công tác phí", "Tiếp khách", "Văn phòng phẩm", "Đào tạo", "Khác"] },
       { key: "amount", label: "Số tiền (VNĐ)", type: "number", required: true },
@@ -69,6 +73,7 @@ const DEFAULT_TEMPLATES: Omit<RequestTemplate, "id" | "createdBy" | "createdAt">
     description: "Đăng ký làm việc tại nhà hoặc ngoài văn phòng",
     approverRole: "teamLead",
     isActive: true,
+    status: "published",
     fields: [
       { key: "fromDate", label: "Từ ngày", type: "date", required: true },
       { key: "toDate", label: "Đến ngày", type: "date", required: true },
@@ -95,6 +100,181 @@ function formatBytes(bytes: number) {
 type PendingFile = { kind: "file"; file: File; preview?: string };
 type PendingLink = { kind: "link"; url: string; name: string };
 type PendingAttachment = PendingFile | PendingLink;
+
+// ── CreateTemplateModal ───────────────────────────────────────────────────────
+const TEMPLATE_TYPES: { value: RequestType; label: string; icon: string }[] = [
+  { value: "leave", label: "Nghỉ phép", icon: "🏖️" },
+  { value: "overtime", label: "Tăng ca", icon: "⏰" },
+  { value: "expense", label: "Chi phí", icon: "💰" },
+  { value: "equipment", label: "Thiết bị", icon: "🖥️" },
+  { value: "training", label: "Đào tạo", icon: "📚" },
+  { value: "wfh", label: "Làm từ xa", icon: "🏠" },
+  { value: "custom", label: "Tùy chỉnh", icon: "📄" },
+];
+
+const FIELD_TYPES: { value: RequestFieldDef["type"]; label: string }[] = [
+  { value: "text", label: "Văn bản ngắn" },
+  { value: "textarea", label: "Văn bản dài" },
+  { value: "date", label: "Ngày" },
+  { value: "number", label: "Số" },
+];
+
+function CreateTemplateModal({
+  currentUser,
+  canApprove,
+  onClose,
+  onCreated,
+}: {
+  currentUser: { id: string; name: string };
+  canApprove: boolean;
+  onClose: () => void;
+  onCreated: (t: RequestTemplate) => void;
+}) {
+  const [name, setName] = useState("");
+  const [type, setType] = useState<RequestType>("custom");
+  const [description, setDescription] = useState("");
+  const [fields, setFields] = useState<Array<{ label: string; type: RequestFieldDef["type"]; required: boolean }>>([
+    { label: "", type: "text", required: false },
+  ]);
+  const [saving, setSaving] = useState(false);
+
+  const selectedType = TEMPLATE_TYPES.find((t) => t.value === type);
+
+  function addField() {
+    setFields((prev) => [...prev, { label: "", type: "text", required: false }]);
+  }
+
+  function removeField(idx: number) {
+    setFields((prev) => prev.filter((_, i) => i !== idx));
+  }
+
+  function updateField(idx: number, patch: Partial<typeof fields[0]>) {
+    setFields((prev) => prev.map((f, i) => (i === idx ? { ...f, ...patch } : f)));
+  }
+
+  async function handleSave() {
+    if (!name.trim()) { toast.error("Vui lòng nhập tên mẫu đơn."); return; }
+    const validFields = fields.filter((f) => f.label.trim());
+    if (validFields.length === 0) { toast.error("Vui lòng thêm ít nhất một trường."); return; }
+
+    setSaving(true);
+    try {
+      const tpl: RequestTemplate = {
+        id: generateId("tpl"),
+        name: name.trim(),
+        type,
+        description: description.trim() || undefined,
+        icon: selectedType?.icon ?? "📄",
+        fields: validFields.map((f, i) => ({
+          key: `field_${i}`,
+          label: f.label.trim(),
+          type: f.type,
+          required: f.required,
+        })),
+        approverRole: "teamLead",
+        isActive: canApprove,
+        status: canApprove ? "published" : "pending",
+        createdBy: currentUser.id,
+        createdByName: currentUser.name,
+        createdAt: new Date().toISOString(),
+      };
+      await saveRequestTemplate(tpl);
+      toast.success(canApprove ? "Đã tạo mẫu đơn." : "Đã gửi yêu cầu tạo mẫu đơn. Chờ quản lý phê duyệt.");
+      onCreated(tpl);
+      onClose();
+    } catch {
+      toast.error("Lưu thất bại.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between p-5 border-b border-slate-200 dark:border-slate-700">
+          <h2 className="font-semibold text-[var(--foreground)]">Tạo mẫu đơn mới</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">&times;</button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          {/* Name */}
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-[var(--foreground)]">Tên mẫu đơn <span className="text-red-500">*</span></label>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="VD: Đơn xin ra ngoài giờ hành chính"
+              className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+
+          {/* Type */}
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-[var(--foreground)]">Loại đơn</label>
+            <div className="grid grid-cols-4 gap-2">
+              {TEMPLATE_TYPES.map((t) => (
+                <button key={t.value} type="button" onClick={() => setType(t.value)}
+                  className={cn("flex flex-col items-center gap-1 p-2 rounded-xl border text-center transition text-xs font-medium",
+                    type === t.value ? "border-blue-400 bg-blue-50 text-blue-700" : "border-[var(--border)] text-slate-500 hover:border-blue-300")}>
+                  <span className="text-xl">{t.icon}</span>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Description */}
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-[var(--foreground)]">Mô tả (tuỳ chọn)</label>
+            <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={2}
+              placeholder="Hướng dẫn ngắn về cách điền đơn..."
+              className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" />
+          </div>
+
+          {/* Fields */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium text-[var(--foreground)]">Các trường trong đơn <span className="text-red-500">*</span></label>
+              <button type="button" onClick={addField}
+                className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 font-medium">
+                <Plus className="w-3.5 h-3.5" /> Thêm trường
+              </button>
+            </div>
+            <div className="space-y-2">
+              {fields.map((f, idx) => (
+                <div key={idx} className="flex items-center gap-2 p-2.5 bg-[var(--muted)] rounded-xl">
+                  <input value={f.label} onChange={(e) => updateField(idx, { label: e.target.value })}
+                    placeholder={`Tên trường ${idx + 1}...`}
+                    className="flex-1 px-2.5 py-1.5 text-sm border border-[var(--border)] rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-1 focus:ring-blue-500" />
+                  <select value={f.type} onChange={(e) => updateField(idx, { type: e.target.value as RequestFieldDef["type"] })}
+                    className="px-2 py-1.5 text-xs border border-[var(--border)] rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none">
+                    {FIELD_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                  </select>
+                  <label className="flex items-center gap-1 text-xs text-slate-500 cursor-pointer whitespace-nowrap">
+                    <input type="checkbox" checked={f.required} onChange={(e) => updateField(idx, { required: e.target.checked })}
+                      className="rounded" />
+                    Bắt buộc
+                  </label>
+                  {fields.length > 1 && (
+                    <button type="button" onClick={() => removeField(idx)} className="text-slate-300 hover:text-red-500 transition">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="p-5 border-t border-slate-200 dark:border-slate-700 flex gap-3">
+          <button onClick={onClose} className="flex-1 py-2 border border-[var(--border)] rounded-xl text-sm font-medium text-[var(--foreground)] hover:bg-[var(--muted)] transition">Huỷ</button>
+          <button onClick={handleSave} disabled={saving}
+            className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-xl text-sm font-semibold transition flex items-center justify-center gap-2">
+            {saving && <Loader2 className="w-4 h-4 animate-spin" />}
+            {canApprove ? "Tạo mẫu đơn" : "Gửi để duyệt"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ── CreateRequestModal ────────────────────────────────────────────────────────
 function CreateRequestModal({
@@ -370,14 +550,19 @@ export default function RequestsPage() {
   const router = useRouter();
   const { currentUser } = useAuthStore();
   const [templates, setTemplates] = useState<RequestTemplate[]>([]);
+  const [pendingTemplates, setPendingTemplates] = useState<RequestTemplate[]>([]);
   const [requests, setRequests] = useState<WorkRequest[]>([]);
   const [activeTemplate, setActiveTemplate] = useState<RequestTemplate | null>(null);
+  const [showCreateTemplate, setShowCreateTemplate] = useState(false);
   const [tab, setTab] = useState<"mine" | "pending" | "all">("mine");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<RequestStatus | "all">("all");
   const [loading, setLoading] = useState(true);
+  const [approvingTplId, setApprovingTplId] = useState<string | null>(null);
 
   const canApprove = !!(currentUser && hasPermission(currentUser.role, "request:approve"));
+  const canCreateTemplate = !!(currentUser && hasPermission(currentUser.role, "template:create"));
+  const canApproveTemplate = !!(currentUser && hasPermission(currentUser.role, "template:approve"));
 
   useEffect(() => {
     if (!currentUser) return;
@@ -390,18 +575,40 @@ export default function RequestsPage() {
         setTemplates(DEFAULT_TEMPLATES.map((t, i) => ({
           ...t,
           id: `default_tpl_${i}`,
+          status: "published" as const,
           createdBy: "system",
           createdAt: new Date().toISOString(),
         })));
       }
     });
 
+    if (canApproveTemplate) {
+      getPendingTemplates().then(setPendingTemplates);
+    }
+
     const unsub = subscribeRequests(currentUser.id, canApprove, (reqs) => {
       setRequests(reqs);
       setLoading(false);
     });
     return () => unsub();
-  }, [currentUser, canApprove]);
+  }, [currentUser, canApprove, canApproveTemplate]);
+
+  async function handleApproveTemplate(id: string, approve: boolean) {
+    setApprovingTplId(id);
+    try {
+      await approveRequestTemplate(id, approve);
+      setPendingTemplates((prev) => prev.filter((t) => t.id !== id));
+      if (approve) {
+        // Re-fetch published templates so newly approved one appears
+        getRequestTemplates().then(setTemplates);
+      }
+      toast.success(approve ? "Đã duyệt mẫu đơn." : "Đã từ chối mẫu đơn.");
+    } catch {
+      toast.error("Thao tác thất bại.");
+    } finally {
+      setApprovingTplId(null);
+    }
+  }
 
   const filtered = useMemo(() => {
     let result = requests;
@@ -430,6 +637,48 @@ export default function RequestsPage() {
         </div>
       </div>
 
+      {/* Pending templates — managers only */}
+      {canApproveTemplate && pendingTemplates.length > 0 && (
+        <div className="border border-amber-200 bg-amber-50 dark:bg-amber-900/10 rounded-2xl p-4 space-y-3">
+          <h2 className="text-sm font-semibold text-amber-700 dark:text-amber-400 flex items-center gap-2">
+            <Clock className="w-4 h-4" />
+            Mẫu đơn chờ duyệt ({pendingTemplates.length})
+          </h2>
+          <div className="space-y-2">
+            {pendingTemplates.map((tpl) => (
+              <div key={tpl.id} className="flex items-center gap-3 p-3 bg-white dark:bg-slate-900 rounded-xl border border-amber-100 dark:border-amber-800">
+                <span className="text-xl shrink-0">{tpl.icon ?? "📄"}</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-[var(--foreground)] truncate">{tpl.name}</p>
+                  <p className="text-xs text-slate-400">
+                    {tpl.createdByName ?? "Nhân viên"} · {tpl.fields.length} trường
+                    {tpl.description && ` · ${tpl.description}`}
+                  </p>
+                </div>
+                <div className="flex gap-2 shrink-0">
+                  <button
+                    onClick={() => handleApproveTemplate(tpl.id, false)}
+                    disabled={approvingTplId === tpl.id}
+                    className="flex items-center gap-1 px-2.5 py-1.5 border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-50 rounded-lg text-xs font-medium transition"
+                  >
+                    {approvingTplId === tpl.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <XCircle className="w-3.5 h-3.5" />}
+                    Từ chối
+                  </button>
+                  <button
+                    onClick={() => handleApproveTemplate(tpl.id, true)}
+                    disabled={approvingTplId === tpl.id}
+                    className="flex items-center gap-1 px-2.5 py-1.5 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg text-xs font-medium transition"
+                  >
+                    {approvingTplId === tpl.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                    Duyệt
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Template quick-select */}
       <div>
         <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Tạo đơn mới</p>
@@ -444,13 +693,15 @@ export default function RequestsPage() {
               <span className="text-xs font-semibold text-[var(--foreground)] group-hover:text-blue-600 leading-tight">{t.name}</span>
             </button>
           ))}
-          <button
-            onClick={() => toast.info("Quản trị viên có thể tạo mẫu đơn tùy chỉnh trong Cài đặt.")}
-            className="flex flex-col items-center gap-2 p-4 bg-[var(--card)] border border-dashed border-[var(--border)] rounded-2xl hover:border-blue-400 transition group text-center"
-          >
-            <span className="text-3xl">➕</span>
-            <span className="text-xs font-medium text-slate-400 group-hover:text-blue-500">Mẫu tùy chỉnh</span>
-          </button>
+          {canCreateTemplate && (
+            <button
+              onClick={() => setShowCreateTemplate(true)}
+              className="flex flex-col items-center gap-2 p-4 bg-[var(--card)] border border-dashed border-[var(--border)] rounded-2xl hover:border-blue-400 transition group text-center"
+            >
+              <span className="text-3xl">➕</span>
+              <span className="text-xs font-medium text-slate-400 group-hover:text-blue-500">Tạo mẫu mới</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -535,12 +786,24 @@ export default function RequestsPage() {
         </div>
       )}
 
-      {/* Create modal */}
+      {/* Create request modal */}
       {activeTemplate && currentUser && (
         <CreateRequestModal
           template={activeTemplate}
           currentUser={currentUser}
           onClose={() => setActiveTemplate(null)}
+        />
+      )}
+
+      {/* Create template modal */}
+      {showCreateTemplate && currentUser && (
+        <CreateTemplateModal
+          currentUser={currentUser}
+          canApprove={canApproveTemplate}
+          onClose={() => setShowCreateTemplate(false)}
+          onCreated={(t) => {
+            if (t.status === "published") setTemplates((prev) => [...prev, t]);
+          }}
         />
       )}
     </div>

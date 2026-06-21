@@ -300,17 +300,38 @@ export function subscribeCalendarEvents(userId: string, callback: (events: Calen
   );
 }
 
+export async function getPendingCalendarEvents(): Promise<CalendarEvent[]> {
+  const db = getDb();
+  const snap = await getDocs(collection(db, "calendarEvents"));
+  return snap.docs
+    .map((d) => ({ id: d.id, ...d.data() } as CalendarEvent))
+    .filter((e) => e.status === "pending")
+    .sort((a, b) => a.start.localeCompare(b.start));
+}
+
+export async function approveCalendarEvent(id: string, approve: boolean): Promise<void> {
+  const db = getDb();
+  await updateDoc(doc(db, "calendarEvents", id), { status: approve ? "published" : "rejected" });
+}
+
 // ─── WORKFLOWS ────────────────────────────────────────────────
 
-export async function getWorkflows(): Promise<Workflow[]> {
+export async function getWorkflows(canApprove = false): Promise<Workflow[]> {
   const db = getDb();
   const snap = await getDocs(query(collection(db, "workflows"), orderBy("createdAt", "desc")));
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Workflow));
+  return snap.docs
+    .map((d) => ({ id: d.id, ...d.data() } as Workflow))
+    .filter((w) => canApprove || w.status === "published" || w.status === undefined);
 }
 
 export async function saveWorkflow(workflow: Workflow): Promise<void> {
   const db = getDb();
-  await setDoc(doc(db, "workflows", workflow.id), workflow, { merge: true });
+  await setDoc(doc(db, "workflows", workflow.id), deepStrip(workflow), { merge: true });
+}
+
+export async function approveWorkflow(id: string, approve: boolean): Promise<void> {
+  const db = getDb();
+  await updateDoc(doc(db, "workflows", id), { status: approve ? "published" : "rejected" });
 }
 
 export async function deleteWorkflow(workflowId: string): Promise<void> {
@@ -370,17 +391,35 @@ export async function saveEvaluation(evaluation: Evaluation): Promise<void> {
 
 // ─── REQUEST TEMPLATES ────────────────────────────────────────
 
-export async function getRequestTemplates(): Promise<RequestTemplate[]> {
+export async function getRequestTemplates(includeAllStatuses = false): Promise<RequestTemplate[]> {
   const db = getDb();
   const snap = await getDocs(query(collection(db, "requestTemplates"), where("isActive", "==", true)));
   return snap.docs
     .map((d) => ({ id: d.id, ...d.data() } as RequestTemplate))
+    .filter((t) => includeAllStatuses || t.status === "published" || t.status === undefined)
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+export async function getPendingTemplates(): Promise<RequestTemplate[]> {
+  const db = getDb();
+  const snap = await getDocs(query(collection(db, "requestTemplates"), where("isActive", "==", true)));
+  return snap.docs
+    .map((d) => ({ id: d.id, ...d.data() } as RequestTemplate))
+    .filter((t) => t.status === "pending")
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export async function approveRequestTemplate(id: string, approve: boolean): Promise<void> {
+  const db = getDb();
+  await updateDoc(doc(db, "requestTemplates", id), {
+    status: approve ? "published" : "rejected",
+    isActive: approve,
+  });
 }
 
 export async function saveRequestTemplate(t: RequestTemplate): Promise<void> {
   const db = getDb();
-  await setDoc(doc(db, "requestTemplates", t.id), t, { merge: true });
+  await setDoc(doc(db, "requestTemplates", t.id), deepStrip(t), { merge: true });
 }
 
 export async function deleteRequestTemplate(id: string): Promise<void> {
@@ -466,18 +505,33 @@ export async function deleteDocument(id: string): Promise<void> {
   await deleteDoc(doc(db, "documents", id));
 }
 
-export function subscribeDocuments(folderId: string | null, callback: (docs: WorkDocument[]) => void) {
+export function subscribeDocuments(folderId: string | null, callback: (docs: WorkDocument[]) => void, userId?: string, canApprove?: boolean) {
   const db = getDb();
   const q = query(collection(db, "documents"), where("folderId", "==", folderId));
   return onSnapshot(q,
     (snap) => {
       const docs = snap.docs
         .map((d) => ({ id: d.id, ...d.data() } as WorkDocument))
+        .filter((d) => canApprove || d.status === "published" || d.status === undefined || d.ownerId === userId)
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
       callback(docs);
     },
     (err) => console.error("[subscribeDocuments]", err.code)
   );
+}
+
+export async function getPendingDocuments(): Promise<WorkDocument[]> {
+  const db = getDb();
+  const snap = await getDocs(collection(db, "documents"));
+  return snap.docs
+    .map((d) => ({ id: d.id, ...d.data() } as WorkDocument))
+    .filter((d) => d.status === "pending")
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export async function approveDocument(id: string, approve: boolean): Promise<void> {
+  const db = getDb();
+  await updateDoc(doc(db, "documents", id), { status: approve ? "published" : "rejected" });
 }
 
 // ─── ANNOUNCEMENTS / MẠng NỘI BỘ ────────────────────────────
@@ -507,7 +561,7 @@ export async function reactToAnnouncement(announcementId: string, emoji: string,
   if (!snap.exists()) return;
   const reactions: Record<string, string[]> = (snap.data().reactions as Record<string, string[]>) ?? {};
   const users = reactions[emoji] ?? [];
-  reactions[emoji] = add ? [...new Set([...users, userId])] : users.filter((u) => u !== userId);
+  reactions[emoji] = add ? (users.includes(userId) ? users : [...users, userId]) : users.filter((u) => u !== userId);
   if (reactions[emoji].length === 0) delete reactions[emoji];
   await updateDoc(ref, { reactions });
 }
@@ -523,18 +577,29 @@ export async function markAnnouncementViewed(announcementId: string, userId: str
   }
 }
 
-export function subscribeAnnouncements(callback: (items: Announcement[]) => void) {
+export function subscribeAnnouncements(callback: (items: Announcement[]) => void, userId?: string, canApprove?: boolean) {
   const db = getDb();
   return onSnapshot(
-    query(collection(db, "announcements"), orderBy("createdAt", "desc"), limit(50)),
+    query(collection(db, "announcements"), orderBy("createdAt", "desc"), limit(100)),
     (snap) => {
       const items = snap.docs
         .map((d) => ({ id: d.id, ...d.data() } as Announcement))
-        .sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || b.createdAt.localeCompare(a.createdAt));
+        .filter((a) => canApprove || a.status === "published" || a.status === undefined || a.authorId === userId)
+        .sort((a, b) => {
+          // pending items for own author float to top for staff
+          const aScore = (b.pinned ? 2 : 0) + (b.status === "pending" && canApprove ? 1 : 0);
+          const bScore = (a.pinned ? 2 : 0) + (a.status === "pending" && canApprove ? 1 : 0);
+          return aScore - bScore || b.createdAt.localeCompare(a.createdAt);
+        });
       callback(items);
     },
     (err) => console.error("[subscribeAnnouncements]", err.code)
   );
+}
+
+export async function approveAnnouncement(id: string, approve: boolean): Promise<void> {
+  const db = getDb();
+  await updateDoc(doc(db, "announcements", id), { status: approve ? "published" : "rejected" });
 }
 
 export async function getAnnouncementComments(announcementId: string): Promise<AnnouncementComment[]> {
@@ -547,7 +612,9 @@ export async function addAnnouncementComment(announcementId: string, comment: Om
   const db = getDb();
   const id = generateId("ac");
   await setDoc(doc(db, "announcements", announcementId, "comments", id), { ...comment, id });
-  await updateDoc(doc(db, "announcements", announcementId), { commentsCount: (await getDoc(doc(db, "announcements", announcementId))).data()?.commentsCount + 1 ?? 1 });
+  const snap = await getDoc(doc(db, "announcements", announcementId));
+  const current = snap.data()?.commentsCount;
+  await updateDoc(doc(db, "announcements", announcementId), { commentsCount: typeof current === "number" ? current + 1 : 1 });
 }
 
 // ─── CHANNELS / NHÓM CHAT ────────────────────────────────────
