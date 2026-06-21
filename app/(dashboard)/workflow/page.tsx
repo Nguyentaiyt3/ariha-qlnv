@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { GitBranch, Save, Plus, Trash2, ArrowUp, ArrowDown, Loader2, Clock, CheckCircle2, XCircle } from "lucide-react";
-import { getWorkflows, saveWorkflow, deleteWorkflow, approveWorkflow } from "@/lib/firebase/firestore";
+import { getWorkflows, saveWorkflow, deleteWorkflow, approveWorkflow, addNotification } from "@/lib/firebase/firestore";
 import type { Workflow, WorkflowStep } from "@/types";
 import { generateId } from "@/lib/utils";
 import { useAuthStore } from "@/stores/useAuthStore";
@@ -20,6 +20,7 @@ export default function WorkflowPage() {
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [approvingId, setApprovingId] = useState<string | null>(null);
+  const [rejectingWf, setRejectingWf] = useState<{ id: string; reason: string } | null>(null);
 
   const canApprove = !!(currentUser && hasPermission(currentUser.role, "workflow:approve"));
   const canCreate = !!(currentUser && hasPermission(currentUser.role, "workflow:create"));
@@ -119,16 +120,32 @@ export default function WorkflowPage() {
     }
   }
 
-  async function handleApproveWorkflow(id: string, approve: boolean) {
+  async function handleApproveWorkflow(id: string, approve: boolean, reason?: string) {
+    const target = workflows.find((w) => w.id === id);
     setApprovingId(id);
     try {
-      await approveWorkflow(id, approve);
+      await approveWorkflow(id, approve, reason);
       if (approve) {
         setWorkflows((ws) => ws.map((w) => w.id === id ? { ...w, status: "published" as const } : w));
       } else {
         setWorkflows((ws) => ws.filter((w) => w.id !== id));
       }
+      setRejectingWf(null);
       toast.success(approve ? "Đã duyệt quy trình." : "Đã từ chối quy trình.");
+      if (target && currentUser && target.createdBy !== currentUser.id) {
+        await addNotification({
+          userId: target.createdBy,
+          type: approve ? "request_approved" : "request_rejected",
+          title: approve ? "Quy trình được duyệt" : "Quy trình bị từ chối",
+          body: approve
+            ? `Quy trình "${target.name}" đã được ${currentUser.name} phê duyệt.`
+            : `Quy trình "${target.name}" bị từ chối bởi ${currentUser.name}.${reason ? ` Lý do: ${reason}` : ""}`,
+          link: "/workflow",
+          read: false,
+          priority: "normal",
+          createdAt: new Date().toISOString(),
+        });
+      }
     } catch {
       toast.error("Thao tác thất bại.");
     } finally {
@@ -193,33 +210,64 @@ export default function WorkflowPage() {
           </h2>
           <div className="space-y-2">
             {pendingWorkflows.map((wf) => (
-              <div key={wf.id} className="flex items-center gap-3 p-3 bg-white dark:bg-slate-900 rounded-xl border border-amber-100 dark:border-amber-800">
-                <GitBranch className="w-5 h-5 text-blue-400 shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-[var(--foreground)] truncate">{wf.name}</p>
-                  <p className="text-xs text-slate-400">
-                    {wf.createdByName} · {wf.steps.length} bước
-                    {wf.department && ` · ${wf.department}`}
-                  </p>
+              <div key={wf.id} className="bg-white dark:bg-slate-900 rounded-xl border border-amber-100 dark:border-amber-800 overflow-hidden">
+                <div className="flex items-center gap-3 p-3">
+                  <GitBranch className="w-5 h-5 text-blue-400 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-[var(--foreground)] truncate">{wf.name}</p>
+                    <p className="text-xs text-slate-400">
+                      {wf.createdByName} · {wf.steps.length} bước
+                      {wf.department && ` · ${wf.department}`}
+                    </p>
+                  </div>
+                  <div className="flex gap-2 shrink-0">
+                    <button
+                      onClick={() => setRejectingWf(rejectingWf?.id === wf.id ? null : { id: wf.id, reason: "" })}
+                      disabled={approvingId === wf.id}
+                      className="flex items-center gap-1 px-2.5 py-1.5 border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-50 rounded-lg text-xs font-medium transition"
+                    >
+                      <XCircle className="w-3.5 h-3.5" /> Từ chối
+                    </button>
+                    <button
+                      onClick={() => handleApproveWorkflow(wf.id, true)}
+                      disabled={approvingId === wf.id}
+                      className="flex items-center gap-1 px-2.5 py-1.5 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg text-xs font-medium transition"
+                    >
+                      {approvingId === wf.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                      Duyệt
+                    </button>
+                  </div>
                 </div>
-                <div className="flex gap-2 shrink-0">
-                  <button
-                    onClick={() => handleApproveWorkflow(wf.id, false)}
-                    disabled={approvingId === wf.id}
-                    className="flex items-center gap-1 px-2.5 py-1.5 border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-50 rounded-lg text-xs font-medium transition"
-                  >
-                    {approvingId === wf.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <XCircle className="w-3.5 h-3.5" />}
-                    Từ chối
-                  </button>
-                  <button
-                    onClick={() => handleApproveWorkflow(wf.id, true)}
-                    disabled={approvingId === wf.id}
-                    className="flex items-center gap-1 px-2.5 py-1.5 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg text-xs font-medium transition"
-                  >
-                    {approvingId === wf.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
-                    Duyệt
-                  </button>
-                </div>
+                {rejectingWf?.id === wf.id && (
+                  <div className="px-3 pb-3 pt-0 space-y-2 border-t border-red-100 dark:border-red-900 bg-red-50 dark:bg-red-900/10">
+                    <p className="text-xs font-medium text-red-600 pt-2">Lý do từ chối <span className="text-red-500">*</span></p>
+                    <textarea
+                      autoFocus
+                      rows={2}
+                      value={rejectingWf.reason}
+                      onChange={(e) => setRejectingWf({ ...rejectingWf, reason: e.target.value })}
+                      placeholder="Nhập lý do từ chối..."
+                      className="w-full px-3 py-2 text-sm border border-red-200 rounded-lg bg-white dark:bg-slate-900 text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-red-400 resize-none"
+                    />
+                    <div className="flex gap-2">
+                      <button onClick={() => setRejectingWf(null)}
+                        className="flex-1 py-1.5 border border-[var(--border)] rounded-lg text-xs text-[var(--foreground)] hover:bg-[var(--muted)] transition">
+                        Huỷ
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (!rejectingWf.reason.trim()) { toast.error("Vui lòng nhập lý do từ chối."); return; }
+                          handleApproveWorkflow(wf.id, false, rejectingWf.reason.trim());
+                        }}
+                        disabled={approvingId === wf.id}
+                        className="flex-1 py-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1"
+                      >
+                        {approvingId === wf.id ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                        Xác nhận từ chối
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
           </div>

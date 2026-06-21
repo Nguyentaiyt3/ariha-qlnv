@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { AlertTriangle, Clock, Flag, ChevronUp, ChevronDown, Search } from "lucide-react";
+import { AlertTriangle, Clock, Flag, ChevronUp, ChevronDown, Search, Trash2 } from "lucide-react";
 import { cn, formatDate, statusLabel, priorityLabel, getInitials, avatarColor, daysUntilDeadline } from "@/lib/utils";
 import type { Task, User, TaskStatus, TaskPriority } from "@/types";
 
@@ -27,9 +27,11 @@ interface TaskListViewProps {
   tasks: Task[];
   users: User[];
   onSelectTask: (task: Task) => void;
+  canDelete?: boolean;
+  onDeleteTask?: (task: Task) => void;
 }
 
-export function TaskListView({ tasks, users, onSelectTask }: TaskListViewProps) {
+export function TaskListView({ tasks, users, onSelectTask, canDelete, onDeleteTask }: TaskListViewProps) {
   const [sortField, setSortField] = useState<SortField>("deadlineBase");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [localSearch, setLocalSearch] = useState("");
@@ -211,9 +213,20 @@ export function TaskListView({ tasks, users, onSelectTask }: TaskListViewProps) 
                       )}
                     </td>
 
-                    {/* Arrow */}
-                    <td className="px-2 py-3">
-                      <ChevronUp className="w-4 h-4 text-slate-300 rotate-90" />
+                    {/* Actions */}
+                    <td className="px-2 py-3" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex items-center gap-1">
+                        {canDelete && onDeleteTask && (
+                          <button
+                            onClick={() => onDeleteTask(task)}
+                            className="p-1 text-slate-300 hover:text-red-500 transition rounded"
+                            title="Xoá nhiệm vụ"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        <ChevronUp className="w-4 h-4 text-slate-300 rotate-90" />
+                      </div>
                     </td>
                   </tr>
                 );

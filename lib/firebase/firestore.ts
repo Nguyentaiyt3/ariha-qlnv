@@ -309,9 +309,12 @@ export async function getPendingCalendarEvents(): Promise<CalendarEvent[]> {
     .sort((a, b) => a.start.localeCompare(b.start));
 }
 
-export async function approveCalendarEvent(id: string, approve: boolean): Promise<void> {
+export async function approveCalendarEvent(id: string, approve: boolean, reason?: string): Promise<void> {
   const db = getDb();
-  await updateDoc(doc(db, "calendarEvents", id), { status: approve ? "published" : "rejected" });
+  await updateDoc(doc(db, "calendarEvents", id), {
+    status: approve ? "published" : "rejected",
+    ...(reason && { rejectionReason: reason }),
+  });
 }
 
 // ─── WORKFLOWS ────────────────────────────────────────────────
@@ -329,9 +332,12 @@ export async function saveWorkflow(workflow: Workflow): Promise<void> {
   await setDoc(doc(db, "workflows", workflow.id), deepStrip(workflow), { merge: true });
 }
 
-export async function approveWorkflow(id: string, approve: boolean): Promise<void> {
+export async function approveWorkflow(id: string, approve: boolean, reason?: string): Promise<void> {
   const db = getDb();
-  await updateDoc(doc(db, "workflows", id), { status: approve ? "published" : "rejected" });
+  await updateDoc(doc(db, "workflows", id), {
+    status: approve ? "published" : "rejected",
+    ...(reason && { rejectionReason: reason }),
+  });
 }
 
 export async function deleteWorkflow(workflowId: string): Promise<void> {
@@ -409,11 +415,12 @@ export async function getPendingTemplates(): Promise<RequestTemplate[]> {
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-export async function approveRequestTemplate(id: string, approve: boolean): Promise<void> {
+export async function approveRequestTemplate(id: string, approve: boolean, reason?: string): Promise<void> {
   const db = getDb();
   await updateDoc(doc(db, "requestTemplates", id), {
     status: approve ? "published" : "rejected",
     isActive: approve,
+    ...(reason && { rejectionReason: reason }),
   });
 }
 
@@ -529,9 +536,12 @@ export async function getPendingDocuments(): Promise<WorkDocument[]> {
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-export async function approveDocument(id: string, approve: boolean): Promise<void> {
+export async function approveDocument(id: string, approve: boolean, reason?: string): Promise<void> {
   const db = getDb();
-  await updateDoc(doc(db, "documents", id), { status: approve ? "published" : "rejected" });
+  await updateDoc(doc(db, "documents", id), {
+    status: approve ? "published" : "rejected",
+    ...(reason && { rejectionReason: reason }),
+  });
 }
 
 // ─── ANNOUNCEMENTS / MẠng NỘI BỘ ────────────────────────────
@@ -597,9 +607,12 @@ export function subscribeAnnouncements(callback: (items: Announcement[]) => void
   );
 }
 
-export async function approveAnnouncement(id: string, approve: boolean): Promise<void> {
+export async function approveAnnouncement(id: string, approve: boolean, reason?: string): Promise<void> {
   const db = getDb();
-  await updateDoc(doc(db, "announcements", id), { status: approve ? "published" : "rejected" });
+  await updateDoc(doc(db, "announcements", id), {
+    status: approve ? "published" : "rejected",
+    ...(reason && { rejectionReason: reason }),
+  });
 }
 
 export async function getAnnouncementComments(announcementId: string): Promise<AnnouncementComment[]> {

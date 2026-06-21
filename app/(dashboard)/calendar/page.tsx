@@ -16,7 +16,7 @@ import { cn, generateId } from "@/lib/utils";
 import { hasPermission } from "@/lib/rbac/permissions";
 import {
   saveCalendarEvent, subscribeCalendarEvents,
-  getPendingCalendarEvents, approveCalendarEvent,
+  getPendingCalendarEvents, approveCalendarEvent, addNotification,
 } from "@/lib/firebase/firestore";
 
 const CalendarView = dynamic(() => import("@/components/calendar/CalendarView"), { ssr: false });
@@ -148,6 +148,7 @@ export default function CalendarPage() {
   const [pendingEvents, setPendingEvents] = useState<CalendarEvent[]>([]);
   const [showAddEvent, setShowAddEvent] = useState(false);
   const [approvingId, setApprovingId] = useState<string | null>(null);
+  const [rejectingEvent, setRejectingEvent] = useState<{ id: string; reason: string } | null>(null);
 
   const canCreate = !!(currentUser && hasPermission(currentUser.role, "calendar:createPersonal"));
   const canApprove = !!(currentUser && hasPermission(currentUser.role, "calendar:approve"));
@@ -182,12 +183,28 @@ export default function CalendarPage() {
     getPendingCalendarEvents().then(setPendingEvents);
   }, [canApprove]);
 
-  async function handleApproveEvent(id: string, approve: boolean) {
+  async function handleApproveEvent(id: string, approve: boolean, reason?: string) {
+    const target = pendingEvents.find((e) => e.id === id);
     setApprovingId(id);
     try {
-      await approveCalendarEvent(id, approve);
+      await approveCalendarEvent(id, approve, reason);
       setPendingEvents((prev) => prev.filter((e) => e.id !== id));
+      setRejectingEvent(null);
       toast.success(approve ? "Đã duyệt sự kiện." : "Đã từ chối sự kiện.");
+      if (target && currentUser && target.userId !== currentUser.id) {
+        await addNotification({
+          userId: target.userId,
+          type: approve ? "request_approved" : "request_rejected",
+          title: approve ? "Sự kiện được duyệt" : "Sự kiện bị từ chối",
+          body: approve
+            ? `Sự kiện "${target.title}" đã được ${currentUser.name} phê duyệt và công khai.`
+            : `Sự kiện "${target.title}" bị từ chối bởi ${currentUser.name}.${reason ? ` Lý do: ${reason}` : ""}`,
+          link: "/calendar",
+          read: false,
+          priority: "normal",
+          createdAt: new Date().toISOString(),
+        });
+      }
     } catch {
       toast.error("Thao tác thất bại.");
     } finally {
@@ -289,32 +306,63 @@ export default function CalendarPage() {
           </h2>
           <div className="space-y-2">
             {pendingEvents.map((ev) => (
-              <div key={ev.id} className="flex items-center gap-3 p-3 bg-white dark:bg-slate-900 rounded-xl border border-amber-100 dark:border-amber-800">
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-[var(--foreground)] truncate">{ev.title}</p>
-                  <p className="text-xs text-slate-400">
-                    {ev.userName} · {new Date(ev.start).toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}
-                    {ev.description && ` · ${ev.description}`}
-                  </p>
+              <div key={ev.id} className="bg-white dark:bg-slate-900 rounded-xl border border-amber-100 dark:border-amber-800 overflow-hidden">
+                <div className="flex items-center gap-3 p-3">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-[var(--foreground)] truncate">{ev.title}</p>
+                    <p className="text-xs text-slate-400">
+                      {ev.userName} · {new Date(ev.start).toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                      {ev.description && ` · ${ev.description}`}
+                    </p>
+                  </div>
+                  <div className="flex gap-2 shrink-0">
+                    <button
+                      onClick={() => setRejectingEvent(rejectingEvent?.id === ev.id ? null : { id: ev.id, reason: "" })}
+                      disabled={approvingId === ev.id}
+                      className="flex items-center gap-1 px-2.5 py-1.5 border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-50 rounded-lg text-xs font-medium transition"
+                    >
+                      <XCircle className="w-3.5 h-3.5" /> Từ chối
+                    </button>
+                    <button
+                      onClick={() => handleApproveEvent(ev.id, true)}
+                      disabled={approvingId === ev.id}
+                      className="flex items-center gap-1 px-2.5 py-1.5 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg text-xs font-medium transition"
+                    >
+                      {approvingId === ev.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                      Duyệt
+                    </button>
+                  </div>
                 </div>
-                <div className="flex gap-2 shrink-0">
-                  <button
-                    onClick={() => handleApproveEvent(ev.id, false)}
-                    disabled={approvingId === ev.id}
-                    className="flex items-center gap-1 px-2.5 py-1.5 border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-50 rounded-lg text-xs font-medium transition"
-                  >
-                    {approvingId === ev.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <XCircle className="w-3.5 h-3.5" />}
-                    Từ chối
-                  </button>
-                  <button
-                    onClick={() => handleApproveEvent(ev.id, true)}
-                    disabled={approvingId === ev.id}
-                    className="flex items-center gap-1 px-2.5 py-1.5 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg text-xs font-medium transition"
-                  >
-                    {approvingId === ev.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
-                    Duyệt
-                  </button>
-                </div>
+                {rejectingEvent?.id === ev.id && (
+                  <div className="px-3 pb-3 pt-0 space-y-2 border-t border-red-100 dark:border-red-900 bg-red-50 dark:bg-red-900/10">
+                    <p className="text-xs font-medium text-red-600 pt-2">Lý do từ chối <span className="text-red-500">*</span></p>
+                    <textarea
+                      autoFocus
+                      rows={2}
+                      value={rejectingEvent.reason}
+                      onChange={(e) => setRejectingEvent({ ...rejectingEvent, reason: e.target.value })}
+                      placeholder="Nhập lý do từ chối..."
+                      className="w-full px-3 py-2 text-sm border border-red-200 rounded-lg bg-white dark:bg-slate-900 text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-red-400 resize-none"
+                    />
+                    <div className="flex gap-2">
+                      <button onClick={() => setRejectingEvent(null)}
+                        className="flex-1 py-1.5 border border-[var(--border)] rounded-lg text-xs text-[var(--foreground)] hover:bg-[var(--muted)] transition">
+                        Huỷ
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (!rejectingEvent.reason.trim()) { toast.error("Vui lòng nhập lý do từ chối."); return; }
+                          handleApproveEvent(ev.id, false, rejectingEvent.reason.trim());
+                        }}
+                        disabled={approvingId === ev.id}
+                        className="flex-1 py-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1"
+                      >
+                        {approvingId === ev.id ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                        Xác nhận từ chối
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
           </div>

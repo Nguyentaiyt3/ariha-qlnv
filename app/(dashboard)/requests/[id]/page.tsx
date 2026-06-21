@@ -227,16 +227,22 @@ export default function RequestDetailPage() {
           <h2 className="text-sm font-semibold text-[var(--foreground)] flex items-center gap-2">
             <MessageSquare className="w-4 h-4 text-blue-500" /> Xét duyệt
           </h2>
-          <textarea
-            value={comment}
-            onChange={(e) => setComment(e.target.value)}
-            placeholder="Nhận xét (tuỳ chọn)..."
-            rows={3}
-            className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-          />
+          <div>
+            <textarea
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+              placeholder="Nhận xét (bắt buộc nếu từ chối)..."
+              rows={3}
+              className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+            />
+            <p className="text-[10px] text-slate-400 mt-1">Lý do từ chối là bắt buộc. Nhận xét khi duyệt là tuỳ chọn.</p>
+          </div>
           <div className="flex gap-3">
             <button
-              onClick={() => handleDecision(false)}
+              onClick={() => {
+                if (!comment.trim()) { toast.error("Vui lòng nhập lý do từ chối."); return; }
+                handleDecision(false);
+              }}
               disabled={acting}
               className="flex-1 py-2.5 border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-60 rounded-xl text-sm font-semibold transition flex items-center justify-center gap-2"
             >

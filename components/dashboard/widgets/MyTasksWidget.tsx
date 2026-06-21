@@ -55,17 +55,17 @@ function DonutChart({ title, subtitle, tasks, centerValue, accentColor = "#3b82f
   const data = segments.length > 0 ? segments : empty;
 
   return (
-    <div className="flex flex-col items-center gap-2 flex-1 min-w-0">
-      {/* Donut */}
-      <div className="relative w-[96px] h-[96px] shrink-0">
+    <div className="flex flex-col items-center gap-1 flex-1 min-h-0" style={{ minWidth: 140 }}>
+      {/* Donut — fills available height */}
+      <div className="relative flex-1 w-full min-h-0">
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
             <Pie
               data={data}
               cx="50%"
               cy="50%"
-              innerRadius={30}
-              outerRadius={46}
+              innerRadius="22%"
+              outerRadius="48%"
               dataKey="value"
               strokeWidth={1.5}
               stroke="var(--card, #fff)"
@@ -87,7 +87,7 @@ function DonutChart({ title, subtitle, tasks, centerValue, accentColor = "#3b82f
         </ResponsiveContainer>
         {/* Centre label */}
         <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-          <span className="text-base font-bold leading-none" style={{ color: accentColor }}>
+          <span className="text-sm font-bold leading-none" style={{ color: accentColor }}>
             {centerValue}%
           </span>
           <span className="text-[9px] text-slate-400 mt-0.5">{total} NV</span>
@@ -95,8 +95,8 @@ function DonutChart({ title, subtitle, tasks, centerValue, accentColor = "#3b82f
       </div>
 
       {/* Text labels */}
-      <div className="text-center leading-tight">
-        <p className="text-xs font-semibold text-[var(--foreground)]">{title}</p>
+      <div className="text-center leading-tight shrink-0">
+        <p className="text-[11px] font-semibold text-[var(--foreground)]">{title}</p>
         <p className="text-[10px] text-[var(--muted-foreground)] mt-0.5">{subtitle}</p>
       </div>
     </div>
@@ -195,8 +195,8 @@ export default function MyTasksWidget() {
         </Link>
       </div>
 
-      {/* Charts row */}
-      <div className="flex items-start justify-around gap-2 flex-1">
+      {/* Charts row — min-width per donut prevents shrinking below readable size */}
+      <div className="flex items-stretch gap-2 flex-1 min-h-0 overflow-x-auto">
         {charts.map((c) => (
           <DonutChart key={c.title} {...c} centerSuffix="%" />
         ))}

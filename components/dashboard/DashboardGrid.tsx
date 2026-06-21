@@ -26,12 +26,14 @@ const Placeholder = ({ label }: { label: string }) => (
 
 // Lazy-load all widgets to keep bundle small
 const WIDGET_MAP: Partial<Record<WidgetType, React.ComponentType>> = {
-  my_tasks: dynamic(() => import("./widgets/MyTasksWidget")),
-  deadline_alert: dynamic(() => import("./widgets/DeadlineAlertWidget")),
-  team_leaderboard: dynamic(() => import("./widgets/TeamLeaderboardWidget")),
-  kpi_week: dynamic(() => import("./widgets/KPIWeekWidget")),
-  calendar_mini: dynamic(() => import("./widgets/CalendarMiniWidget")),
-  workload_heatmap: dynamic(() => import("./widgets/WorkloadHeatmapWidget")),
+  my_tasks:          dynamic(() => import("./widgets/MyTasksWidget")),
+  support_tasks:     dynamic(() => import("./widgets/SupportTasksWidget")),
+  analytics_summary: dynamic(() => import("./widgets/AnalyticsSummaryWidget")),
+  deadline_alert:    dynamic(() => import("./widgets/DeadlineAlertWidget")),
+  team_leaderboard:  dynamic(() => import("./widgets/TeamLeaderboardWidget")),
+  kpi_week:          dynamic(() => import("./widgets/KPIWeekWidget")),
+  calendar_mini:     dynamic(() => import("./widgets/CalendarMiniWidget")),
+  workload_heatmap:  dynamic(() => import("./widgets/WorkloadHeatmapWidget")),
   internal_messages: dynamic(() => import("./widgets/InternalMessagesWidget")),
 };
 
@@ -40,9 +42,10 @@ interface Props {
   isEditMode: boolean;
   onReorder: (widgets: WidgetConfig[]) => void;
   onHide: (id: string) => void;
+  onResize: (id: string, w: number, h: number) => void;
 }
 
-export default function DashboardGrid({ widgets, isEditMode, onReorder, onHide }: Props) {
+export default function DashboardGrid({ widgets, isEditMode, onReorder, onHide, onResize }: Props) {
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -67,12 +70,12 @@ export default function DashboardGrid({ widgets, isEditMode, onReorder, onHide }
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
       <SortableContext items={visible.map((w) => w.id)} strategy={rectSortingStrategy}>
-        <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" }}>
+        <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gridAutoRows: "220px" }}>
           {visible.map((widget) => {
             const WidgetComponent = WIDGET_MAP[widget.type] ?? (() => <Placeholder label={widget.type} />);
             if (!WidgetComponent) return null;
             return (
-              <WidgetWrapper key={widget.id} widget={widget} isEditMode={isEditMode} onHide={onHide}>
+              <WidgetWrapper key={widget.id} widget={widget} isEditMode={isEditMode} onHide={onHide} onResize={onResize}>
                 <WidgetComponent />
               </WidgetWrapper>
             );

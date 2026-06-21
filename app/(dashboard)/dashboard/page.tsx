@@ -11,12 +11,14 @@ import { generateId } from "@/lib/utils";
 import { saveUser } from "@/lib/firebase/firestore";
 
 const WIDGET_LABELS: Partial<Record<WidgetType, string>> = {
-  my_tasks: "Nhiệm vụ của tôi",
-  deadline_alert: "Sắp đến hạn",
-  team_leaderboard: "Xếp hạng nhóm",
-  kpi_week: "KPI tuần này",
-  calendar_mini: "7 ngày tới",
-  workload_heatmap: "Phân bổ công việc",
+  my_tasks:          "Nhiệm vụ của tôi",
+  support_tasks:     "Hỗ trợ của tôi",
+  analytics_summary: "Tổng quan tổ chức",
+  deadline_alert:    "Sắp đến hạn",
+  team_leaderboard:  "Xếp hạng nhóm",
+  kpi_week:          "KPI tuần này",
+  calendar_mini:     "7 ngày tới",
+  workload_heatmap:  "Phân bổ công việc",
   internal_messages: "Tin nhắn mới nhất",
 };
 
@@ -74,6 +76,14 @@ export default function DashboardPage() {
     toggleWidgetVisibility(activeProfile.id, widgetId);
   };
 
+  const handleResize = (widgetId: string, w: number, h: number) => {
+    if (!activeProfile) return;
+    const updated = activeProfile.widgets.map((wg) =>
+      wg.id === widgetId ? { ...wg, w, h } : wg
+    );
+    updateWidgets(activeProfile.id, updated);
+  };
+
   const handleShowWidget = (widgetId: string) => {
     if (!activeProfile) return;
     toggleWidgetVisibility(activeProfile.id, widgetId);
@@ -89,7 +99,7 @@ export default function DashboardPage() {
   };
 
   const hiddenWidgets = activeProfile?.widgets.filter((w) => !w.visible) ?? [];
-  const allWidgetTypes: WidgetType[] = ["my_tasks", "deadline_alert", "team_leaderboard", "kpi_week", "calendar_mini", "workload_heatmap", "internal_messages"];
+  const allWidgetTypes: WidgetType[] = ["my_tasks", "support_tasks", "analytics_summary", "deadline_alert", "team_leaderboard", "kpi_week", "calendar_mini", "workload_heatmap", "internal_messages"];
   const existingTypes = activeProfile?.widgets.map((w) => w.type) ?? [];
   const addableTypes = allWidgetTypes.filter((t) => !existingTypes.includes(t));
 
@@ -208,6 +218,7 @@ export default function DashboardPage() {
           isEditMode={isEditMode}
           onReorder={handleReorder}
           onHide={handleHideWidget}
+          onResize={handleResize}
         />
       ) : (
         <div className="flex items-center justify-center h-64 text-[var(--muted-foreground)] text-sm">

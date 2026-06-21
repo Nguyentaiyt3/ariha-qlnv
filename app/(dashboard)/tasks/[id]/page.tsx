@@ -5,12 +5,12 @@ import { useParams, useRouter } from "next/navigation";
 import {
   ArrowLeft, AlertTriangle, User, Calendar, Flag,
   CheckSquare, MessageSquare, Users, Mail, Activity, BarChart3,
-  CheckCheck, Loader2, Star, Send, ClipboardCheck,
+  CheckCheck, Loader2, Star, Send, ClipboardCheck, Pencil, Trash2, X as XIcon, Save,
 } from "lucide-react";
 import { cn, formatDate, formatDateTime, formatRelativeTime, statusLabel, priorityLabel, getInitials, avatarColor, isTaskVisible } from "@/lib/utils";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useAuthStore } from "@/stores/useAuthStore";
-import { subscribeTask, updateTask, getMessages, addMessage, getEmailLogs, getAuditTrail, addAuditEvent, addNotification, getEvaluations, saveEvaluation } from "@/lib/firebase/firestore";
+import { subscribeTask, updateTask, deleteTask, getMessages, addMessage, getEmailLogs, getAuditTrail, addAuditEvent, addNotification, getEvaluations, saveEvaluation } from "@/lib/firebase/firestore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { StepsTab } from "@/components/tasks/StepsTab";
 import { UserAvatar } from "@/components/common/UserAvatar";
@@ -45,6 +45,12 @@ export default function TaskDetailsPage() {
   const [closureRating, setClosureRating] = useState(0);
   const [closureComment, setClosureComment] = useState("");
   const [submittingClosure, setSubmittingClosure] = useState(false);
+
+  // Edit / delete state
+  const [isEditing, setIsEditing] = useState(false);
+  const [editForm, setEditForm] = useState({ name: "", description: "", priority: "", deadlineBase: "", department: "" });
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [deletingTask, setDeletingTask] = useState(false);
 
   // Realtime task subscription
   useEffect(() => {
@@ -99,6 +105,54 @@ export default function TaskDetailsPage() {
     } finally {
       setSendingMsg(false);
     }
+  }
+
+  function startEdit() {
+    if (!task) return;
+    setEditForm({
+      name: task.name,
+      description: task.description ?? "",
+      priority: task.priority,
+      deadlineBase: task.deadlineBase ? task.deadlineBase.slice(0, 10) : "",
+      department: task.department ?? "",
+    });
+    setIsEditing(true);
+  }
+
+  async function handleSaveEdit() {
+    if (!task || !currentUser || !editForm.name.trim()) { toast.error("Tên nhiệm vụ không được để trống."); return; }
+    setSavingEdit(true);
+    try {
+      const updates: Partial<Task> = {
+        name: editForm.name.trim(),
+        description: editForm.description.trim() || undefined,
+        priority: editForm.priority as Task["priority"],
+        deadlineBase: editForm.deadlineBase || undefined,
+        department: editForm.department.trim() || undefined,
+        updatedAt: new Date().toISOString(),
+      };
+      await updateTask(id, updates);
+      await addAuditEvent(id, {
+        taskId: id, action: "edited",
+        userId: currentUser.id, userName: currentUser.name,
+        before: { name: task.name }, after: { name: updates.name },
+        timestamp: new Date().toISOString(),
+      });
+      toast.success("Đã cập nhật nhiệm vụ.");
+      setIsEditing(false);
+    } catch { toast.error("Cập nhật thất bại."); }
+    finally { setSavingEdit(false); }
+  }
+
+  async function handleDeleteTask() {
+    if (!task || !currentUser) return;
+    if (!confirm(`Xoá nhiệm vụ "${task.name}"? Hành động này không thể hoàn tác.`)) return;
+    setDeletingTask(true);
+    try {
+      await deleteTask(id);
+      toast.success("Đã xoá nhiệm vụ.");
+      router.push("/tasks");
+    } catch { toast.error("Xoá thất bại."); setDeletingTask(false); }
   }
 
   async function handleApprove() {
@@ -314,6 +368,7 @@ export default function TaskDetailsPage() {
     isMainPerformer ||
     (task.stakeholders ?? []).some((s) => s.userId === currentUser.id)
   ));
+  const canDelete = !!(currentUser && hasPermission(currentUser.role, "task:delete"));
 
   const TABS: { id: TabId; label: string; Icon: React.ComponentType<{ className?: string }> }[] = [
     { id: "steps", label: "Quy trình", Icon: CheckSquare },
@@ -375,21 +430,108 @@ export default function TaskDetailsPage() {
                 {priorityLabel(task.priority)}
               </span>
             </div>
-            <h1 className="text-xl font-bold text-slate-800 dark:text-white">{task.name}</h1>
-            {task.description && (
-              <p className="text-slate-500 dark:text-slate-400 mt-1 text-sm leading-relaxed">{task.description}</p>
+
+            {isEditing ? (
+              <div className="space-y-3 mt-1">
+                <input
+                  value={editForm.name}
+                  onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))}
+                  placeholder="Tên nhiệm vụ *"
+                  className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500 font-semibold"
+                />
+                <textarea
+                  value={editForm.description}
+                  onChange={(e) => setEditForm((f) => ({ ...f, description: e.target.value }))}
+                  placeholder="Mô tả (tuỳ chọn)"
+                  rows={2}
+                  className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                />
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <label className="block text-[10px] text-slate-400 mb-1">Độ ưu tiên</label>
+                    <select
+                      value={editForm.priority}
+                      onChange={(e) => setEditForm((f) => ({ ...f, priority: e.target.value }))}
+                      className="w-full px-2 py-1.5 text-sm border border-[var(--border)] rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="low">Thấp</option>
+                      <option value="medium">Trung bình</option>
+                      <option value="high">Cao</option>
+                      <option value="urgent">Khẩn cấp</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-slate-400 mb-1">Hạn hoàn thành</label>
+                    <input
+                      type="date"
+                      value={editForm.deadlineBase}
+                      onChange={(e) => setEditForm((f) => ({ ...f, deadlineBase: e.target.value }))}
+                      className="w-full px-2 py-1.5 text-sm border border-[var(--border)] rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-slate-400 mb-1">Phòng ban</label>
+                    <input
+                      value={editForm.department}
+                      onChange={(e) => setEditForm((f) => ({ ...f, department: e.target.value }))}
+                      placeholder="Phòng ban"
+                      className="w-full px-2 py-1.5 text-sm border border-[var(--border)] rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={() => setIsEditing(false)}
+                    className="flex items-center gap-1 px-3 py-1.5 border border-[var(--border)] text-sm rounded-xl hover:bg-[var(--muted)] transition">
+                    <XIcon className="w-3.5 h-3.5" /> Huỷ
+                  </button>
+                  <button onClick={handleSaveEdit} disabled={savingEdit}
+                    className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-sm rounded-xl transition">
+                    {savingEdit ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                    Lưu thay đổi
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <h1 className="text-xl font-bold text-slate-800 dark:text-white">{task.name}</h1>
+                {task.description && (
+                  <p className="text-slate-500 dark:text-slate-400 mt-1 text-sm leading-relaxed">{task.description}</p>
+                )}
+              </>
             )}
           </div>
 
           {/* Actions */}
-          {canApprove && !task.approved && (
-            <button
-              onClick={handleApprove}
-              className="flex items-center gap-1.5 px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold rounded-xl transition"
-            >
-              <CheckCheck className="w-4 h-4" /> Phê duyệt
-            </button>
-          )}
+          <div className="flex items-center gap-2 shrink-0 flex-wrap">
+            {canApprove && !task.approved && (
+              <button
+                onClick={handleApprove}
+                className="flex items-center gap-1.5 px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold rounded-xl transition"
+              >
+                <CheckCheck className="w-4 h-4" /> Phê duyệt
+              </button>
+            )}
+            {canEdit && !isEditing && (
+              <button
+                onClick={startEdit}
+                className="flex items-center gap-1.5 px-3 py-2 border border-[var(--border)] text-[var(--foreground)] hover:bg-[var(--muted)] text-sm font-medium rounded-xl transition"
+                title="Chỉnh sửa nhiệm vụ"
+              >
+                <Pencil className="w-4 h-4" /> Sửa
+              </button>
+            )}
+            {canDelete && (
+              <button
+                onClick={handleDeleteTask}
+                disabled={deletingTask}
+                className="flex items-center gap-1.5 px-3 py-2 border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-60 text-sm font-medium rounded-xl transition"
+                title="Xoá nhiệm vụ"
+              >
+                {deletingTask ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                Xoá
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Meta info */}
@@ -438,23 +580,6 @@ export default function TaskDetailsPage() {
           ))}
         </div>
 
-        {/* Change status — staff cannot act while awaiting approval */}
-        {canChangeStatus && task.status !== "done" && task.status !== "cancelled" && (
-          <div className="flex items-center gap-2 mt-4 flex-wrap">
-            <span className="text-xs text-slate-400">Chuyển sang:</span>
-            {(["todo", "in_progress", "review", "done"] as Task["status"][])
-              .filter((s) => s !== task.status)
-              .map((s) => (
-                <button
-                  key={s}
-                  onClick={() => handleChangeStatus(s)}
-                  className="px-3 py-1 text-xs font-medium border border-slate-200 dark:border-slate-600 rounded-full hover:bg-blue-50 dark:hover:bg-blue-900/20 hover:border-blue-300 transition"
-                >
-                  {statusLabel(s)}
-                </button>
-              ))}
-          </div>
-        )}
 
         {/* Completion proposal — main performer submits when task is done */}
         {task.status === "done" && (

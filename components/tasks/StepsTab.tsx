@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import {
   Plus, ChevronDown, ChevronRight, Camera, Link2, X,
-  Loader2, TrendingUp, TrendingDown, Image as ImageIcon, Paperclip,
+  Loader2, TrendingUp, TrendingDown, Image as ImageIcon, Paperclip, AlertTriangle,
 } from "lucide-react";
 import { cn, generateId, formatDate, priorityLabel } from "@/lib/utils";
 import { UserAvatar } from "@/components/common/UserAvatar";
@@ -72,6 +72,43 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave }: P
     return Math.round(updatedSteps.reduce((sum, s) => sum + s.progress, 0) / updatedSteps.length);
   }
 
+  // Normalize step statuses to match progress before writing to Firestore
+  function normalizeSteps(ss: TaskStep[]): TaskStep[] {
+    return ss.map((s) => {
+      const p = s.progress ?? 0;
+      const correctStatus =
+        p >= 100 ? "completed" : p > 0 ? "in_progress" : "pending";
+      if (s.status === correctStatus) return s;
+      return {
+        ...s,
+        status: correctStatus as TaskStep["status"],
+        ...(correctStatus === "completed" && !s.completedAt
+          ? { completedAt: new Date().toISOString() }
+          : {}),
+      };
+    });
+  }
+
+  // A step is considered done if status="completed" OR progress reached 100
+  // (handles stale data where progress was set to 100 before auto-flip existed)
+  function isStepDone(s: TaskStep): boolean {
+    return s.status === "completed" || (s.progress ?? 0) >= 100;
+  }
+
+  // Auto-heal: fix steps where progress=100 but status was never flipped to "completed"
+  useEffect(() => {
+    if (!task.approved) return;
+    const stale = steps.filter((s) => (s.progress ?? 0) >= 100 && s.status !== "completed");
+    if (stale.length === 0) return;
+    const healed = steps.map((s) =>
+      (s.progress ?? 0) >= 100 && s.status !== "completed"
+        ? { ...s, status: "completed" as const, completedAt: s.completedAt ?? new Date().toISOString() }
+        : s
+    );
+    onSave({ steps: healed });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [task.id]);
+
   function toggleExpand(id: string) {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -134,24 +171,14 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave }: P
   }
 
   async function saveProgress(stepId: string, subId?: string) {
-    const newStatus =
-      progressVal >= 100 ? "completed" : progressVal > 0 ? "in_progress" : "pending";
     let updatedSteps: TaskStep[];
-    const completedAt = progressVal >= 100 ? new Date().toISOString() : undefined;
     if (subId) {
-      updatedSteps = patchSubTask(stepId, subId, {
-        progress: progressVal,
-        status: newStatus,
-        ...(completedAt && { completedAt }),
-      });
+      updatedSteps = patchSubTask(stepId, subId, { progress: progressVal });
     } else {
-      updatedSteps = patchStep(stepId, {
-        progress: progressVal,
-        status: newStatus,
-        ...(completedAt && { completedAt }),
-      });
+      updatedSteps = patchStep(stepId, { progress: progressVal });
     }
-    await onSave({ steps: updatedSteps, progress: recalcProgress(updatedSteps) });
+    const normalized = normalizeSteps(updatedSteps);
+    await onSave({ steps: normalized, progress: recalcProgress(normalized) });
     setEditKey(null);
     toast.success("Đã cập nhật tiến độ");
   }
@@ -231,7 +258,7 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave }: P
     );
   }
 
-  const done = steps.filter((s) => s.status === "completed").length;
+  const done = steps.filter(isStepDone).length;
 
   return (
     <div className="space-y-3">
@@ -276,7 +303,7 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave }: P
             key={step.id}
             className={cn(
               "rounded-2xl border overflow-hidden",
-              step.status === "completed"
+              isStepDone(step)
                 ? "border-green-200 dark:border-green-900"
                 : step.status === "in_progress"
                 ? "border-blue-200 dark:border-blue-900"
@@ -290,13 +317,13 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave }: P
             >
               <div className={cn(
                 "w-7 h-7 shrink-0 rounded-full flex items-center justify-center text-xs font-bold",
-                step.status === "completed"
+                isStepDone(step)
                   ? "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400"
                   : step.status === "in_progress"
                   ? "bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400"
                   : "bg-slate-100 dark:bg-slate-800 text-slate-500",
               )}>
-                {step.status === "completed" ? "✓" : idx + 1}
+                {isStepDone(step) ? "✓" : idx + 1}
               </div>
 
               <div className="flex-1 min-w-0">
@@ -348,7 +375,7 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave }: P
             {/* Progress bar */}
             <div className="h-1 bg-slate-100 dark:bg-slate-800">
               <div
-                className={cn("h-full transition-all", step.status === "completed" ? "bg-green-500" : "bg-blue-500")}
+                className={cn("h-full transition-all", isStepDone(step) ? "bg-green-500" : "bg-blue-500")}
                 style={{ width: `${step.progress}%` }}
               />
             </div>
@@ -526,8 +553,41 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave }: P
                       const isProofSub = proofKey === subKey;
                       const canIUpdateSub = sub.userId === currentUser.id || canAssignSteps;
 
+                      const isSubUrgent = sub.priority === "urgent";
+                      const isSubOverdue = !!sub.deadline && new Date(sub.deadline) < new Date(new Date().toDateString());
+                      const isSubAlert = (isSubUrgent || isSubOverdue) && sub.status !== "completed" && (sub.progress ?? 0) < 100;
+                      const isMySub = sub.userId === currentUser.id;
+
                       return (
-                        <div key={sub.id} className="p-3 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl">
+                        <div
+                          key={sub.id}
+                          className={cn(
+                            "p-3 bg-white dark:bg-slate-800 border rounded-xl",
+                            isSubAlert && isSubUrgent
+                              ? "border-red-300 dark:border-red-700 bg-red-50/40 dark:bg-red-900/10"
+                              : isSubAlert
+                              ? "border-orange-300 dark:border-orange-700 bg-orange-50/40 dark:bg-orange-900/10"
+                              : "border-slate-200 dark:border-slate-700"
+                          )}
+                        >
+                          {/* Alert banner — shown when urgent or overdue */}
+                          {isSubAlert && (
+                            <div className={cn(
+                              "flex items-center gap-1.5 text-xs font-semibold mb-2 px-2.5 py-1.5 rounded-lg",
+                              isSubUrgent
+                                ? "bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400"
+                                : "bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400"
+                            )}>
+                              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                              {isSubUrgent && isSubOverdue
+                                ? `Khẩn cấp · Trễ hạn${isMySub ? " — Cần hành động ngay!" : ""}`
+                                : isSubUrgent
+                                ? `Nhiệm vụ khẩn cấp${isMySub ? " — Ưu tiên xử lý!" : ""}`
+                                : `Trễ hạn${isMySub ? " — Cần cập nhật tiến độ!" : ""}`
+                              }
+                            </div>
+                          )}
+
                           <div className="flex items-start gap-2">
                             <UserAvatar user={subUser} size="sm" />
                             <div className="flex-1 min-w-0">
@@ -536,7 +596,15 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave }: P
                                 <span className={cn("text-[10px] font-semibold px-1.5 py-0.5 rounded-full", PRIORITY_COLOR[sub.priority])}>
                                   {priorityLabel(sub.priority)}
                                 </span>
-                                {sub.deadline && <span className="text-xs text-slate-400">Hạn: {formatDate(sub.deadline)}</span>}
+                                {sub.deadline && (
+                                  <span className={cn(
+                                    "text-xs",
+                                    isSubOverdue && isSubAlert ? "text-orange-600 dark:text-orange-400 font-semibold" : "text-slate-400"
+                                  )}>
+                                    Hạn: {formatDate(sub.deadline)}
+                                    {isSubOverdue && isSubAlert && " (Trễ)"}
+                                  </span>
+                                )}
                                 {sub.amountType !== "none" && (
                                   <span className={cn("text-xs font-semibold", sub.amountType === "income" ? "text-green-600" : "text-red-600")}>
                                     {sub.amountType === "income" ? "+" : "−"}{sub.amount.toLocaleString("vi-VN")}đ

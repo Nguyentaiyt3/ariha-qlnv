@@ -36,9 +36,9 @@ interface Column {
 }
 
 const COLUMNS: Column[] = [
-  { id: "todo",        label: "Chờ thực hiện", color: "border-t-slate-400" },
-  { id: "in_progress", label: "Đang thực hiện", color: "border-t-blue-500" },
   { id: "review",      label: "Đang xét duyệt", color: "border-t-amber-500" },
+  { id: "todo",        label: "Chờ thực hiện",  color: "border-t-slate-400" },
+  { id: "in_progress", label: "Đang thực hiện", color: "border-t-blue-500" },
   { id: "done",        label: "Hoàn thành",     color: "border-t-green-500" },
 ];
 

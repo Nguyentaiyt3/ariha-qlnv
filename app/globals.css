@@ -110,3 +110,82 @@
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
 }
+
+/* ── react-big-calendar overrides ───────────────────────────── */
+.rbc-container .rbc-calendar {
+  font-family: inherit;
+}
+.rbc-container .rbc-toolbar {
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.rbc-container .rbc-toolbar button {
+  @apply text-sm px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition;
+}
+.rbc-container .rbc-toolbar button.rbc-active {
+  @apply bg-blue-600 text-white border-blue-600;
+}
+.rbc-container .rbc-header {
+  @apply text-xs font-semibold text-slate-500 py-2 border-b border-slate-200;
+}
+.rbc-container .rbc-month-view,
+.rbc-container .rbc-time-view {
+  @apply border border-slate-200 rounded-xl overflow-hidden;
+}
+.rbc-container .rbc-day-bg + .rbc-day-bg {
+  @apply border-l border-slate-100;
+}
+.rbc-container .rbc-month-row + .rbc-month-row {
+  @apply border-t border-slate-100;
+}
+.rbc-container .rbc-today {
+  @apply bg-blue-50;
+}
+.rbc-container .rbc-off-range-bg {
+  @apply bg-slate-50;
+}
+.rbc-container .rbc-date-cell {
+  @apply text-xs py-1 text-slate-500;
+}
+.rbc-container .rbc-date-cell.rbc-now {
+  @apply font-bold text-blue-600;
+}
+/* Dark mode */
+.dark .rbc-container .rbc-toolbar button {
+  @apply border-slate-600 bg-slate-700 text-slate-200 hover:bg-slate-600;
+}
+.dark .rbc-container .rbc-toolbar button.rbc-active {
+  @apply bg-blue-600 text-white border-blue-600;
+}
+.dark .rbc-container .rbc-header {
+  @apply text-slate-400 border-slate-700;
+}
+.dark .rbc-container .rbc-month-view,
+.dark .rbc-container .rbc-time-view {
+  @apply border-slate-700;
+}
+.dark .rbc-container .rbc-day-bg + .rbc-day-bg {
+  @apply border-slate-700;
+}
+.dark .rbc-container .rbc-month-row + .rbc-month-row {
+  @apply border-slate-700;
+}
+.dark .rbc-container .rbc-today {
+  @apply bg-blue-900/20;
+}
+.dark .rbc-container .rbc-off-range-bg {
+  @apply bg-slate-900/40;
+}
+.dark .rbc-container .rbc-date-cell {
+  @apply text-slate-400;
+}
+.dark .rbc-container .rbc-date-cell.rbc-now {
+  @apply text-blue-400;
+}
+.dark .rbc-container .rbc-show-more {
+  @apply text-blue-400;
+}
+.dark .rbc-container .rbc-toolbar-label {
+  @apply text-white;
+}

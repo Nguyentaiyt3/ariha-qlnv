@@ -430,6 +430,7 @@ export interface CalendarChangeRequest {
 
 export type WidgetType =
   | "my_tasks"
+  | "support_tasks"
   | "kpi_week"
   | "calendar_mini"
   | "deadline_alert"
@@ -488,6 +489,8 @@ export interface TaskFilters {
   department?: string;
   phase?: TaskPhase;
   riskOnly?: boolean;
+  overdueOnly?: boolean;
+  pendingReview?: boolean;
   nearDeadline?: boolean;
   dateRange?: { start: string; end: string };
 }

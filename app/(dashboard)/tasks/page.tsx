@@ -1,10 +1,14 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { LayoutGrid, List, Calendar, GitBranch, Filter, SortAsc } from "lucide-react";
+import { LayoutGrid, List, Calendar, GitBranch, Filter, SortAsc, AlertTriangle, ShieldAlert, X } from "lucide-react";
+import { deleteTask } from "@/lib/firebase/firestore";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { KanbanBoard } from "@/components/tasks/KanbanBoard";
 import { TaskListView } from "@/components/tasks/TaskListView";
+import { TaskCalendarView } from "@/components/tasks/TaskCalendarView";
+import { TaskGanttView } from "@/components/tasks/TaskGanttView";
 import { CreateTaskModal } from "@/components/tasks/CreateTaskModal";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useAuthStore } from "@/stores/useAuthStore";
@@ -21,13 +25,20 @@ const VIEW_TABS: { id: TaskViewMode; label: string; Icon: React.ComponentType<{ 
 
 export default function TasksPage() {
   const router = useRouter();
-  const { tasks, users, viewMode, setViewMode, filters, setFilters } = useTaskStore();
+  const { tasks, users, viewMode, setViewMode, filters, setFilters, resetFilters } = useTaskStore();
   const { currentUser } = useAuthStore();
   const [showCreate, setShowCreate] = useState(false);
   const [createStatus, setCreateStatus] = useState<TaskStatus>("todo");
 
   const canApprove = !!(currentUser && hasPermission(currentUser.role, "task:approve"));
+  const canDelete = !!(currentUser && hasPermission(currentUser.role, "task:delete"));
   const pendingApprovalCount = canApprove ? tasks.filter((t) => !t.approved).length : 0;
+  const riskCount = tasks.filter((t) => t.riskFlag && t.status !== "done" && t.status !== "cancelled").length;
+  const urgentCount = tasks.filter((t) => t.priority === "urgent" && t.status !== "done" && t.status !== "cancelled").length;
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const overdueCount = tasks.filter((t) => t.deadlineBase && t.deadlineBase < todayStr && t.status !== "done" && t.status !== "cancelled").length;
+  const [dismissedAlert, setDismissedAlert] = useState(false);
+  const showAlertBanner = !dismissedAlert && (riskCount > 0 || urgentCount > 0 || overdueCount > 0);
 
   const filteredTasks = useMemo(() => {
     let result = tasks;
@@ -53,11 +64,38 @@ export default function TasksPage() {
     if (filters.riskOnly) {
       result = result.filter((t) => t.riskFlag);
     }
+    if (filters.assigneeId) {
+      result = result.filter((t) =>
+        t.mainPerformerId === filters.assigneeId ||
+        (t.stakeholders ?? []).some((s) => s.userId === filters.assigneeId) ||
+        (t.steps ?? []).some((s) =>
+          s.assigneeId === filters.assigneeId ||
+          (s.subTasks ?? []).some((st) => st.userId === filters.assigneeId)
+        )
+      );
+    }
+    if (filters.pendingReview) {
+      result = result.filter((t) => !t.approved || t.status === "review");
+    }
+    if (filters.overdueOnly) {
+      const today = new Date().toISOString().slice(0, 10);
+      result = result.filter((t) => t.deadlineBase && t.deadlineBase < today && t.status !== "done" && t.status !== "cancelled");
+    }
     return result;
   }, [tasks, filters]);
 
   function handleSelectTask(task: Task) {
     router.push(`/tasks/${task.id}`);
+  }
+
+  async function handleDeleteTask(task: Task) {
+    if (!confirm(`Xoá nhiệm vụ "${task.name}"? Hành động này không thể hoàn tác.`)) return;
+    try {
+      await deleteTask(task.id);
+      toast.success("Đã xoá nhiệm vụ.");
+    } catch {
+      toast.error("Xoá thất bại.");
+    }
   }
 
   function handleCreateTask(status?: TaskStatus) {
@@ -103,23 +141,102 @@ export default function TasksPage() {
         </div>
       </div>
 
+      {/* Alert banner — risk / urgent / overdue */}
+      {showAlertBanner && (
+        <div className="flex items-start gap-3 px-4 py-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-2xl">
+          <ShieldAlert className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-red-700 dark:text-red-400 mb-1.5">Cần chú ý ngay</p>
+            <div className="flex flex-wrap gap-2">
+              {riskCount > 0 && (
+                <button
+                  onClick={() => { resetFilters(); setFilters({ riskOnly: true }); setDismissedAlert(true); }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-red-100 dark:bg-red-900/40 hover:bg-red-200 dark:hover:bg-red-900/60 border border-red-300 dark:border-red-700 text-red-700 dark:text-red-300 text-xs font-semibold rounded-xl transition"
+                >
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  {riskCount} nhiệm vụ có rủi ro
+                </button>
+              )}
+              {urgentCount > 0 && (
+                <button
+                  onClick={() => { resetFilters(); setFilters({ priority: ["urgent"] }); setDismissedAlert(true); }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-orange-100 dark:bg-orange-900/40 hover:bg-orange-200 dark:hover:bg-orange-900/60 border border-orange-300 dark:border-orange-700 text-orange-700 dark:text-orange-300 text-xs font-semibold rounded-xl transition"
+                >
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  {urgentCount} nhiệm vụ khẩn cấp
+                </button>
+              )}
+              {overdueCount > 0 && (
+                <button
+                  onClick={() => { resetFilters(); setFilters({ overdueOnly: true }); setDismissedAlert(true); }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-100 dark:bg-amber-900/40 hover:bg-amber-200 dark:hover:bg-amber-900/60 border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-300 text-xs font-semibold rounded-xl transition"
+                >
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  {overdueCount} nhiệm vụ trễ hạn
+                </button>
+              )}
+            </div>
+          </div>
+          <button
+            onClick={() => setDismissedAlert(true)}
+            className="p-1 text-red-400 hover:text-red-600 dark:hover:text-red-300 shrink-0 transition"
+            title="Ẩn cảnh báo"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Quick filter chips */}
       <div className="flex gap-2 flex-wrap">
         {[
-          { label: "Tất cả", action: () => setFilters({ riskOnly: false, status: undefined }) },
-          { label: "Tác vụ của tôi", action: () => setFilters({ assigneeId: currentUser?.id }) },
-          { label: "Rủi ro", action: () => setFilters({ riskOnly: true }) },
-          { label: "Khẩn cấp", action: () => setFilters({ priority: ["urgent"] }) },
-          { label: "Đang xét duyệt", action: () => setFilters({ status: ["review"] }) },
-        ].map((chip) => (
-          <button
-            key={chip.label}
-            onClick={chip.action}
-            className="px-3 py-1.5 text-xs font-medium bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-full hover:bg-blue-50 dark:hover:bg-blue-900/20 hover:border-blue-300 hover:text-blue-600 transition"
-          >
-            {chip.label}
-          </button>
-        ))}
+          { label: "Tất cả",         key: "all",    action: () => resetFilters(),                                                       count: 0,           alert: "" },
+          { label: "Tác vụ của tôi", key: "mine",   action: () => { resetFilters(); setFilters({ assigneeId: currentUser?.id }); },    count: 0,           alert: "" },
+          { label: "Rủi ro",         key: "risk",   action: () => { resetFilters(); setFilters({ riskOnly: true }); },                  count: riskCount,   alert: "red" },
+          { label: "Khẩn cấp",       key: "urgent", action: () => { resetFilters(); setFilters({ priority: ["urgent"] }); },            count: urgentCount, alert: "orange" },
+          { label: "Đang xét duyệt", key: "review", action: () => { resetFilters(); setFilters({ pendingReview: true }); },             count: 0,           alert: "" },
+        ].map((chip) => {
+          const isActive = (() => {
+            if (chip.key === "all")    return !filters.riskOnly && !filters.overdueOnly && !filters.status?.length && !filters.priority?.length && !filters.assigneeId && !filters.pendingReview;
+            if (chip.key === "mine")   return !!filters.assigneeId;
+            if (chip.key === "risk")   return !!filters.riskOnly;
+            if (chip.key === "urgent") return !!filters.priority?.includes("urgent");
+            if (chip.key === "review") return !!filters.pendingReview;
+            return false;
+          })();
+
+          const hasAlert = chip.count > 0 && !isActive;
+          const alertCls = chip.alert === "red"
+            ? "bg-red-50 dark:bg-red-900/20 border-red-300 dark:border-red-700 text-red-700 dark:text-red-300 hover:bg-red-100"
+            : chip.alert === "orange"
+            ? "bg-orange-50 dark:bg-orange-900/20 border-orange-300 dark:border-orange-700 text-orange-700 dark:text-orange-300 hover:bg-orange-100"
+            : "";
+          const badgeCls = chip.alert === "red"
+            ? "bg-red-500 text-white"
+            : "bg-orange-500 text-white";
+
+          return (
+            <button
+              key={chip.key}
+              onClick={chip.action}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full border transition",
+                isActive
+                  ? "bg-blue-600 text-white border-blue-600"
+                  : hasAlert
+                  ? alertCls
+                  : "bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-blue-50 dark:hover:bg-blue-900/20 hover:border-blue-300 hover:text-blue-600"
+              )}
+            >
+              {chip.label}
+              {hasAlert && (
+                <span className={cn("rounded-full px-1.5 py-0.5 text-[9px] font-bold leading-none", badgeCls)}>
+                  {chip.count}
+                </span>
+              )}
+            </button>
+          );
+        })}
 
         {/* Approval chip — only visible to managers */}
         {canApprove && pendingApprovalCount > 0 && (
@@ -150,25 +267,23 @@ export default function TasksPage() {
             tasks={filteredTasks}
             users={users}
             onSelectTask={handleSelectTask}
+            canDelete={canDelete}
+            onDeleteTask={handleDeleteTask}
           />
         )}
         {viewMode === "calendar" && (
-          <div className="flex items-center justify-center h-64 text-slate-400 bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700">
-            <div className="text-center">
-              <Calendar className="w-12 h-12 mx-auto mb-3 text-slate-300" />
-              <p className="font-medium">Calendar View</p>
-              <p className="text-sm">Sẽ được kích hoạt ở Phase 4</p>
-            </div>
-          </div>
+          <TaskCalendarView
+            tasks={filteredTasks}
+            users={users}
+            onSelectTask={handleSelectTask}
+          />
         )}
         {viewMode === "gantt" && (
-          <div className="flex items-center justify-center h-64 text-slate-400 bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700">
-            <div className="text-center">
-              <GitBranch className="w-12 h-12 mx-auto mb-3 text-slate-300" />
-              <p className="font-medium">Gantt Chart</p>
-              <p className="text-sm">Sẽ được kích hoạt ở Phase 8</p>
-            </div>
-          </div>
+          <TaskGanttView
+            tasks={filteredTasks}
+            users={users}
+            onSelectTask={handleSelectTask}
+          />
         )}
       </div>
 

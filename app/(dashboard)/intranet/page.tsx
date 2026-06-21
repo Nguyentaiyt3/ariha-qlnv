@@ -13,7 +13,7 @@ import { useTaskStore } from "@/stores/useTaskStore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import {
   subscribeAnnouncements, saveAnnouncement, deleteAnnouncement,
-  reactToAnnouncement, markAnnouncementViewed, approveAnnouncement,
+  reactToAnnouncement, markAnnouncementViewed, approveAnnouncement, addNotification,
   getAnnouncementComments, addAnnouncementComment,
   subscribeChannels, saveChannel, subscribeChannelMessages, sendChannelMessage,
 } from "@/lib/firebase/firestore";
@@ -27,13 +27,15 @@ function AnnouncementCard({ item, currentUserId, canDelete, canApprove, onApprov
   currentUserId: string;
   canDelete: boolean;
   canApprove?: boolean;
-  onApprove?: (id: string, approve: boolean) => void;
+  onApprove?: (id: string, approve: boolean, reason?: string) => void;
 }) {
   const [showComments, setShowComments] = useState(false);
   const [comments, setComments] = useState<AnnouncementComment[]>([]);
   const [newComment, setNewComment] = useState("");
   const [loadingComments, setLoadingComments] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [showRejectForm, setShowRejectForm] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
   const { currentUser } = useAuthStore();
 
   useEffect(() => {
@@ -87,18 +89,52 @@ function AnnouncementCard({ item, currentUserId, canDelete, canApprove, onApprov
       item.pinned && item.status !== "pending" && "border-amber-300 dark:border-amber-600"
     )}>
       {item.status === "pending" && (
-        <div className="flex items-center justify-between px-4 py-1.5 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-700">
-          <span className="flex items-center gap-1.5 text-amber-700 dark:text-amber-400 text-xs font-semibold">
-            <Clock className="w-3 h-3" /> Chờ phê duyệt
-          </span>
-          {canApprove && (
-            <div className="flex gap-1.5">
-              <button onClick={() => onApprove?.(item.id, true)} className="flex items-center gap-1 px-2 py-0.5 bg-green-600 hover:bg-green-700 text-white text-[10px] font-semibold rounded-md transition">
-                <CheckCircle2 className="w-3 h-3" /> Duyệt
-              </button>
-              <button onClick={() => onApprove?.(item.id, false)} className="flex items-center gap-1 px-2 py-0.5 bg-red-500 hover:bg-red-600 text-white text-[10px] font-semibold rounded-md transition">
-                <XCircle className="w-3 h-3" /> Từ chối
-              </button>
+        <div className="border-b border-amber-200 dark:border-amber-700">
+          <div className="flex items-center justify-between px-4 py-1.5 bg-amber-50 dark:bg-amber-900/20">
+            <span className="flex items-center gap-1.5 text-amber-700 dark:text-amber-400 text-xs font-semibold">
+              <Clock className="w-3 h-3" /> Chờ phê duyệt
+            </span>
+            {canApprove && (
+              <div className="flex gap-1.5">
+                <button onClick={() => onApprove?.(item.id, true)} className="flex items-center gap-1 px-2 py-0.5 bg-green-600 hover:bg-green-700 text-white text-[10px] font-semibold rounded-md transition">
+                  <CheckCircle2 className="w-3 h-3" /> Duyệt
+                </button>
+                <button
+                  onClick={() => { setShowRejectForm((v) => !v); setRejectReason(""); }}
+                  className="flex items-center gap-1 px-2 py-0.5 bg-red-500 hover:bg-red-600 text-white text-[10px] font-semibold rounded-md transition"
+                >
+                  <XCircle className="w-3 h-3" /> Từ chối
+                </button>
+              </div>
+            )}
+          </div>
+          {showRejectForm && (
+            <div className="px-4 pb-3 pt-2 space-y-2 bg-red-50 dark:bg-red-900/10">
+              <p className="text-[10px] font-medium text-red-600">Lý do từ chối <span className="text-red-500">*</span></p>
+              <textarea
+                autoFocus
+                rows={2}
+                value={rejectReason}
+                onChange={(e) => setRejectReason(e.target.value)}
+                placeholder="Nhập lý do từ chối..."
+                className="w-full px-3 py-2 text-xs border border-red-200 rounded-lg bg-white dark:bg-slate-900 text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-red-400 resize-none"
+              />
+              <div className="flex gap-2">
+                <button onClick={() => setShowRejectForm(false)}
+                  className="flex-1 py-1 border border-[var(--border)] rounded-md text-[10px] text-[var(--foreground)] hover:bg-[var(--muted)] transition">
+                  Huỷ
+                </button>
+                <button
+                  onClick={() => {
+                    if (!rejectReason.trim()) { toast.error("Vui lòng nhập lý do từ chối."); return; }
+                    onApprove?.(item.id, false, rejectReason.trim());
+                    setShowRejectForm(false);
+                  }}
+                  className="flex-1 py-1 bg-red-600 hover:bg-red-700 text-white rounded-md text-[10px] font-semibold transition"
+                >
+                  Xác nhận từ chối
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -306,10 +342,25 @@ export default function IntranetPage() {
     return () => { unsubA(); unsubC(); };
   }, [currentUser, uid, canApprovePost]);
 
-  async function handleApproveAnnouncement(id: string, approve: boolean) {
+  async function handleApproveAnnouncement(id: string, approve: boolean, reason?: string) {
+    const target = announcements.find((a) => a.id === id);
     try {
-      await approveAnnouncement(id, approve);
+      await approveAnnouncement(id, approve, reason);
       toast.success(approve ? "Đã duyệt và công khai bản tin." : "Đã từ chối bản tin.");
+      if (target && currentUser && target.authorId !== currentUser.id) {
+        await addNotification({
+          userId: target.authorId,
+          type: approve ? "request_approved" : "request_rejected",
+          title: approve ? "Bản tin được duyệt" : "Bản tin bị từ chối",
+          body: approve
+            ? `Bản tin "${target.title}" đã được ${currentUser.name} duyệt và công khai.`
+            : `Bản tin "${target.title}" bị từ chối bởi ${currentUser.name}.${reason ? ` Lý do: ${reason}` : ""}`,
+          link: "/intranet",
+          read: false,
+          priority: "normal",
+          createdAt: new Date().toISOString(),
+        });
+      }
     } catch {
       toast.error("Thao tác thất bại.");
     }
