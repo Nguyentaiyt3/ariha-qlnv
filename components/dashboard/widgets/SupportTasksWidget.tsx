@@ -4,25 +4,30 @@ import { useMemo } from "react";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useAuthStore } from "@/stores/useAuthStore";
-import { cn, avatarColor, getInitials, formatDate } from "@/lib/utils";
+import { cn, avatarColor, getInitials } from "@/lib/utils";
 import Link from "next/link";
 import type { StepSubTask, User } from "@/types";
 import { AlertTriangle } from "lucide-react";
+import { useContainerWidth } from "@/hooks/useContainerWidth";
 
-// ── Status config ────────────────────────────────────────────────
-const STATUS_CONFIG = [
-  { key: "completed",   label: "Hoàn thành",     color: "#22c55e" },
-  { key: "in_progress", label: "Đang thực hiện",  color: "#3b82f6" },
-  { key: "pending",     label: "Chờ thực hiện",   color: "#94a3b8" },
+// ── Palette ──────────────────────────────────────────────────────
+const P = {
+  green:  "#22C55E",
+  purple: "#8B5CF6",
+  cyan:   "#06B6D4",
+  slate:  "#94A3B8",
+  pink:   "#EC4899",
+  amber:  "#F59E0B",
+};
+
+const SUB_STATUSES = [
+  { key: "completed",   label: "Hoàn thành",     color: P.green  },
+  { key: "in_progress", label: "Đang thực hiện", color: P.purple },
+  { key: "pending",     label: "Chờ thực hiện",  color: P.slate  },
 ] as const;
 
-type SubStatus = "completed" | "in_progress" | "pending";
-
-interface SubEntry extends StepSubTask {
-  taskName: string;
-  stepName: string;
-}
-
+// ── Types ─────────────────────────────────────────────────────────
+interface SubEntry extends StepSubTask { taskName: string; stepName: string; }
 interface SupporterStat {
   user: User;
   subs: SubEntry[];
@@ -33,263 +38,244 @@ interface SupporterStat {
   completionRate: number;
 }
 
-// ── Donut ────────────────────────────────────────────────────────
-function SupporterDonut({ stat }: { stat: SupporterStat }) {
-  const data = [
-    { name: "Hoàn thành",    value: stat.completed,  color: "#22c55e" },
-    { name: "Đang thực hiện", value: stat.inProgress, color: "#3b82f6" },
-    { name: "Chờ thực hiện", value: stat.pending,    color: "#94a3b8" },
-  ].filter((d) => d.value > 0);
-
-  const total = stat.subs.length;
-  const display = data.length > 0 ? data : [{ name: "Không có", value: 1, color: "#e2e8f0" }];
-  const rate = stat.completionRate;
-  const accentColor = rate >= 80 ? "#22c55e" : rate >= 50 ? "#3b82f6" : "#f59e0b";
-
-  return (
-    <div className="flex flex-col items-center gap-1 flex-1 min-h-0" style={{ minWidth: 120 }}>
-      {/* Avatar */}
-      <div className="relative shrink-0">
-        <div className={cn(
-          "w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold text-white",
-          avatarColor(stat.user.name)
-        )}>
-          {stat.user.avatar
-            ? <img src={stat.user.avatar} alt={stat.user.name} className="w-full h-full rounded-full object-cover" />
-            : getInitials(stat.user.name)
-          }
-        </div>
-        {stat.overdue > 0 && (
-          <span className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-red-500 rounded-full flex items-center justify-center">
-            <AlertTriangle className="w-2 h-2 text-white" />
-          </span>
-        )}
-      </div>
-
-      {/* Donut — fills available height */}
-      <div className="relative flex-1 w-full min-h-0">
-        <ResponsiveContainer width="100%" height="100%">
-          <PieChart>
-            <Pie
-              data={display}
-              cx="50%"
-              cy="50%"
-              innerRadius="20%"
-              outerRadius="46%"
-              dataKey="value"
-              strokeWidth={1.5}
-              stroke="var(--card, #fff)"
-              startAngle={90}
-              endAngle={-270}
-            >
-              {display.map((entry, i) => (
-                <Cell key={i} fill={entry.color} />
-              ))}
-            </Pie>
-            <Tooltip
-              contentStyle={{ fontSize: 11, borderRadius: 8 }}
-              formatter={(v: number, name: string) => [
-                `${v} việc (${total > 0 ? Math.round((v / total) * 100) : 0}%)`,
-                name,
-              ]}
-            />
-          </PieChart>
-        </ResponsiveContainer>
-        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-          <span className="text-sm font-bold leading-none" style={{ color: accentColor }}>
-            {rate}%
-          </span>
-          <span className="text-[9px] text-slate-400 mt-0.5">{total} việc</span>
-        </div>
-      </div>
-
-      {/* Name */}
-      <div className="text-center leading-tight shrink-0">
-        <p className="text-[11px] font-semibold text-[var(--foreground)] truncate max-w-[90px]">{stat.user.name}</p>
-        {stat.overdue > 0 ? (
-          <p className="text-[9px] text-red-500 font-medium">{stat.overdue} trễ hạn</p>
-        ) : (
-          <p className="text-[9px] text-[var(--muted-foreground)]">{stat.completed}/{total} xong</p>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ── Summary donut (all supporters combined) ────────────────────────────────
-function SummaryDonut({ stats }: { stats: SupporterStat[] }) {
-  const allSubs = stats.flatMap((s) => s.subs);
-  const total = allSubs.length;
-  if (total === 0) return null;
-
-  const completed  = allSubs.filter((s) => subIsDone(s)).length;
-  const inProgress = allSubs.filter((s) => s.status === "in_progress" && !subIsDone(s)).length;
-  const pending    = total - completed - inProgress;
-  const rate = Math.round((completed / total) * 100);
-  const overdue = stats.reduce((n, s) => n + s.overdue, 0);
-
-  const data = [
-    { name: "Hoàn thành",    value: completed,  color: "#22c55e" },
-    { name: "Đang thực hiện", value: inProgress, color: "#3b82f6" },
-    { name: "Chờ thực hiện", value: pending,    color: "#94a3b8" },
-  ].filter((d) => d.value > 0);
-
-  const display = data.length > 0 ? data : [{ name: "Không có", value: 1, color: "#e2e8f0" }];
-  const accentColor = rate >= 80 ? "#22c55e" : rate >= 50 ? "#3b82f6" : "#f59e0b";
-
-  return (
-    <div className="flex flex-col items-center gap-1 flex-1 min-h-0 border-r border-slate-100 dark:border-slate-700 pr-3 mr-1" style={{ minWidth: 120 }}>
-      <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide shrink-0">Tổng</span>
-      <div className="relative flex-1 w-full min-h-0">
-        <ResponsiveContainer width="100%" height="100%">
-          <PieChart>
-            <Pie
-              data={display}
-              cx="50%"
-              cy="50%"
-              innerRadius="20%"
-              outerRadius="46%"
-              dataKey="value"
-              strokeWidth={1.5}
-              stroke="var(--card, #fff)"
-              startAngle={90}
-              endAngle={-270}
-            >
-              {display.map((entry, i) => <Cell key={i} fill={entry.color} />)}
-            </Pie>
-            <Tooltip contentStyle={{ fontSize: 11, borderRadius: 8 }}
-              formatter={(v: number, name: string) => [`${v} việc`, name]} />
-          </PieChart>
-        </ResponsiveContainer>
-        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-          <span className="text-sm font-bold leading-none" style={{ color: accentColor }}>{rate}%</span>
-          <span className="text-[9px] text-slate-400 mt-0.5">{total} việc</span>
-        </div>
-      </div>
-      <div className="text-center shrink-0">
-        <p className="text-[11px] font-semibold text-[var(--foreground)]">{stats.length} người</p>
-        {overdue > 0
-          ? <p className="text-[9px] text-red-500 font-medium">{overdue} trễ hạn</p>
-          : <p className="text-[9px] text-[var(--muted-foreground)]">{completed}/{total} xong</p>
-        }
-      </div>
-    </div>
-  );
-}
-
 // ── Helpers ────────────────────────────────────────────────────────
-function subIsDone(s: StepSubTask) {
-  return s.status === "completed" || (s.progress ?? 0) >= 100;
-}
-
+function subIsDone(s: StepSubTask)   { return s.status === "completed" || (s.progress ?? 0) >= 100; }
 function subIsOverdue(s: StepSubTask) {
   if (!s.deadline) return false;
   return new Date(s.deadline) < new Date(new Date().toDateString()) && !subIsDone(s);
 }
 
-function subStatus(s: StepSubTask): SubStatus {
-  if (subIsDone(s))             return "completed";
-  if (s.status === "in_progress") return "in_progress";
-  return "pending";
+// ── Supporter card (donut right + legend left, like mockup) ───────
+function SupporterCard({ stat }: { stat: SupporterStat }) {
+  const total   = stat.subs.length;
+  const rate    = stat.completionRate;
+  const accent  = rate >= 80 ? P.green : rate >= 50 ? P.purple : P.amber;
+
+  const segments = SUB_STATUSES.map((s) => ({
+    ...s,
+    value: s.key === "completed"   ? stat.completed
+         : s.key === "in_progress" ? stat.inProgress
+         : stat.pending,
+  }));
+  const display = segments.some((d) => d.value > 0)
+    ? segments.filter((d) => d.value > 0)
+    : [{ key: "empty", label: "Không có", color: "#E2E8F0", value: 1 }];
+
+  return (
+    <div className="flex flex-col gap-1.5 rounded-xl p-2.5 bg-[var(--muted)]/30 flex-1 min-h-0" style={{ minWidth: 130 }}>
+      {/* Avatar + name header */}
+      <div className="flex items-center gap-1.5 shrink-0">
+        <div className="relative">
+          <div className={cn(
+            "w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0",
+            avatarColor(stat.user.name)
+          )}>
+            {stat.user.avatar
+              ? <img src={stat.user.avatar} alt={stat.user.name} className="w-full h-full rounded-full object-cover" />
+              : getInitials(stat.user.name)
+            }
+          </div>
+          {stat.overdue > 0 && (
+            <span className="absolute -top-0.5 -right-0.5 w-3 h-3 bg-red-500 rounded-full flex items-center justify-center">
+              <AlertTriangle className="w-1.5 h-1.5 text-white" />
+            </span>
+          )}
+        </div>
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold text-[var(--foreground)] truncate leading-tight">{stat.user.name}</p>
+          {stat.overdue > 0
+            ? <p className="text-[9px] text-red-500 font-medium leading-none">{stat.overdue} trễ hạn</p>
+            : <p className="text-[9px] text-[var(--muted-foreground)] leading-none">{stat.completed}/{total} xong</p>
+          }
+        </div>
+        <span className="ml-auto text-[10px] font-bold shrink-0" style={{ color: accent }}>{rate}%</span>
+      </div>
+
+      {/* Donut + legend */}
+      <div className="flex items-center gap-2 flex-1 min-h-0">
+        {/* Legend */}
+        <div className="flex flex-col gap-1 flex-1 min-w-0">
+          {segments.map((s) => (
+            <div key={s.key} className="flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: s.color }} />
+              <span className="text-[9px] text-[var(--muted-foreground)] flex-1 truncate">{s.label}</span>
+              <span className="text-[9px] font-semibold text-[var(--foreground)] shrink-0">{s.value}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* Donut */}
+        <div className="relative shrink-0" style={{ width: 72, height: 72 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie
+                data={display}
+                cx="50%" cy="50%"
+                innerRadius="38%" outerRadius="65%"
+                dataKey="value"
+                strokeWidth={2}
+                stroke="var(--card, #fff)"
+                startAngle={90} endAngle={-270}
+                paddingAngle={display.length > 1 ? 3 : 0}
+              >
+                {display.map((e, i) => <Cell key={i} fill={e.color} />)}
+              </Pie>
+              <Tooltip
+                contentStyle={{ fontSize: 10, borderRadius: 8, border: "none", boxShadow: "0 4px 12px rgba(0,0,0,.12)" }}
+                formatter={(v: number) => [`${v} việc`, ""]}
+              />
+            </PieChart>
+          </ResponsiveContainer>
+          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+            <span className="text-[11px] font-bold leading-none" style={{ color: accent }}>{rate}%</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
-// ── Main widget ────────────────────────────────────────────────────
+// ── Summary card ──────────────────────────────────────────────────
+function SummaryCard({ stats }: { stats: SupporterStat[] }) {
+  const allSubs    = stats.flatMap((s) => s.subs);
+  const total      = allSubs.length;
+  if (total === 0) return null;
+
+  const completed  = allSubs.filter(subIsDone).length;
+  const inProgress = allSubs.filter((s) => s.status === "in_progress" && !subIsDone(s)).length;
+  const pending    = total - completed - inProgress;
+  const overdueAll = stats.reduce((n, s) => n + s.overdue, 0);
+  const rate       = Math.round((completed / total) * 100);
+  const accent     = rate >= 80 ? P.green : rate >= 50 ? P.purple : P.amber;
+
+  const segments = [
+    { name: "Hoàn thành",     value: completed,  color: P.green  },
+    { name: "Đang thực hiện", value: inProgress, color: P.purple },
+    { name: "Chờ thực hiện",  value: pending,    color: P.slate  },
+  ];
+  const display = segments.some((d) => d.value > 0)
+    ? segments.filter((d) => d.value > 0)
+    : [{ name: "Không có", value: 1, color: "#E2E8F0" }];
+
+  return (
+    <div className="flex flex-col gap-1.5 rounded-xl p-2.5 border-2 flex-1 min-h-0" style={{ minWidth: 130, borderColor: `${accent}40`, background: `${accent}08` }}>
+      {/* Header */}
+      <div className="flex items-center justify-between shrink-0">
+        <div>
+          <p className="text-[11px] font-bold text-[var(--foreground)]">Tổng hợp</p>
+          <p className="text-[9px] text-[var(--muted-foreground)]">{stats.length} người · {total} việc</p>
+        </div>
+        <span className="text-sm font-bold" style={{ color: accent }}>{rate}%</span>
+      </div>
+
+      {/* Donut + legend */}
+      <div className="flex items-center gap-2 flex-1 min-h-0">
+        {/* Legend */}
+        <div className="flex flex-col gap-1 flex-1 min-w-0">
+          {segments.map((s) => (
+            <div key={s.name} className="flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: s.color }} />
+              <span className="text-[9px] text-[var(--muted-foreground)] flex-1 truncate">{s.name}</span>
+              <span className="text-[9px] font-semibold text-[var(--foreground)] shrink-0">{s.value}</span>
+            </div>
+          ))}
+          {overdueAll > 0 && (
+            <div className="flex items-center gap-1 mt-0.5">
+              <AlertTriangle className="w-2 h-2 text-red-500 shrink-0" />
+              <span className="text-[9px] text-red-500 font-medium">{overdueAll} trễ hạn</span>
+            </div>
+          )}
+        </div>
+
+        {/* Donut */}
+        <div className="relative shrink-0" style={{ width: 72, height: 72 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart>
+              <Pie
+                data={display}
+                cx="50%" cy="50%"
+                innerRadius="38%" outerRadius="65%"
+                dataKey="value"
+                strokeWidth={2}
+                stroke="var(--card, #fff)"
+                startAngle={90} endAngle={-270}
+                paddingAngle={display.length > 1 ? 3 : 0}
+              >
+                {display.map((e, i) => <Cell key={i} fill={e.color} />)}
+              </Pie>
+            </PieChart>
+          </ResponsiveContainer>
+          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+            <span className="text-[11px] font-bold leading-none" style={{ color: accent }}>{rate}%</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Main widget ───────────────────────────────────────────────────
 export default function SupportTasksWidget() {
   const { currentUser } = useAuthStore();
   const { tasks, users } = useTaskStore();
-
   const uid = currentUser?.id ?? "";
-  const today = new Date().toDateString();
+  const { ref, xs } = useContainerWidth();
 
   const supporterStats = useMemo<SupporterStat[]>(() => {
-    // Only my main tasks
     const myTasks = tasks.filter((t) => t.mainPerformerId === uid);
-
-    // Collect sub-tasks grouped by supporter userId
-    const map = new Map<string, SubEntry[]>();
+    const map     = new Map<string, SubEntry[]>();
 
     myTasks.forEach((task) => {
       (task.steps ?? []).forEach((step) => {
         (step.subTasks ?? []).forEach((sub) => {
-          if (sub.userId === uid) return; // skip self
+          if (sub.userId === uid) return;
           if (!map.has(sub.userId)) map.set(sub.userId, []);
-          map.get(sub.userId)!.push({
-            ...sub,
-            taskName: task.name,
-            stepName: step.name,
-          });
+          map.get(sub.userId)!.push({ ...sub, taskName: task.name, stepName: step.name });
         });
       });
     });
 
-    // Also add task-level stakeholders (assignee) that have no sub-tasks
     myTasks.forEach((task) => {
       (task.stakeholders ?? [])
         .filter((s) => s.role === "assignee" && s.userId !== uid)
-        .forEach((s) => {
-          if (!map.has(s.userId)) map.set(s.userId, []); // will show as empty donut
-        });
+        .forEach((s) => { if (!map.has(s.userId)) map.set(s.userId, []); });
     });
 
-    // Build stats per supporter
-    return Array.from(map.entries())
-      .map(([userId, subs]) => {
-        const user = users.find((u) => u.id === userId);
-        if (!user) return null;
-
-        const completed  = subs.filter(subIsDone).length;
-        const inProgress = subs.filter((s) => s.status === "in_progress" && !subIsDone(s)).length;
-        const pending    = subs.length - completed - inProgress;
-        const overdue    = subs.filter(subIsOverdue).length;
-        const rate = subs.length > 0 ? Math.round((completed / subs.length) * 100) : 0;
-
-        return { user, subs, completed, inProgress, pending, overdue, completionRate: rate };
-      })
-      .filter(Boolean) as SupporterStat[];
+    return Array.from(map.entries()).map(([userId, subs]) => {
+      const user = users.find((u) => u.id === userId);
+      if (!user) return null;
+      const completed  = subs.filter(subIsDone).length;
+      const inProgress = subs.filter((s) => s.status === "in_progress" && !subIsDone(s)).length;
+      const pending    = subs.length - completed - inProgress;
+      const overdue    = subs.filter(subIsOverdue).length;
+      const rate       = subs.length > 0 ? Math.round((completed / subs.length) * 100) : 0;
+      return { user, subs, completed, inProgress, pending, overdue, completionRate: rate };
+    }).filter(Boolean) as SupporterStat[];
   }, [tasks, users, uid]);
 
-  const hasData = supporterStats.length > 0;
-
   return (
-    <div className="flex flex-col h-full p-4 gap-3">
+    <div ref={ref} className="flex flex-col h-full p-3 sm:p-4 gap-3">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <h3 className="font-semibold text-sm text-[var(--foreground)]">Hỗ trợ của tôi</h3>
-        <Link href="/tasks?filter=mine" className="text-[10px] text-blue-500 hover:underline">
+      <div className="flex items-center justify-between shrink-0">
+        <h3 className="font-bold text-sm text-[var(--foreground)]">Hỗ trợ của tôi</h3>
+        <Link href="/tasks?filter=mine" className="text-[10px] text-[var(--muted-foreground)] hover:text-blue-500 transition-colors">
           Xem nhiệm vụ →
         </Link>
       </div>
 
-      {!hasData ? (
-        <div className="flex-1 flex flex-col items-center justify-center text-center gap-2">
-          <p className="text-xs text-[var(--muted-foreground)]">
+      {supporterStats.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center">
+          <p className="text-xs text-[var(--muted-foreground)] text-center">
             Chưa có người hỗ trợ trong các nhiệm vụ bạn đang thực hiện chính.
           </p>
         </div>
       ) : (
-        <>
-          {/* Charts row */}
-          <div className="flex items-stretch gap-2 flex-1 min-h-0 overflow-x-auto">
-            {supporterStats.length > 1 && <SummaryDonut stats={supporterStats} />}
-            {supporterStats.map((stat) => (
-              <SupporterDonut key={stat.user.id} stat={stat} />
-            ))}
-          </div>
-
-          {/* Legend */}
-          <div className="flex flex-wrap justify-center gap-x-4 gap-y-1 pt-1 border-t border-slate-100 dark:border-slate-700">
-            {STATUS_CONFIG.map((s) => (
-              <span key={s.key} className="flex items-center gap-1 text-[10px] text-[var(--muted-foreground)]">
-                <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: s.color }} />
-                {s.label}
-              </span>
-            ))}
-            <span className="flex items-center gap-1 text-[10px] text-red-400">
-              <AlertTriangle className="w-2.5 h-2.5" />
-              Trễ hạn
-            </span>
-          </div>
-        </>
+        <div className="flex gap-2 flex-1 min-h-0 overflow-x-auto pb-0.5">
+          {supporterStats.length > 1 && <SummaryCard stats={supporterStats} />}
+          {supporterStats.map((stat) => (
+            <SupporterCard key={stat.user.id} stat={stat} />
+          ))}
+        </div>
       )}
     </div>
   );

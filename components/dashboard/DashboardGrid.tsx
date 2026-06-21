@@ -70,7 +70,7 @@ export default function DashboardGrid({ widgets, isEditMode, onReorder, onHide, 
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
       <SortableContext items={visible.map((w) => w.id)} strategy={rectSortingStrategy}>
-        <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gridAutoRows: "220px" }}>
+        <div className="dashboard-grid grid gap-3 sm:gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gridAutoRows: "220px" }}>
           {visible.map((widget) => {
             const WidgetComponent = WIDGET_MAP[widget.type] ?? (() => <Placeholder label={widget.type} />);
             if (!WidgetComponent) return null;
