@@ -53,12 +53,10 @@ function AddEventModal({
   currentUser,
   canApprove,
   onClose,
-  onAdded,
 }: {
   currentUser: { id: string; name: string };
   canApprove: boolean;
   onClose: () => void;
-  onAdded: (e: CalendarEvent) => void;
 }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -84,7 +82,6 @@ function AddEventModal({
       };
       await saveCalendarEvent(event);
       toast.success(canApprove ? "Đã thêm sự kiện." : "Đã gửi sự kiện. Chờ quản lý phê duyệt để công khai.");
-      onAdded(event);
       onClose();
     } catch {
       toast.error("Lưu thất bại.");
@@ -354,7 +351,6 @@ export default function CalendarPage() {
           currentUser={currentUser}
           canApprove={canApprove}
           onClose={() => setShowAddEvent(false)}
-          onAdded={(e) => setMyEvents((prev) => [...prev, e])}
         />
       )}
     </div>

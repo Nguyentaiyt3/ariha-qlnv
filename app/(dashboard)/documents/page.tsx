@@ -54,13 +54,11 @@ function AddLinkModal({
   currentUser,
   canApprove,
   onClose,
-  onAdded,
 }: {
   folderId: string | null;
   currentUser: { id: string; name: string; department?: string };
   canApprove: boolean;
   onClose: () => void;
-  onAdded: (d: WorkDocument) => void;
 }) {
   const [url, setUrl] = useState("https://");
   const [name, setName] = useState("");
@@ -91,7 +89,6 @@ function AddLinkModal({
       };
       await saveDocument(doc_);
       toast.success(canApprove ? "Đã thêm liên kết." : "Đã gửi tài liệu. Chờ quản lý phê duyệt để công khai.");
-      onAdded(doc_);
       onClose();
     } catch {
       toast.error("Lưu thất bại.");
@@ -130,13 +127,11 @@ function UploadFileModal({
   currentUser,
   canApprove,
   onClose,
-  onAdded,
 }: {
   folderId: string | null;
   currentUser: { id: string; name: string; department?: string };
   canApprove: boolean;
   onClose: () => void;
-  onAdded: (d: WorkDocument) => void;
 }) {
   const [file, setFile] = useState<File | null>(null);
   const [desc, setDesc] = useState("");
@@ -169,7 +164,6 @@ function UploadFileModal({
       };
       await saveDocument(doc_);
       toast.success(canApprove ? "Đã tải lên tài liệu." : "Đã gửi tài liệu. Chờ quản lý phê duyệt để công khai.");
-      onAdded(doc_);
       onClose();
     } catch {
       toast.error("Tải lên thất bại.");
@@ -538,7 +532,6 @@ export default function DocumentsPage() {
           currentUser={currentUser}
           canApprove={canApprove}
           onClose={() => setShowAddLink(false)}
-          onAdded={(d) => setDocuments((prev) => [d, ...prev])}
         />
       )}
 
@@ -548,7 +541,6 @@ export default function DocumentsPage() {
           currentUser={currentUser}
           canApprove={canApprove}
           onClose={() => setShowUpload(false)}
-          onAdded={(d) => setDocuments((prev) => [d, ...prev])}
         />
       )}
     </div>
