@@ -28,7 +28,7 @@ import {
   subscribeAdvanceRequests, subscribeReimbursementRequests,
   createTransaction, createAdvanceRequest,
   addProofToTransaction, recomputeFinancialSummary,
-  submitAdvanceSettlement,
+  submitAdvanceSettlement, reconcileAdvance,
   EXPENSE_CATEGORIES,
 } from "@/lib/firebase/finance";
 import type {
@@ -698,14 +698,36 @@ function ReconcileModal({
   async function handleReconcile() {
     setSubmitting(true);
     try {
-      const res = await fetch(`/api/finance/reconcile/${taskId}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ settledBy: currentUser.id, settledByName: currentUser.name }),
+      const res = await reconcileAdvance(taskId, currentUser.id);
+      const vnd = (n: number) => n.toLocaleString("vi-VN") + " đ";
+      const { difference, settlementType, totalAdvanced, totalActualSpent, settledRequests } = res;
+      const absDiff = Math.abs(difference);
+      let message = "";
+      let action = "";
+      switch (settlementType) {
+        case "RETURN_TO_COMPANY":
+          message = `Quyết toán hoàn tất. Nhân viên còn dư ${vnd(absDiff)} từ tạm ứng.`;
+          action  = `Nhân viên cần nộp lại ${vnd(absDiff)} cho công ty.`;
+          break;
+        case "PAY_EMPLOYEE_ADDITIONAL":
+          message = `Quyết toán hoàn tất. Nhân viên chi vượt ${vnd(absDiff)} so với tạm ứng.`;
+          action  = `Công ty cần thanh toán thêm ${vnd(absDiff)} cho nhân viên.`;
+          break;
+        case "BALANCED":
+          message = "Quyết toán hoàn tất. Số tiền tạm ứng và thực chi khớp hoàn toàn.";
+          action  = "Không cần thu hồi hay thanh toán thêm.";
+          break;
+      }
+      setResult({
+        message, action,
+        details: {
+          totalAdvanced:    vnd(totalAdvanced),
+          totalActualSpent: vnd(totalActualSpent),
+          difference:       vnd(absDiff),
+          settlementType,
+          settledRequests,
+        },
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setResult(data);
       toast.success("Quyết toán hoàn tất!");
     } catch (err) {
       toast.error((err as Error).message ?? "Quyết toán thất bại.");
@@ -868,8 +890,10 @@ export function FinancialWidget({
   const budget = task.totalAmount ?? summary?.budget ?? 0;
 
   // ── KPI tính trực tiếp từ dữ liệu realtime ──────────────────────────────
-  const advApproved  = advances.filter((a) => a.status === "APPROVED");
+  // Tạm ứng "đang lưu hành" = APPROVED + PENDING_SETTLEMENT (chưa quyết toán xong)
+  const advApproved  = advances.filter((a) => ["APPROVED", "PENDING_SETTLEMENT"].includes(a.status));
   const advPending   = advances.filter((a) => a.status === "PENDING");
+  const advSettled   = advances.filter((a) => a.status === "SETTLED");
   const totalAdvApproved = advApproved.reduce((s, a) => s + a.amount, 0);
   const totalAdvPending  = advPending.reduce((s, a) => s + a.amount, 0);
   // Số đã thực chi từ advance (dùng summary nếu có, không thì tính từ transactions)
@@ -938,7 +962,9 @@ export function FinancialWidget({
               ? `${advPending.length} đơn chờ duyệt (${vnd(totalAdvPending)})`
               : totalAdvApproved > 0
                 ? `Đã chi: ${vnd(totalAdvUsed)} · Còn: ${vnd(totalAdvRemaining)}`
-                : advances.length === 0 ? "Chưa có đơn" : undefined
+                : advSettled.length > 0
+                  ? `${advSettled.length} đơn đã quyết toán`
+                  : "Chưa có đơn"
           }
           color="bg-blue-50 dark:bg-blue-900/30"
           icon={<CreditCard className="w-3.5 h-3.5 text-blue-600" />}

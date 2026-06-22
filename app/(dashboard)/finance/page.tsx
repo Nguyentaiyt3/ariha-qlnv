@@ -187,7 +187,8 @@ export default function FinanceDashboardPage() {
   }, [currentUser]);
 
   // ── KPI aggregates ────────────────────────────────────────────────────────
-  const totalAdvanced     = advances.filter((a) => ["APPROVED", "PENDING_SETTLEMENT", "SETTLED"].includes(a.status)).reduce((s, a) => s + a.amount, 0);
+  // Chỉ tính APPROVED + PENDING_SETTLEMENT — SETTLED đã quyết toán xong, không còn lưu hành
+  const totalAdvanced     = advances.filter((a) => ["APPROVED", "PENDING_SETTLEMENT"].includes(a.status)).reduce((s, a) => s + a.amount, 0);
   const pendingAdvCount   = advances.filter((a) => a.status === "PENDING").length;
   const pendingAdvAmount  = advances.filter((a) => a.status === "PENDING").reduce((s, a) => s + a.amount, 0);
   const pendingReimb      = reimbursements.filter((r) => ["SUBMITTED", "APPROVED"].includes(r.status)).reduce((s, r) => s + r.amount, 0);
@@ -346,7 +347,13 @@ export default function FinanceDashboardPage() {
         <KpiCard
           label="Tổng tạm ứng đang lưu hành"
           value={vnd(totalAdvanced)}
-          sub={`${advances.filter((a) => ["APPROVED", "PENDING_SETTLEMENT"].includes(a.status)).length} đơn đang hoạt động`}
+          sub={(() => {
+            const active = advances.filter((a) => ["APPROVED", "PENDING_SETTLEMENT"].includes(a.status)).length;
+            const settled = advances.filter((a) => a.status === "SETTLED").length;
+            if (active === 0 && settled > 0) return `${settled} đơn đã quyết toán`;
+            if (active > 0 && settled > 0) return `${active} đang hoạt động · ${settled} đã quyết toán`;
+            return active > 0 ? `${active} đơn đang hoạt động` : "Không có đơn nào";
+          })()}
           icon={CreditCard}
           iconBg="bg-blue-50 dark:bg-blue-900/30"
           iconColor={PALETTE.blue}

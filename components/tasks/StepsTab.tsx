@@ -5,11 +5,16 @@ import {
   Plus, ChevronDown, ChevronRight, Camera, Link2, X,
   Loader2, TrendingUp, TrendingDown, Image as ImageIcon, Paperclip, AlertTriangle,
   Mail, Send, CreditCard, Check, QrCode, ChevronDown as ChevDown,
+  Wallet, Upload, FileText,
 } from "lucide-react";
 import { cn, generateId, formatDate, priorityLabel } from "@/lib/utils";
+import { uploadFile } from "@/lib/firebase/storage";
 import { UserAvatar } from "@/components/common/UserAvatar";
-import type { Task, TaskStep, StepSubTask, User, TaskPriority, Proof, AdvanceRequest } from "@/types";
-import { createAdvanceRequest, subscribeAdvanceRequests } from "@/lib/firebase/finance";
+import type { Task, TaskStep, StepSubTask, User, TaskPriority, Proof, AdvanceRequest, ReimbursementRequest, FinancialProof } from "@/types";
+import {
+  createAdvanceRequest, subscribeAdvanceRequests,
+  createDirectReimbursementRequest, subscribeReimbursementRequests,
+} from "@/lib/firebase/finance";
 import { toast } from "sonner";
 
 interface Props {
@@ -82,6 +87,10 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
   const [taskAdvances, setTaskAdvances] = useState<AdvanceRequest[]>([]);
   useEffect(() => subscribeAdvanceRequests(task.id, setTaskAdvances), [task.id]);
 
+  // Reimbursement requests realtime
+  const [taskReimbs, setTaskReimbs] = useState<ReimbursementRequest[]>([]);
+  useEffect(() => subscribeReimbursementRequests(task.id, setTaskReimbs), [task.id]);
+
   // Advance request panel
   const [advanceStepId,     setAdvanceStepId]     = useState<string | null>(null);
   const [advanceAmount,     setAdvanceAmount]      = useState("");
@@ -91,6 +100,17 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
   const [advanceAccNumber,  setAdvanceAccNumber]   = useState("");
   const [advanceAccName,    setAdvanceAccName]     = useState("");
   const [advanceSaving,     setAdvanceSaving]      = useState(false);
+
+  // Tự ứng (reimbursement) panel
+  const [reimbStepId,       setReimbStepId]       = useState<string | null>(null);
+  const [reimbAmount,       setReimbAmount]       = useState("");
+  const [reimbDesc,         setReimbDesc]         = useState("");
+  const [reimbProofs,       setReimbProofs]       = useState<FinancialProof[]>([]);
+  const [reimbProofUrl,     setReimbProofUrl]     = useState("");
+  const [reimbUploading,    setReimbUploading]    = useState(false);
+  const [reimbSaving,       setReimbSaving]       = useState(false);
+  const reimbFileRef        = useRef<HTMLInputElement>(null);
+  const reimbCameraRef      = useRef<HTMLInputElement>(null);
 
   // Email compose panel
   const [emailStepId, setEmailStepId] = useState<string | null>(null);
@@ -314,6 +334,75 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
     }
   }
 
+  function openReimbPanel(step: TaskStep) {
+    setReimbStepId(step.id);
+    setReimbAmount("");
+    setReimbDesc(`Tự ứng: ${step.name} - ${new Date().toLocaleDateString("vi-VN")} - ${currentUser.name}`);
+    setReimbProofs([]);
+    setReimbProofUrl("");
+    setAdvanceStepId(null);
+    setEmailStepId(null);
+  }
+
+  async function handleReimbFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    if (!files.length) return;
+    setReimbUploading(true);
+    try {
+      for (const file of files) {
+        const url = await uploadFile(file, "proofs");
+        setReimbProofs((prev) => [
+          ...prev,
+          { id: generateId("proof"), name: file.name, url, type: file.type, size: file.size,
+            uploadedBy: currentUser.id, uploadedAt: new Date().toISOString() },
+        ]);
+      }
+      toast.success(`Đã tải ${files.length} chứng từ.`);
+    } catch { toast.error("Tải chứng từ thất bại."); }
+    finally {
+      setReimbUploading(false);
+      if (reimbFileRef.current) reimbFileRef.current.value = "";
+      if (reimbCameraRef.current) reimbCameraRef.current.value = "";
+    }
+  }
+
+  function addReimbProofLink() {
+    const url = reimbProofUrl.trim();
+    if (!url) return;
+    setReimbProofs((prev) => [
+      ...prev,
+      { id: generateId("proof"), name: url, url, type: "link",
+        uploadedBy: currentUser.id, uploadedAt: new Date().toISOString() },
+    ]);
+    setReimbProofUrl("");
+  }
+
+  async function handleReimbSubmit(step: TaskStep) {
+    const num = parseFloat(reimbAmount);
+    if (!num || num <= 0)  { toast.error("Nhập số tiền hợp lệ."); return; }
+    if (!reimbDesc.trim()) { toast.error("Nhập mô tả chi tiết."); return; }
+    if (reimbProofs.length === 0) { toast.error("Cần ít nhất 1 chứng từ."); return; }
+    setReimbSaving(true);
+    try {
+      await createDirectReimbursementRequest({
+        taskId:          task.id,
+        stepId:          step.id,
+        stepName:        step.name,
+        requestedBy:     currentUser.id,
+        requestedByName: currentUser.name,
+        amount:          num,
+        description:     reimbDesc.trim(),
+        proofs:          reimbProofs,
+      });
+      toast.success("Đã gửi đơn tự ứng. Chờ quản lý duyệt hoàn tiền.");
+      setReimbStepId(null);
+    } catch (err) {
+      toast.error((err as Error).message ?? "Gửi đơn thất bại.");
+    } finally {
+      setReimbSaving(false);
+    }
+  }
+
   function openEmailPanel(step: TaskStep) {
     const ids = new Set<string>();
     if (step.assigneeId) ids.add(step.assigneeId);
@@ -486,26 +575,41 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
                   <p className="font-medium text-sm dark:text-white truncate">{step.name}</p>
                   {taskAdvances.filter((a) => a.stepId === step.id).map((adv) => {
                     const ADV_CLS: Record<string, string> = {
-                      PENDING:  "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
-                      APPROVED: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
-                      REJECTED: "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400",
-                      SETTLED:  "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
+                      PENDING:             "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
+                      APPROVED:            "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
+                      REJECTED:            "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400",
+                      PENDING_SETTLEMENT:  "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
+                      SETTLED:             "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400",
                     };
                     const ADV_LBL: Record<string, string> = {
                       PENDING: "Chờ duyệt", APPROVED: "Đã duyệt",
-                      REJECTED: "Từ chối",  SETTLED: "Quyết toán",
+                      REJECTED: "Từ chối",  PENDING_SETTLEMENT: "Chờ TT", SETTLED: "Quyết toán",
                     };
                     return (
-                      <span
-                        key={adv.id}
-                        className={cn(
-                          "inline-flex items-center gap-1 shrink-0 px-1.5 py-0.5 rounded-full text-[10px] font-medium",
-                          ADV_CLS[adv.status] ?? ADV_CLS.PENDING
-                        )}
-                      >
+                      <span key={adv.id} className={cn("inline-flex items-center gap-1 shrink-0 px-1.5 py-0.5 rounded-full text-[10px] font-medium", ADV_CLS[adv.status] ?? ADV_CLS.PENDING)}>
                         <CreditCard className="w-2.5 h-2.5" />
                         {adv.amount.toLocaleString("vi-VN")}đ
                         <span className="opacity-70">({ADV_LBL[adv.status]})</span>
+                      </span>
+                    );
+                  })}
+                  {taskReimbs.filter((r) => r.stepId === step.id).map((r) => {
+                    const REIMB_CLS: Record<string, string> = {
+                      SUBMITTED: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400",
+                      APPROVED:  "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
+                      PAID:      "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400",
+                      REJECTED:  "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400",
+                      DRAFT:     "bg-slate-100 text-slate-400",
+                    };
+                    const REIMB_LBL: Record<string, string> = {
+                      SUBMITTED: "Chờ hoàn", APPROVED: "Đã duyệt",
+                      PAID: "Đã hoàn", REJECTED: "Từ chối", DRAFT: "Nháp",
+                    };
+                    return (
+                      <span key={r.id} className={cn("inline-flex items-center gap-1 shrink-0 px-1.5 py-0.5 rounded-full text-[10px] font-medium", REIMB_CLS[r.status] ?? REIMB_CLS.SUBMITTED)}>
+                        <Wallet className="w-2.5 h-2.5" />
+                        {r.amount.toLocaleString("vi-VN")}đ
+                        <span className="opacity-70">({REIMB_LBL[r.status]})</span>
                       </span>
                     );
                   })}
@@ -879,9 +983,10 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
 
                 {/* ── Advance + Email buttons (cùng hàng) ── */}
                 {(() => {
-                  const isAdvOpen   = advanceStepId === step.id;
+                  const isAdvOpen    = advanceStepId === step.id;
+                  const isReimbOpen  = reimbStepId === step.id;
                   const hasAssignees = !!step.assigneeId || (step.subTasks ?? []).length > 0;
-                  const isEmailOpen = emailStepId === step.id;
+                  const isEmailOpen  = emailStepId === step.id;
 
                   // VietQR URL
                   const qrAmount = parseFloat(advanceAmount) || 0;
@@ -894,7 +999,8 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
                   return (
                     <div className="pt-1 space-y-2">
                       {/* Hàng nút */}
-                      <div className="flex justify-end gap-2">
+                      <div className="flex justify-end gap-2 flex-wrap">
+                        {/* Tạm ứng */}
                         <button
                           onClick={() => isAdvOpen ? setAdvanceStepId(null) : openAdvancePanel(step)}
                           className={cn(
@@ -905,7 +1011,20 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
                           )}
                         >
                           <CreditCard className="w-3.5 h-3.5" />
-                          Yêu cầu tạm ứng
+                          Tạm ứng
+                        </button>
+                        {/* Tự ứng */}
+                        <button
+                          onClick={() => isReimbOpen ? setReimbStepId(null) : openReimbPanel(step)}
+                          className={cn(
+                            "flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-xl border transition",
+                            isReimbOpen
+                              ? "bg-purple-600 text-white border-purple-600"
+                              : "text-purple-600 dark:text-purple-400 border-purple-200 dark:border-purple-800 bg-white dark:bg-slate-800 hover:border-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20",
+                          )}
+                        >
+                          <Wallet className="w-3.5 h-3.5" />
+                          Tự ứng
                         </button>
 
                         {hasAssignees && (
@@ -1032,6 +1151,121 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
                               className="flex items-center gap-1.5 px-4 py-1.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white text-xs rounded-xl transition"
                             >
                               {advanceSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                              Gửi đơn
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Form tự ứng */}
+                      {isReimbOpen && (
+                        <div className="p-3 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-xl space-y-3">
+                          <p className="text-xs font-semibold text-purple-700 dark:text-purple-400 flex items-center gap-1.5">
+                            <Wallet className="w-3.5 h-3.5" />
+                            Đề nghị hoàn ứng — {step.name}
+                          </p>
+
+                          {/* Số tiền */}
+                          <div>
+                            <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400 block mb-1">Số tiền đã chi (VNĐ) *</label>
+                            <input
+                              type="number" min={1} step={1}
+                              value={reimbAmount}
+                              onChange={(e) => setReimbAmount(e.target.value)}
+                              placeholder="VD: 500000"
+                              className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-purple-400"
+                            />
+                            {reimbAmount && parseFloat(reimbAmount) > 0 && (
+                              <p className="text-[10px] text-purple-600 mt-0.5">= {parseFloat(reimbAmount).toLocaleString("vi-VN")} đ</p>
+                            )}
+                          </div>
+
+                          {/* Mô tả */}
+                          <div>
+                            <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400 block mb-1">Mô tả chi tiết *</label>
+                            <textarea
+                              value={reimbDesc}
+                              onChange={(e) => setReimbDesc(e.target.value)}
+                              rows={2}
+                              placeholder="Mô tả khoản chi..."
+                              className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-purple-400 resize-none"
+                            />
+                          </div>
+
+                          {/* Chứng từ */}
+                          <div className="space-y-2">
+                            <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400 block">Chứng từ * (≥1)</label>
+
+                            {/* URL input */}
+                            <div className="flex gap-1.5">
+                              <input
+                                value={reimbProofUrl}
+                                onChange={(e) => setReimbProofUrl(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addReimbProofLink(); } }}
+                                placeholder="Dán link chứng từ..."
+                                className="flex-1 px-3 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-purple-400"
+                              />
+                              <button
+                                onClick={addReimbProofLink}
+                                disabled={!reimbProofUrl.trim()}
+                                className="px-2.5 py-1.5 text-xs bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 rounded-xl hover:bg-purple-200 dark:hover:bg-purple-900/60 disabled:opacity-40 transition flex items-center gap-1"
+                              >
+                                <Link2 className="w-3 h-3" /> Thêm
+                              </button>
+                            </div>
+
+                            {/* File + Camera buttons */}
+                            <div className="flex gap-1.5">
+                              <button
+                                onClick={() => reimbFileRef.current?.click()}
+                                disabled={reimbUploading}
+                                className="flex items-center gap-1 px-3 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white hover:border-purple-400 hover:text-purple-600 transition disabled:opacity-50"
+                              >
+                                <Upload className="w-3 h-3" />
+                                {reimbUploading ? "Đang tải..." : "Tải file / PDF"}
+                              </button>
+                              <button
+                                onClick={() => reimbCameraRef.current?.click()}
+                                disabled={reimbUploading}
+                                className="flex items-center gap-1 px-3 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white hover:border-purple-400 hover:text-purple-600 transition disabled:opacity-50"
+                              >
+                                <Camera className="w-3 h-3" />
+                                Camera
+                              </button>
+                            </div>
+
+                            {/* Hidden inputs */}
+                            <input ref={reimbFileRef} type="file" accept="image/*,.pdf" className="hidden" onChange={handleReimbFileUpload} />
+                            <input ref={reimbCameraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleReimbFileUpload} />
+
+                            {/* Proof list */}
+                            {reimbProofs.length > 0 && (
+                              <ul className="space-y-1">
+                                {reimbProofs.map((p, i) => (
+                                  <li key={i} className="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-300">
+                                    {p.type === "link" ? <Link2 className="w-3 h-3 shrink-0 text-purple-500" /> : <FileText className="w-3 h-3 shrink-0 text-purple-500" />}
+                                    <a href={p.url} target="_blank" rel="noopener noreferrer" className="flex-1 truncate hover:underline text-purple-600 dark:text-purple-400">{p.name || p.url}</a>
+                                    <button onClick={() => setReimbProofs(prev => prev.filter((_, j) => j !== i))} className="text-slate-400 hover:text-red-500 transition">
+                                      <X className="w-3 h-3" />
+                                    </button>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+
+                          {/* Actions */}
+                          <div className="flex justify-end gap-2 pt-1">
+                            <button onClick={() => setReimbStepId(null)}
+                              className="px-3 py-1.5 text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400 transition">
+                              Hủy
+                            </button>
+                            <button
+                              onClick={() => handleReimbSubmit(step)}
+                              disabled={reimbSaving || reimbUploading}
+                              className="flex items-center gap-1.5 px-4 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-xs rounded-xl transition"
+                            >
+                              {reimbSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
                               Gửi đơn
                             </button>
                           </div>

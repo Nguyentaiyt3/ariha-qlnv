@@ -634,6 +634,39 @@ export async function markReimbursementPaid(reimbId: string, taskId: string): Pr
   await recomputeFinancialSummary(taskId);
 }
 
+// ── Tạo đơn hoàn ứng trực tiếp từ bước (không cần giao dịch trước) ───────────
+
+export async function createDirectReimbursementRequest(data: {
+  taskId: string;
+  stepId?: string;
+  stepName?: string;
+  requestedBy: string;
+  requestedByName: string;
+  amount: number;
+  description: string;
+  proofs: FinancialProof[];
+}): Promise<string> {
+  const db = getDb();
+  const now = new Date().toISOString();
+  const id = generateId("reimb");
+  await setDoc(doc(db, "reimbursementRequests", id), {
+    id,
+    taskId:          data.taskId,
+    stepId:          data.stepId   ?? null,
+    stepName:        data.stepName ?? null,
+    requestedBy:     data.requestedBy,
+    requestedByName: data.requestedByName,
+    amount:          data.amount,
+    description:     data.description,
+    proofs:          data.proofs,
+    status:          "SUBMITTED",
+    submittedAt:     now,
+    createdAt:       now,
+    updatedAt:       now,
+  });
+  return id;
+}
+
 // ── Per-advance settlement flow ───────────────────────────────────────────────
 
 /**

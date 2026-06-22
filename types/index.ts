@@ -821,7 +821,9 @@ export type ReimbursementStatus = "DRAFT" | "SUBMITTED" | "APPROVED" | "PAID" | 
 export interface ReimbursementRequest {
   id: string;
   taskId: string;
-  transactionId: string;        // Giao dịch OUT_OF_POCKET gốc
+  transactionId?: string;       // Giao dịch OUT_OF_POCKET gốc (optional khi tạo trực tiếp từ bước)
+  stepId?: string;              // Bước nhiệm vụ liên quan
+  stepName?: string;
   requestedBy: string;          // userId nhân viên
   requestedByName: string;
   amount: number;               // Số tiền cần hoàn trả
