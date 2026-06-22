@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import { BarChart3, CheckCircle2, TrendingUp, ShieldAlert, Target } from "lucide-react";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useAuthStore } from "@/stores/useAuthStore";
+import { useDashboardFilter } from "@/stores/useDashboardFilter";
 import { ResponsiveContainer, RadialBarChart, RadialBar } from "recharts";
 import { useContainerWidth } from "@/hooks/useContainerWidth";
 
@@ -41,31 +42,45 @@ function KpiTile({
 export default function KPIWeekWidget() {
   const { currentUser } = useAuthStore();
   const { tasks } = useTaskStore();
+  const { mode, year, month, quarter, getRange, getLabel } = useDashboardFilter();
 
   const { ref, xs } = useContainerWidth();
 
   const stats = useMemo(() => {
     if (!currentUser) return null;
-    const now = new Date();
-    const weekStart = new Date(now);
-    weekStart.setDate(now.getDate() - now.getDay());
-    weekStart.setHours(0, 0, 0, 0);
+
+    // Determine date range: use filter or fall back to current week
+    const range = getRange();
+    let startStr: string, endStr: string;
+    if (range) {
+      startStr = range.start.slice(0, 10);
+      endStr   = range.end.slice(0, 10);
+    } else {
+      const now = new Date();
+      const ws = new Date(now);
+      ws.setDate(now.getDate() - now.getDay());
+      ws.setHours(0, 0, 0, 0);
+      startStr = ws.toISOString().slice(0, 10);
+      endStr   = "9999-12-31";
+    }
 
     const myTasks = tasks.filter(
       (t) => t.mainPerformerId === currentUser.id ||
         (t.stakeholders ?? []).some((s) => s.userId === currentUser.id && s.role === "assignee"),
     );
-    const thisWeek = myTasks.filter((t) => t.deadlineBase && new Date(t.deadlineBase) >= weekStart);
-    const done     = thisWeek.filter((t) => t.status === "done").length;
-    const total    = thisWeek.length;
-    const rate     = total > 0 ? Math.round((done / total) * 100) : 0;
-    const risk     = myTasks.filter((t) => t.riskFlag && t.status !== "done").length;
-    const urgent   = myTasks.filter((t) => t.priority === "urgent" && t.status !== "done").length;
+    const periodTasks = myTasks.filter(
+      (t) => t.deadlineBase && t.deadlineBase >= startStr && t.deadlineBase <= endStr,
+    );
+    const done  = periodTasks.filter((t) => t.status === "done").length;
+    const total = periodTasks.length;
+    const rate  = total > 0 ? Math.round((done / total) * 100) : 0;
+    const risk  = myTasks.filter((t) => t.riskFlag && t.status !== "done").length;
+    const urgent = myTasks.filter((t) => t.priority === "urgent" && t.status !== "done").length;
     const avgProgress = myTasks.length > 0
       ? Math.round(myTasks.reduce((s, t) => s + t.progress, 0) / myTasks.length) : 0;
 
     return { done, total, rate, risk, urgent, avgProgress };
-  }, [currentUser, tasks]);
+  }, [currentUser, tasks, mode, year, month, quarter]);
 
   if (!stats) return null;
 
@@ -76,10 +91,12 @@ export default function KPIWeekWidget() {
     <div ref={ref} className="flex flex-col h-full p-3 sm:p-4 gap-2.5">
       {/* Header */}
       <div className="flex items-center justify-between shrink-0">
-        <h3 className="font-bold text-sm text-[var(--foreground)] flex items-center gap-1.5">
-          <BarChart3 className="w-4 h-4" style={{ color: P.purple }} />
-          KPI tuần này
-        </h3>
+        <div>
+          <h3 className="font-bold text-sm text-[var(--foreground)] flex items-center gap-1.5">
+            <BarChart3 className="w-4 h-4" style={{ color: P.purple }} />
+            {mode === "all" ? "KPI tuần này" : `KPI ${getLabel()}`}
+          </h3>
+        </div>
       </div>
 
       {/* Radial gauge — hide on very narrow */}
@@ -100,7 +117,7 @@ export default function KPIWeekWidget() {
           </div>
           <div>
             <p className="text-[11px] font-semibold text-[var(--foreground)]">Tỷ lệ hoàn thành</p>
-            <p className="text-[10px] text-[var(--muted-foreground)]">{stats.done}/{stats.total} nhiệm vụ tuần này</p>
+            <p className="text-[10px] text-[var(--muted-foreground)]">{stats.done}/{stats.total} nhiệm vụ {mode === "all" ? "tuần này" : getLabel()}</p>
           </div>
         </div>
       )}

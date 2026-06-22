@@ -34,7 +34,9 @@ const WIDGET_MAP: Partial<Record<WidgetType, React.ComponentType>> = {
   kpi_week:          dynamic(() => import("./widgets/KPIWeekWidget")),
   calendar_mini:     dynamic(() => import("./widgets/CalendarMiniWidget")),
   workload_heatmap:  dynamic(() => import("./widgets/WorkloadHeatmapWidget")),
-  internal_messages: dynamic(() => import("./widgets/InternalMessagesWidget")),
+  internal_messages:  dynamic(() => import("./widgets/InternalMessagesWidget")),
+  annual_kpi:         dynamic(() => import("./widgets/AnnualKPIWidget")),
+  financial_overview: dynamic(() => import("./widgets/FinancialOverviewWidget")),
 };
 
 interface Props {

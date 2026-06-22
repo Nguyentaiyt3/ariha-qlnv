@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { LayoutDashboard, Settings2, Plus, Eye, Check, Pencil, X, Trash2 } from "lucide-react";
+import { LayoutDashboard, Settings2, Plus, Eye, Check, Pencil, X } from "lucide-react";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useDashboardStore } from "@/stores/useDashboardStore";
 import DashboardGrid from "@/components/dashboard/DashboardGrid";
@@ -17,8 +17,10 @@ const WIDGET_LABELS: Partial<Record<WidgetType, string>> = {
   team_leaderboard:  "Xếp hạng nhóm",
   kpi_week:          "KPI tuần này",
   calendar_mini:     "7 ngày tới",
-  workload_heatmap:  "Phân bổ công việc",
-  internal_messages: "Tin nhắn mới nhất",
+  workload_heatmap:   "Phân bổ công việc",
+  internal_messages:  "Tin nhắn mới nhất",
+  annual_kpi:         "KPI Kế hoạch năm",
+  financial_overview: "Tổng quan tài chính",
 };
 
 function buildDefaultWidgets(role: string): WidgetConfig[] {
@@ -216,6 +218,7 @@ export default function DashboardPage() {
     "my_tasks", "support_tasks", "analytics_summary",
     "deadline_alert", "team_leaderboard", "kpi_week",
     "calendar_mini", "workload_heatmap", "internal_messages",
+    "annual_kpi",
   ];
   const existingTypes = activeProfile?.widgets.map((w) => w.type) ?? [];
   const addableTypes  = allWidgetTypes.filter((t) => !existingTypes.includes(t));

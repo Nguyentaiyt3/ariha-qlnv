@@ -1,7 +1,8 @@
 import type { Task, User } from "@/types";
 import { formatDate, daysUntilDeadline } from "@/lib/utils";
+import { senderBlock } from "./_shared";
 
-export function renderTaskOverdue(task: Task, recipients: User[]): string {
+export function renderTaskOverdue(task: Task, recipients: User[], sender?: User): string {
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
   const days = task.deadlineBase ? Math.abs(daysUntilDeadline(task.deadlineBase)) : 0;
 
@@ -24,11 +25,12 @@ export function renderTaskOverdue(task: Task, recipients: User[]): string {
         <p style="color:#991b1b;font-size:14px;margin:0;">Tiến độ hiện tại: <strong>${task.progress}%</strong></p>
       </div>
       <p style="color:#475569;font-size:14px;margin:0 0 20px;">Vui lòng cập nhật tiến độ ngay hoặc liên hệ quản lý để xử lý.</p>
-      <div style="text-align:center;">
+      <div style="text-align:center;margin-bottom:20px;">
         <a href="${appUrl}/tasks/${task.id}" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;padding:12px 28px;border-radius:10px;font-size:15px;font-weight:600;">
           Xử lý ngay →
         </a>
       </div>
+      ${senderBlock(sender)}
     </div>
     <div style="background:#f8fafc;padding:16px 32px;border-top:1px solid #e2e8f0;text-align:center;">
       <p style="color:#94a3b8;font-size:12px;margin:0;">Email này được gửi tự động vì nhiệm vụ đã quá hạn.</p>

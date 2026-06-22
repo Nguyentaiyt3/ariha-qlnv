@@ -1,24 +1,209 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
   ArrowLeft, AlertTriangle, User, Calendar, Flag,
   CheckSquare, MessageSquare, Users, Mail, Activity, BarChart3,
   CheckCheck, Loader2, Star, Send, ClipboardCheck, Pencil, Trash2, X as XIcon, Save,
+  Paperclip, Link2, FolderOpen, FileText, Download, Plus, DollarSign,
 } from "lucide-react";
 import { cn, formatDate, formatDateTime, formatRelativeTime, statusLabel, priorityLabel, getInitials, avatarColor, isTaskVisible } from "@/lib/utils";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useAuthStore } from "@/stores/useAuthStore";
-import { subscribeTask, updateTask, deleteTask, getMessages, addMessage, getEmailLogs, getAuditTrail, addAuditEvent, addNotification, getEvaluations, saveEvaluation } from "@/lib/firebase/firestore";
+import { subscribeTask, updateTask, deleteTask, getEmailLogs, getAuditTrail, addAuditEvent, addNotification, getEvaluations, saveEvaluation } from "@/lib/firebase/firestore";
+import { uploadFile } from "@/lib/firebase/storage";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { StepsTab } from "@/components/tasks/StepsTab";
+import { TaskChat } from "@/components/tasks/TaskChat";
+import { FinancialWidget } from "@/components/tasks/FinancialWidget";
 import { UserAvatar } from "@/components/common/UserAvatar";
-import type { Task, User as UserType, Message, EmailLog, AuditEvent, Evaluation, CompletionProposal } from "@/types";
+import type { Task, User as UserType, EmailLog, AuditEvent, Evaluation, CompletionProposal, TaskResource } from "@/types";
 import { generateId } from "@/lib/utils";
 import { toast } from "sonner";
 
-type TabId = "steps" | "stakeholders" | "chat" | "email" | "audit" | "evaluation";
+type TabId = "steps" | "stakeholders" | "chat" | "email" | "audit" | "evaluation" | "resources" | "finance";
+
+// ─── ResourcesTab ────────────────────────────────────────────
+interface ResourcesTabProps {
+  task: Task;
+  currentUser: UserType;
+  isMainPerformer: boolean;
+  onSave: (updates: Partial<Task>) => Promise<void>;
+}
+
+function ResourcesTab({ task, currentUser, isMainPerformer, onSave }: ResourcesTabProps) {
+  const [resources, setResources] = useState<TaskResource[]>(task.resources ?? []);
+  const [addMode, setAddMode] = useState<"link" | null>(null);
+  const [linkName, setLinkName] = useState("");
+  const [linkUrl, setLinkUrl] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  function formatSize(bytes?: number) {
+    if (!bytes) return "";
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  }
+
+  async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const url = await uploadFile(file, "task-resources");
+      const resource: TaskResource = {
+        id: generateId("res"),
+        type: "file",
+        name: file.name,
+        url,
+        mimeType: file.type,
+        size: file.size,
+        addedBy: currentUser.id,
+        addedByName: currentUser.name,
+        addedAt: new Date().toISOString(),
+      };
+      const updated = [...resources, resource];
+      setResources(updated);
+      await onSave({ resources: updated });
+      toast.success("Đã đính kèm tài liệu.");
+    } catch {
+      toast.error("Tải lên thất bại.");
+    } finally {
+      setUploading(false);
+      e.target.value = "";
+    }
+  }
+
+  async function handleAddLink() {
+    if (!linkName.trim() || !linkUrl.trim()) { toast.error("Nhập tên và URL."); return; }
+    const resource: TaskResource = {
+      id: generateId("res"),
+      type: "link",
+      name: linkName.trim(),
+      url: linkUrl.trim(),
+      addedBy: currentUser.id,
+      addedByName: currentUser.name,
+      addedAt: new Date().toISOString(),
+    };
+    const updated = [...resources, resource];
+    setResources(updated);
+    await onSave({ resources: updated });
+    toast.success("Đã thêm đường dẫn.");
+    setLinkName("");
+    setLinkUrl("");
+    setAddMode(null);
+  }
+
+  async function handleRemove(resId: string) {
+    const updated = resources.filter((r) => r.id !== resId);
+    setResources(updated);
+    await onSave({ resources: updated });
+    toast.success("Đã xoá tài liệu.");
+  }
+
+  return (
+    <div className="space-y-4">
+      {isMainPerformer && (
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading}
+            className="flex items-center gap-1.5 px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm rounded-lg transition"
+          >
+            <Paperclip className="w-4 h-4" />
+            {uploading ? "Đang tải..." : "Đính kèm file"}
+          </button>
+          <button
+            onClick={() => setAddMode(addMode === "link" ? null : "link")}
+            className="flex items-center gap-1.5 px-3 py-2 border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-sm rounded-lg transition"
+          >
+            <Link2 className="w-4 h-4" /> Thêm đường dẫn
+          </button>
+          <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileUpload} />
+        </div>
+      )}
+
+      {addMode === "link" && isMainPerformer && (
+        <div className="bg-slate-50 dark:bg-slate-800 rounded-xl p-4 space-y-3 border border-slate-200 dark:border-slate-700">
+          <p className="text-sm font-medium text-slate-700 dark:text-slate-200">Thêm đường dẫn</p>
+          <input
+            value={linkName}
+            onChange={(e) => setLinkName(e.target.value)}
+            placeholder="Tên đường dẫn"
+            className="w-full px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-slate-900 dark:text-white"
+          />
+          <input
+            value={linkUrl}
+            onChange={(e) => setLinkUrl(e.target.value)}
+            placeholder="https://..."
+            className="w-full px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-slate-900 dark:text-white"
+          />
+          <div className="flex gap-2">
+            <button onClick={handleAddLink} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg transition">
+              Thêm
+            </button>
+            <button onClick={() => setAddMode(null)} className="px-4 py-2 border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 text-sm rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition">
+              Huỷ
+            </button>
+          </div>
+        </div>
+      )}
+
+      {resources.length === 0 ? (
+        <div className="text-center py-12">
+          <FolderOpen className="w-10 h-10 text-slate-300 dark:text-slate-600 mx-auto mb-3" />
+          <p className="text-slate-400 text-sm">Chưa có tài liệu nào được đính kèm.</p>
+          {isMainPerformer && (
+            <p className="text-slate-400 text-xs mt-1">Bấm "Đính kèm file" hoặc "Thêm đường dẫn" để bắt đầu.</p>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {resources.map((res) => (
+            <div key={res.id} className="flex items-center gap-3 p-3 bg-slate-50 dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700">
+              <div className="w-9 h-9 rounded-lg bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 flex items-center justify-center shrink-0">
+                {res.type === "link"
+                  ? <Link2 className="w-4 h-4 text-blue-500" />
+                  : <FileText className="w-4 h-4 text-slate-500" />}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-slate-800 dark:text-white truncate">{res.name}</p>
+                <p className="text-xs text-slate-400">
+                  {res.addedByName} · {formatDate(res.addedAt)}
+                  {res.size ? ` · ${formatSize(res.size)}` : ""}
+                </p>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <a
+                  href={res.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="p-1.5 hover:bg-slate-200 dark:hover:bg-slate-600 rounded-lg transition"
+                  title={res.type === "link" ? "Mở đường dẫn" : "Tải xuống"}
+                >
+                  {res.type === "link"
+                    ? <Link2 className="w-4 h-4 text-blue-500" />
+                    : <Download className="w-4 h-4 text-slate-500" />}
+                </a>
+                {isMainPerformer && (
+                  <button
+                    onClick={() => handleRemove(res.id)}
+                    className="p-1.5 hover:bg-red-50 dark:hover:bg-red-900/30 text-red-500 rounded-lg transition"
+                    title="Xoá"
+                  >
+                    <XIcon className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function TaskDetailsPage() {
   const { id } = useParams() as { id: string };
@@ -28,11 +213,8 @@ export default function TaskDetailsPage() {
 
   const [task, setTask] = useState<Task | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>("steps");
-  const [messages, setMessages] = useState<Message[]>([]);
   const [emailLogs, setEmailLogs] = useState<EmailLog[]>([]);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
-  const [chatInput, setChatInput] = useState("");
-  const [sendingMsg, setSendingMsg] = useState(false);
   const [loading, setLoading] = useState(true);
   const [evaluations, setEvaluations] = useState<Evaluation[]>([]);
   const [evalRatings, setEvalRatings] = useState<Record<string, number>>({});
@@ -51,6 +233,10 @@ export default function TaskDetailsPage() {
   const [editForm, setEditForm] = useState({ name: "", description: "", priority: "", deadlineBase: "", department: "" });
   const [savingEdit, setSavingEdit] = useState(false);
   const [deletingTask, setDeletingTask] = useState(false);
+
+  const refreshEmailLogs = useCallback(() => {
+    getEmailLogs(id).then(setEmailLogs).catch(console.error);
+  }, [id]);
 
   // Realtime task subscription
   useEffect(() => {
@@ -73,9 +259,7 @@ export default function TaskDetailsPage() {
   // Load tab data on switch
   useEffect(() => {
     if (!task) return;
-    if (activeTab === "chat") {
-      getMessages(id).then(setMessages).catch(console.error);
-    } else if (activeTab === "email") {
+    if (activeTab === "email") {
       getEmailLogs(id).then(setEmailLogs).catch(console.error);
     } else if (activeTab === "audit") {
       getAuditTrail(id).then(setAuditEvents).catch(console.error);
@@ -83,29 +267,6 @@ export default function TaskDetailsPage() {
       getEvaluations(currentUser.id).then(setEvaluations).catch(console.error);
     }
   }, [activeTab, id, task, currentUser]);
-
-  async function handleSendMessage() {
-    if (!chatInput.trim() || !currentUser || !task) return;
-    setSendingMsg(true);
-    try {
-      const msg = await addMessage(id, {
-        taskId: id,
-        senderId: currentUser.id,
-        senderName: currentUser.name,
-        senderAvatar: currentUser.avatar,
-        content: chatInput.trim(),
-        mentions: [],
-        attachments: [],
-        timestamp: new Date().toISOString(),
-      });
-      setMessages((prev) => [...prev, msg]);
-      setChatInput("");
-    } catch {
-      toast.error("Gửi tin nhắn thất bại.");
-    } finally {
-      setSendingMsg(false);
-    }
-  }
 
   function startEdit() {
     if (!task) return;
@@ -373,10 +534,12 @@ export default function TaskDetailsPage() {
   const TABS: { id: TabId; label: string; Icon: React.ComponentType<{ className?: string }> }[] = [
     { id: "steps", label: "Quy trình", Icon: CheckSquare },
     { id: "stakeholders", label: "Người liên quan", Icon: Users },
+    { id: "resources", label: "Tài liệu", Icon: FolderOpen },
     { id: "chat", label: "Tin nhắn", Icon: MessageSquare },
     { id: "email", label: "Email Log", Icon: Mail },
     { id: "audit", label: "Lịch sử", Icon: Activity },
     ...(task.status === "done" ? [{ id: "evaluation" as TabId, label: "Đánh giá", Icon: Star }] : []),
+    ...(currentUser && hasPermission(currentUser.role, "finance:read") ? [{ id: "finance" as TabId, label: "Tài chính", Icon: DollarSign }] : []),
   ];
 
   // All people who worked on this task (for peer evaluation)
@@ -727,6 +890,7 @@ export default function TaskDetailsPage() {
               currentUser={currentUser}
               canAssignSteps={canAssignSteps}
               onSave={onSaveTask}
+              onEmailSent={refreshEmailLogs}
             />
           )}
 
@@ -762,76 +926,152 @@ export default function TaskDetailsPage() {
             </div>
           )}
 
+          {/* Resources tab */}
+          {activeTab === "resources" && currentUser && (
+            <ResourcesTab
+              task={task}
+              currentUser={currentUser}
+              isMainPerformer={isMainPerformer}
+              onSave={onSaveTask}
+            />
+          )}
+
           {/* Chat tab */}
-          {activeTab === "chat" && (
-            <div className="flex flex-col gap-4 h-[400px]">
-              <div className="flex-1 overflow-y-auto space-y-3">
-                {messages.length === 0 ? (
-                  <p className="text-slate-400 text-sm text-center py-8">Chưa có tin nhắn</p>
-                ) : (
-                  messages.map((msg) => {
-                    const isMe = msg.senderId === currentUser?.id;
-                    return (
-                      <div key={msg.id} className={cn("flex gap-2", isMe && "flex-row-reverse")}>
-                        <div className={cn("w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0", avatarColor(msg.senderName))}>
-                          {getInitials(msg.senderName)}
-                        </div>
-                        <div className={cn("max-w-[70%]", isMe && "items-end flex flex-col")}>
-                          <p className="text-[10px] text-slate-400 mb-0.5">{msg.senderName}</p>
-                          <div className={cn("px-3 py-2 rounded-xl text-sm", isMe ? "bg-blue-600 text-white" : "bg-slate-100 dark:bg-slate-700 dark:text-white")}>
-                            {msg.content}
-                          </div>
-                          <p className="text-[10px] text-slate-400 mt-0.5">{formatRelativeTime(msg.timestamp)}</p>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-              <div className="flex gap-2">
-                <input
-                  value={chatInput}
-                  onChange={(e) => setChatInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSendMessage(); } }}
-                  placeholder="Nhập tin nhắn... (Enter để gửi)"
-                  className="flex-1 px-4 py-2.5 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-slate-900 dark:text-white"
-                />
-                <button
-                  onClick={handleSendMessage}
-                  disabled={!chatInput.trim() || sendingMsg}
-                  className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl transition"
-                >
-                  {sendingMsg ? <Loader2 className="w-4 h-4 animate-spin" /> : <MessageSquare className="w-4 h-4" />}
-                </button>
-              </div>
-            </div>
+          {activeTab === "chat" && currentUser && (
+            <TaskChat taskId={id} currentUser={currentUser} />
+          )}
+
+          {/* Finance tab */}
+          {activeTab === "finance" && currentUser && (
+            <FinancialWidget
+              task={task}
+              currentUser={{ id: currentUser.id, name: currentUser.name, role: currentUser.role }}
+            />
           )}
 
           {/* Email log tab */}
-          {activeTab === "email" && (
-            <div className="space-y-2">
-              {emailLogs.length === 0 ? (
-                <p className="text-slate-400 text-sm text-center py-8">Chưa có email nào được gửi</p>
-              ) : (
-                emailLogs.map((log) => (
-                  <div key={log.id} className="flex items-start gap-3 p-3 bg-slate-50 dark:bg-slate-900 rounded-xl">
-                    <Mail className="w-4 h-4 text-blue-500 mt-0.5 shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium dark:text-white">{log.subject}</p>
-                      <p className="text-xs text-slate-400 mt-0.5">
-                        Gửi lúc {formatDateTime(log.sentAt)} · {log.recipientEmails.length} người nhận
-                      </p>
-                    </div>
-                    <span className={cn("text-[10px] font-semibold px-2 py-0.5 rounded-full",
-                      log.status === "sent" ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600"
-                    )}>
-                      {log.status}
-                    </span>
+          {activeTab === "email" && (() => {
+            if (emailLogs.length === 0) {
+              return (
+                <div className="flex flex-col items-center justify-center py-14 gap-3 text-center">
+                  <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
+                    <Mail className="w-6 h-6 text-slate-400" />
                   </div>
-                ))
-              )}
-            </div>
-          )}
+                  <p className="text-sm text-slate-400">Chưa có email nào được gửi</p>
+                  <p className="text-xs text-slate-300 dark:text-slate-600">Email sẽ xuất hiện ở đây sau khi gửi từ các bước quy trình</p>
+                </div>
+              );
+            }
+
+            const EVENT_LABEL: Record<string, string> = {
+              task_assigned:    "Giao việc",
+              deadline_alert:   "Sắp hết hạn",
+              task_overdue:     "Quá hạn",
+              approval_request: "Yêu cầu duyệt",
+              task_completed:   "Hoàn thành",
+              step_notification:"Bước quy trình",
+              comment_mention:  "Nhắc tên",
+              calendar_change:  "Thay đổi lịch",
+              digest_daily:     "Tổng hợp ngày",
+              digest_weekly:    "Tổng hợp tuần",
+            };
+
+            function getDateLabel(sentAt: string) {
+              const d = new Date(sentAt);
+              const today = new Date();
+              const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
+              if (d.toDateString() === today.toDateString()) return "Hôm nay";
+              if (d.toDateString() === yesterday.toDateString()) return "Hôm qua";
+              return d.toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" });
+            }
+
+            // Group by date (logs already sorted newest→oldest by Firestore)
+            const groups: { label: string; items: EmailLog[] }[] = [];
+            for (const log of emailLogs) {
+              const label = getDateLabel(log.sentAt);
+              const last = groups[groups.length - 1];
+              if (last && last.label === label) last.items.push(log);
+              else groups.push({ label, items: [log] });
+            }
+
+            return (
+              <div className="space-y-6">
+                {groups.map(({ label, items }) => (
+                  <div key={label}>
+                    {/* Date divider */}
+                    <div className="flex items-center gap-3 mb-3">
+                      <div className="flex-1 h-px bg-slate-200 dark:bg-slate-700" />
+                      <span className="text-[11px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wide px-1">
+                        {label}
+                      </span>
+                      <div className="flex-1 h-px bg-slate-200 dark:bg-slate-700" />
+                    </div>
+
+                    {/* Email log items */}
+                    <div className="space-y-2">
+                      {items.map((log) => (
+                        <div
+                          key={log.id}
+                          className={cn(
+                            "group flex items-start gap-3 p-3.5 rounded-xl border transition-all",
+                            "bg-[var(--card)] border-[var(--border)]",
+                            "hover:border-blue-300 dark:hover:border-blue-700",
+                            "hover:bg-blue-50/50 dark:hover:bg-blue-950/20",
+                            "hover:shadow-sm",
+                          )}
+                        >
+                          {/* Icon */}
+                          <div className={cn(
+                            "w-9 h-9 rounded-xl flex items-center justify-center shrink-0 transition-colors",
+                            log.status === "sent"
+                              ? "bg-blue-50 dark:bg-blue-900/30 group-hover:bg-blue-100 dark:group-hover:bg-blue-900/50"
+                              : "bg-red-50 dark:bg-red-900/20",
+                          )}>
+                            <Mail className={cn("w-4 h-4", log.status === "sent" ? "text-blue-500" : "text-red-500")} />
+                          </div>
+
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-semibold text-[var(--foreground)] leading-snug">{log.subject}</p>
+                            <p className="text-xs text-slate-400 mt-0.5">
+                              {new Date(log.sentAt).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}
+                              {" · "}
+                              {log.recipientEmails.length} người nhận
+                            </p>
+                            {/* Recipients */}
+                            {log.recipientEmails.length > 0 && (
+                              <div className="flex flex-wrap gap-1 mt-1.5">
+                                {log.recipientEmails.map((email) => (
+                                  <span key={email}
+                                    className="text-[10px] px-1.5 py-0.5 bg-slate-100 dark:bg-slate-700 group-hover:bg-white dark:group-hover:bg-slate-600 rounded-full text-slate-500 dark:text-slate-400 transition-colors">
+                                    {email}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Status + type */}
+                          <div className="flex flex-col items-end gap-1.5 shrink-0">
+                            <span className={cn(
+                              "text-[10px] font-bold px-2 py-0.5 rounded-full",
+                              log.status === "sent"
+                                ? "bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400"
+                                : "bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400",
+                            )}>
+                              {log.status === "sent" ? "Đã gửi" : "Thất bại"}
+                            </span>
+                            <span className="text-[10px] text-slate-400 text-right">
+                              {EVENT_LABEL[log.eventType] ?? log.eventType}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
 
           {/* Evaluation tab */}
           {activeTab === "evaluation" && (
@@ -905,33 +1145,130 @@ export default function TaskDetailsPage() {
           )}
 
           {/* Audit trail tab */}
-          {activeTab === "audit" && (
-            <div className="space-y-2">
-              {auditEvents.length === 0 ? (
-                <p className="text-slate-400 text-sm text-center py-8">Chưa có lịch sử hành động</p>
-              ) : (
-                auditEvents.map((event) => (
-                  <div key={event.id} className="flex items-start gap-3 p-3 bg-slate-50 dark:bg-slate-900 rounded-xl">
-                    <div className="w-7 h-7 bg-slate-200 dark:bg-slate-700 rounded-full flex items-center justify-center text-[10px] font-bold text-slate-600 dark:text-slate-300 shrink-0">
-                      {getInitials(event.userName)}
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-sm dark:text-white">
-                        <span className="font-semibold">{event.userName}</span>
-                        {" "}{event.action.replace(/_/g, " ")}
-                      </p>
-                      {event.before && event.after && (
-                        <p className="text-xs text-slate-400 mt-0.5">
-                          {JSON.stringify(event.before)} → {JSON.stringify(event.after)}
-                        </p>
-                      )}
-                      <p className="text-[10px] text-slate-400 mt-0.5">{formatDateTime(event.timestamp)}</p>
-                    </div>
+          {activeTab === "audit" && (() => {
+            if (auditEvents.length === 0) {
+              return (
+                <div className="flex flex-col items-center justify-center py-14 gap-3 text-center">
+                  <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
+                    <Activity className="w-6 h-6 text-slate-400" />
                   </div>
-                ))
-              )}
-            </div>
-          )}
+                  <p className="text-sm text-slate-400">Chưa có lịch sử hành động</p>
+                </div>
+              );
+            }
+
+            const ACTION_LABEL: Record<string, string> = {
+              edited:              "chỉnh sửa nhiệm vụ",
+              approved:            "phê duyệt nhiệm vụ",
+              status_changed:      "đổi trạng thái",
+              completion_proposed: "đề xuất kết thúc nhiệm vụ",
+              completion_approved: "duyệt kết thúc nhiệm vụ",
+              completion_rejected: "từ chối kết thúc nhiệm vụ",
+              progress_updated:    "cập nhật tiến độ",
+              step_assigned:       "phân công bước quy trình",
+              risk_flagged:        "gắn cờ rủi ro",
+              comment_added:       "thêm bình luận",
+              deleted:             "xoá nhiệm vụ",
+            };
+
+            const STATUS_VI: Record<string, string> = { todo: "Chờ thực hiện", in_progress: "Đang thực hiện", review: "Xét duyệt", done: "Hoàn thành", cancelled: "Đã huỷ" };
+            const PRIORITY_VI: Record<string, string> = { low: "Thấp", medium: "Trung bình", high: "Cao", urgent: "Khẩn cấp" };
+
+            function fmtVal(key: string, val: unknown): string {
+              if (key === "status") return STATUS_VI[val as string] ?? String(val);
+              if (key === "priority") return PRIORITY_VI[val as string] ?? String(val);
+              if (key === "approved") return val ? "Đã duyệt" : "Chưa duyệt";
+              if (typeof val === "boolean") return val ? "Có" : "Không";
+              return String(val ?? "—");
+            }
+
+            function describeEvent(ev: AuditEvent): string {
+              const base = ACTION_LABEL[ev.action] ?? ev.action.replace(/_/g, " ");
+              if (ev.before && ev.after) {
+                const diffs = Object.keys(ev.after)
+                  .filter((k) => (ev.before as Record<string, unknown>)[k] !== (ev.after as Record<string, unknown>)[k])
+                  .map((k) => `${fmtVal(k, (ev.before as Record<string, unknown>)[k])} → ${fmtVal(k, (ev.after as Record<string, unknown>)[k])}`)
+                  .join(", ");
+                if (diffs) return `${base}: ${diffs}`;
+              }
+              if (ev.note) return `${base} — "${ev.note}"`;
+              return base;
+            }
+
+            function toDateKey(ts: string): string {
+              const d = new Date(ts);
+              return [
+                d.getDate().toString().padStart(2, "0"),
+                (d.getMonth() + 1).toString().padStart(2, "0"),
+                d.getFullYear(),
+              ].join("/");
+            }
+
+            // Group by date (auditEvents sorted newest→oldest)
+            const groups: { dateKey: string; items: AuditEvent[] }[] = [];
+            for (const ev of auditEvents) {
+              const dateKey = toDateKey(ev.timestamp);
+              const last = groups[groups.length - 1];
+              if (last && last.dateKey === dateKey) last.items.push(ev);
+              else groups.push({ dateKey, items: [ev] });
+            }
+
+            return (
+              <div className="space-y-1">
+                {groups.map(({ dateKey, items }, gi) => (
+                  <details
+                    key={dateKey}
+                    open={gi === 0}
+                    className="group rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden"
+                  >
+                    {/* Header row */}
+                    <summary className="flex items-center gap-2.5 px-4 py-3 cursor-pointer list-none select-none bg-slate-50 dark:bg-slate-800/60 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+                      {/* +/- toggle */}
+                      <span className="w-5 h-5 rounded border border-blue-300 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/30 flex items-center justify-center text-blue-600 dark:text-blue-400 font-bold text-sm leading-none group-open:hidden select-none">
+                        +
+                      </span>
+                      <span className="w-5 h-5 rounded border border-blue-300 dark:border-blue-700 bg-blue-100 dark:bg-blue-900/50 hidden items-center justify-center text-blue-600 dark:text-blue-400 font-bold text-sm leading-none group-open:flex select-none">
+                        −
+                      </span>
+
+                      <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+                        Ngày {dateKey}
+                      </span>
+
+                      <span className="ml-auto text-[11px] text-slate-400 dark:text-slate-500 tabular-nums">
+                        {items.length} hoạt động
+                      </span>
+                    </summary>
+
+                    {/* Log rows */}
+                    <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                      {items.map((ev) => {
+                        const time = new Date(ev.timestamp).toLocaleTimeString("vi-VN", {
+                          hour: "2-digit", minute: "2-digit", second: "2-digit",
+                        });
+                        return (
+                          <div
+                            key={ev.id}
+                            className="flex items-baseline gap-2 px-4 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors"
+                          >
+                            <span className="font-mono text-[11px] text-slate-400 dark:text-slate-500 shrink-0 tabular-nums w-[62px]">
+                              {time}
+                            </span>
+                            <span className="text-[11px] text-slate-300 dark:text-slate-600 shrink-0">:</span>
+                            <span className="text-sm text-slate-800 dark:text-slate-100 min-w-0">
+                              <span className="font-semibold">{ev.userName}</span>
+                              <span className="text-slate-400 dark:text-slate-500 mx-1">–</span>
+                              <span className="text-slate-600 dark:text-slate-300">{describeEvent(ev)}</span>
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </details>
+                ))}
+              </div>
+            );
+          })()}
         </div>
       </div>
     </div>

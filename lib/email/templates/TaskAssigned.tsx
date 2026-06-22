@@ -1,7 +1,8 @@
 import type { Task, User } from "@/types";
 import { formatDate } from "@/lib/utils";
+import { senderBlock } from "./_shared";
 
-export function renderTaskAssigned(task: Task, recipients: User[]): string {
+export function renderTaskAssigned(task: Task, recipients: User[], sender?: User): string {
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
   const taskUrl = `${appUrl}/tasks/${task.id}`;
 
@@ -27,7 +28,7 @@ export function renderTaskAssigned(task: Task, recipients: User[]): string {
 
     <!-- Body -->
     <div style="padding:28px 32px;">
-      <p style="color:#475569;font-size:15px;margin:0 0 20px;">Bạn đã được giao một nhiệm vụ mới trong WorkHub:</p>
+      ${sender ? `<p style="color:#475569;font-size:15px;margin:0 0 20px;"><strong style="color:#1e40af;">${sender.name}</strong> đã giao cho bạn một nhiệm vụ:</p>` : `<p style="color:#475569;font-size:15px;margin:0 0 20px;">Bạn đã được giao một nhiệm vụ mới trong WorkHub:</p>`}
 
       <!-- Task card -->
       <div style="background:#f8fafc;border:1px solid #e2e8f0;border-left:4px solid #2563eb;border-radius:12px;padding:20px;margin-bottom:24px;">
@@ -56,6 +57,8 @@ export function renderTaskAssigned(task: Task, recipients: User[]): string {
           Xem chi tiết nhiệm vụ →
         </a>
       </div>
+
+      ${senderBlock(sender)}
     </div>
 
     <!-- Footer -->

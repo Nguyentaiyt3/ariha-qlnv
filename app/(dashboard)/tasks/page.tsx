@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { LayoutGrid, List, Calendar, GitBranch, Filter, SortAsc, AlertTriangle, ShieldAlert, X } from "lucide-react";
+import { LayoutGrid, List, Calendar, GitBranch, AlertTriangle, ShieldAlert, X } from "lucide-react";
 import { deleteTask } from "@/lib/firebase/firestore";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -12,6 +12,7 @@ import { TaskGanttView } from "@/components/tasks/TaskGanttView";
 import { CreateTaskModal } from "@/components/tasks/CreateTaskModal";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useAuthStore } from "@/stores/useAuthStore";
+import { useDashboardFilter } from "@/stores/useDashboardFilter";
 import { hasPermission } from "@/lib/rbac/permissions";
 import type { Task, TaskStatus, TaskViewMode } from "@/types";
 import { useRouter } from "next/navigation";
@@ -30,6 +31,7 @@ export default function TasksPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [createStatus, setCreateStatus] = useState<TaskStatus>("todo");
 
+  const { mode, year, month, quarter, getRange } = useDashboardFilter();
   const canApprove = !!(currentUser && hasPermission(currentUser.role, "task:approve"));
   const canDelete = !!(currentUser && hasPermission(currentUser.role, "task:delete"));
   const pendingApprovalCount = canApprove ? tasks.filter((t) => !t.approved).length : 0;
@@ -81,8 +83,15 @@ export default function TasksPage() {
       const today = new Date().toISOString().slice(0, 10);
       result = result.filter((t) => t.deadlineBase && t.deadlineBase < today && t.status !== "done" && t.status !== "cancelled");
     }
+    // Date-range filter (shared with dashboard)
+    const range = getRange();
+    if (range) {
+      const s = range.start.slice(0, 10);
+      const e = range.end.slice(0, 10);
+      result = result.filter((t) => !t.deadlineBase || (t.deadlineBase >= s && t.deadlineBase <= e));
+    }
     return result;
-  }, [tasks, filters]);
+  }, [tasks, filters, mode, year, month, quarter]);
 
   function handleSelectTask(task: Task) {
     router.push(`/tasks/${task.id}`);
@@ -120,24 +129,22 @@ export default function TasksPage() {
         </div>
 
         {/* View switcher */}
-        <div className="flex items-center gap-2">
-          <div className="flex bg-slate-100 dark:bg-slate-800 rounded-xl p-1">
-            {VIEW_TABS.map(({ id, label, Icon }) => (
-              <button
-                key={id}
-                onClick={() => setViewMode(id)}
-                className={cn(
-                  "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition",
-                  viewMode === id
-                    ? "bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm"
-                    : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
-                )}
-              >
-                <Icon className="w-4 h-4" />
-                <span className="hidden sm:inline">{label}</span>
-              </button>
-            ))}
-          </div>
+        <div className="flex bg-slate-100 dark:bg-slate-800 rounded-xl p-1">
+          {VIEW_TABS.map(({ id, label, Icon }) => (
+            <button
+              key={id}
+              onClick={() => setViewMode(id)}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition",
+                viewMode === id
+                  ? "bg-white dark:bg-slate-700 text-blue-600 dark:text-blue-400 shadow-sm"
+                  : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+              )}
+            >
+              <Icon className="w-4 h-4" />
+              <span className="hidden sm:inline">{label}</span>
+            </button>
+          ))}
         </div>
       </div>
 

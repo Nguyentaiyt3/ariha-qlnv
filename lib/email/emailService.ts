@@ -1,5 +1,5 @@
 import { sendMail } from "./mailer";
-import { addEmailLog, getUser } from "@/lib/firebase/firestore";
+import { addEmailLog } from "@/lib/firebase/firestore";
 import type { Task, User, EmailEventType, StakeholderRole } from "@/types";
 import { renderTaskAssigned } from "./templates/TaskAssigned";
 import { renderDeadlineAlert } from "./templates/DeadlineAlert";
@@ -24,10 +24,11 @@ export interface EmailTriggerPayload {
   event: EmailEventType;
   task: Task;
   users: User[];
+  sender?: User;  // the logged-in user who performed the action
   extraData?: Record<string, unknown>;
 }
 
-export async function triggerEmail({ event, task, users, extraData }: EmailTriggerPayload) {
+export async function triggerEmail({ event, task, users, sender, extraData }: EmailTriggerPayload) {
   // Determine recipients based on stakeholder group + email preferences
   const stakeholders = task.stakeholders ?? [];
   const recipientMap = new Map<string, { user: User; eventTypes: EmailEventType[] }>();
@@ -56,7 +57,7 @@ export async function triggerEmail({ event, task, users, extraData }: EmailTrigg
 
   // Urgent events bypass batching
   if (URGENT_EVENTS.includes(event)) {
-    await sendEmailGroup({ event, task, recipients, extraData });
+    await sendEmailGroup({ event, task, recipients, sender, extraData });
     return;
   }
 
@@ -68,7 +69,7 @@ export async function triggerEmail({ event, task, users, extraData }: EmailTrigg
   }
 
   const timer = setTimeout(async () => {
-    await sendEmailGroup({ event, task, recipients, extraData });
+    await sendEmailGroup({ event, task, recipients, sender, extraData });
     batchQueues.delete(batchKey);
   }, 5 * 60 * 1000); // 5 minutes
 
@@ -76,11 +77,12 @@ export async function triggerEmail({ event, task, users, extraData }: EmailTrigg
 }
 
 async function sendEmailGroup({
-  event, task, recipients, extraData,
+  event, task, recipients, sender, extraData,
 }: {
   event: EmailEventType;
   task: Task;
   recipients: User[];
+  sender?: User;
   extraData?: Record<string, unknown>;
 }) {
   const emails = recipients.map((u) => u.email).filter(Boolean);
@@ -89,33 +91,36 @@ async function sendEmailGroup({
   let subject = "";
   let html = "";
 
+  const senderName  = sender?.name;
+  const senderEmail = sender?.email;
+
   try {
     switch (event) {
       case "task_assigned":
         subject = `[WorkHub] Bạn được giao nhiệm vụ: ${task.name}`;
-        html = renderTaskAssigned(task, recipients);
+        html = renderTaskAssigned(task, recipients, sender);
         break;
       case "deadline_alert":
         subject = `[WorkHub] ⏰ Sắp đến hạn: ${task.name}`;
-        html = renderDeadlineAlert(task, recipients);
+        html = renderDeadlineAlert(task, recipients, sender);
         break;
       case "task_overdue":
         subject = `[WorkHub] 🚨 Quá hạn: ${task.name}`;
-        html = renderTaskOverdue(task, recipients);
+        html = renderTaskOverdue(task, recipients, sender);
         break;
       case "approval_request":
         subject = `[WorkHub] ✅ Cần phê duyệt: ${task.name}`;
-        html = renderApprovalRequest(task, recipients);
+        html = renderApprovalRequest(task, recipients, sender);
         break;
       case "task_completed":
         subject = `[WorkHub] ✅ Hoàn thành: ${task.name}`;
-        html = renderTaskCompleted(task, recipients);
+        html = renderTaskCompleted(task, recipients, sender);
         break;
       default:
         return;
     }
 
-    await sendMail({ to: emails, subject, html });
+    await sendMail({ to: emails, subject, html, senderName, senderEmail });
 
     // Log to Firestore
     await addEmailLog({

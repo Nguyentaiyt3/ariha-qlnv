@@ -194,8 +194,16 @@ export async function addMessage(taskId: string, message: Omit<Message, "id">): 
   const db = getDb();
   const id = generateId("msg");
   const newMsg: Message = { ...message, id };
-  await setDoc(doc(db, "tasks", taskId, "messages", id), newMsg);
+  // Strip undefined fields — Firestore rejects them
+  const data = Object.fromEntries(Object.entries(newMsg).filter(([, v]) => v !== undefined));
+  await setDoc(doc(db, "tasks", taskId, "messages", id), data);
   return newMsg;
+}
+
+export async function updateMessage(taskId: string, msgId: string, data: Partial<Message>): Promise<void> {
+  const db = getDb();
+  const stripped = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
+  await updateDoc(doc(db, "tasks", taskId, "messages", msgId), stripped);
 }
 
 export function subscribeMessages(taskId: string, callback: (messages: Message[]) => void) {
@@ -395,9 +403,17 @@ export async function getEvaluations(userId: string): Promise<Evaluation[]> {
   return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Evaluation));
 }
 
+export async function getAllEvaluations(): Promise<Evaluation[]> {
+  const db = getDb();
+  const snap = await getDocs(
+    query(collection(db, "evaluations"), orderBy("createdAt", "desc"))
+  );
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Evaluation));
+}
+
 export async function saveEvaluation(evaluation: Evaluation): Promise<void> {
   const db = getDb();
-  await setDoc(doc(db, "evaluations", evaluation.id), evaluation, { merge: true });
+  await setDoc(doc(db, "evaluations", evaluation.id), deepStrip(evaluation) as DocumentData, { merge: true });
 }
 
 // ─── REQUEST TEMPLATES ────────────────────────────────────────
@@ -619,6 +635,11 @@ export function subscribeAnnouncements(callback: (items: Announcement[]) => void
   );
 }
 
+export async function updateAnnouncement(id: string, data: Partial<Announcement>): Promise<void> {
+  const db = getDb();
+  await updateDoc(doc(db, "announcements", id), deepStrip(data) as DocumentData);
+}
+
 export async function approveAnnouncement(id: string, approve: boolean, reason?: string): Promise<void> {
   const db = getDb();
   await updateDoc(doc(db, "announcements", id), {
@@ -702,4 +723,16 @@ export async function updateChannel(id: string, data: Partial<Channel>): Promise
 export async function deleteChannel(id: string): Promise<void> {
   const db = getDb();
   await deleteDoc(doc(db, "channels", id));
+}
+
+export async function updateChannelMessage(channelId: string, msgId: string, data: Partial<ChannelMessage>): Promise<void> {
+  const db = getDb();
+  await updateDoc(doc(db, "channels", channelId, "messages", msgId), deepStrip(data) as DocumentData);
+}
+
+export async function markChannelRead(channelId: string, userId: string): Promise<void> {
+  const db = getDb();
+  await updateDoc(doc(db, "channels", channelId), {
+    [`memberLastRead.${userId}`]: new Date().toISOString(),
+  });
 }

@@ -6,9 +6,10 @@ import type { EmailEventType } from "@/types";
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { event, taskId, extraData } = body as {
+    const { event, taskId, senderUserId, extraData } = body as {
       event: EmailEventType;
       taskId: string;
+      senderUserId?: string;
       extraData?: Record<string, unknown>;
     };
 
@@ -22,7 +23,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Task not found" }, { status: 404 });
     }
 
-    await triggerEmail({ event, task, users, extraData });
+    const sender = senderUserId ? users.find((u) => u.id === senderUserId) : undefined;
+
+    await triggerEmail({ event, task, users, sender, extraData });
 
     return NextResponse.json({ ok: true });
   } catch (err) {

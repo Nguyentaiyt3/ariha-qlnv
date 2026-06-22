@@ -4,10 +4,12 @@ import { useState, useRef, useEffect } from "react";
 import {
   Plus, ChevronDown, ChevronRight, Camera, Link2, X,
   Loader2, TrendingUp, TrendingDown, Image as ImageIcon, Paperclip, AlertTriangle,
+  Mail, Send, CreditCard, Check, QrCode, ChevronDown as ChevDown,
 } from "lucide-react";
 import { cn, generateId, formatDate, priorityLabel } from "@/lib/utils";
 import { UserAvatar } from "@/components/common/UserAvatar";
-import type { Task, TaskStep, StepSubTask, User, TaskPriority, Proof } from "@/types";
+import type { Task, TaskStep, StepSubTask, User, TaskPriority, Proof, AdvanceRequest } from "@/types";
+import { createAdvanceRequest, subscribeAdvanceRequests } from "@/lib/firebase/finance";
 import { toast } from "sonner";
 
 interface Props {
@@ -16,7 +18,33 @@ interface Props {
   currentUser: User;
   canAssignSteps: boolean;
   onSave: (updates: Partial<Task>) => Promise<void>;
+  onEmailSent?: () => void;
 }
+
+const VIETNAM_BANKS = [
+  { id: "970436", name: "Vietcombank (VCB)" },
+  { id: "970422", name: "MB Bank" },
+  { id: "970407", name: "Techcombank (TCB)" },
+  { id: "970416", name: "ACB" },
+  { id: "970418", name: "BIDV" },
+  { id: "970405", name: "Agribank" },
+  { id: "970415", name: "VietinBank (CTG)" },
+  { id: "970432", name: "VPBank" },
+  { id: "970423", name: "TPBank" },
+  { id: "970443", name: "SHB" },
+  { id: "970448", name: "OCB" },
+  { id: "970412", name: "PVcomBank" },
+  { id: "970454", name: "Tiên Phong Bank" },
+  { id: "970449", name: "LPBank" },
+  { id: "970462", name: "SeABank" },
+  { id: "970441", name: "VIB" },
+  { id: "970457", name: "Sacombank" },
+  { id: "970403", name: "Eximbank" },
+  { id: "970426", name: "MSB" },
+  { id: "970431", name: "Shinhan Bank" },
+  { id: "970453", name: "ABBANK" },
+  { id: "970433", name: "Kienlongbank" },
+];
 
 const PRIORITY_COLOR: Record<string, string> = {
   low: "bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400",
@@ -36,7 +64,7 @@ const BLANK_SUB = {
 
 // ── Main component ────────────────────────────────────────────
 
-export function StepsTab({ task, users, currentUser, canAssignSteps, onSave }: Props) {
+export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onEmailSent }: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [assigningStep, setAssigningStep] = useState<string | null>(null);
   const [addSubStep, setAddSubStep] = useState<string | null>(null);
@@ -50,6 +78,26 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave }: P
   const [proofUrl, setProofUrl] = useState("");
   const [proofLabel, setProofLabel] = useState("");
   const [proofSaving, setProofSaving] = useState(false);
+  // Advance requests realtime
+  const [taskAdvances, setTaskAdvances] = useState<AdvanceRequest[]>([]);
+  useEffect(() => subscribeAdvanceRequests(task.id, setTaskAdvances), [task.id]);
+
+  // Advance request panel
+  const [advanceStepId,     setAdvanceStepId]     = useState<string | null>(null);
+  const [advanceAmount,     setAdvanceAmount]      = useState("");
+  const [advancePurpose,    setAdvancePurpose]     = useState("");
+  const [advanceBankId,     setAdvanceBankId]      = useState("");
+  const [advanceBankName,   setAdvanceBankName]    = useState("");
+  const [advanceAccNumber,  setAdvanceAccNumber]   = useState("");
+  const [advanceAccName,    setAdvanceAccName]     = useState("");
+  const [advanceSaving,     setAdvanceSaving]      = useState(false);
+
+  // Email compose panel
+  const [emailStepId, setEmailStepId] = useState<string | null>(null);
+  const [emailToIds, setEmailToIds] = useState<Set<string>>(new Set());
+  const [emailSubject, setEmailSubject] = useState("");
+  const [emailBody, setEmailBody] = useState("");
+  const [emailSending, setEmailSending] = useState(false);
 
   const steps = task.steps ?? [];
   const activeUsers = users.filter((u) => u.isActive);
@@ -211,6 +259,112 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave }: P
     setProofUrl(""); setProofLabel(""); setProofSaving(false);
   }
 
+  function buildPurpose(stepName: string, accNumber: string, bankName: string) {
+    const today = new Date().toLocaleDateString("vi-VN");
+    const accPart  = accNumber ? ` - ${accNumber}` : "";
+    const bankPart = bankName  ? ` - ${bankName}`  : "";
+    return `Tạm ứng: ${stepName} - ${today} - ${currentUser.name}${accPart}${bankPart}`;
+  }
+
+  function openAdvancePanel(step: TaskStep) {
+    setAdvanceStepId(step.id);
+    setAdvanceAmount("");
+    const ba = (currentUser as { bankAccount?: { bankId: string; bankName: string; accountNumber: string; accountName: string } }).bankAccount;
+    const accNum  = ba?.accountNumber ?? "";
+    const bankNm  = ba?.bankName      ?? "";
+    setAdvanceBankId(ba?.bankId ?? "");
+    setAdvanceBankName(bankNm);
+    setAdvanceAccNumber(accNum);
+    setAdvanceAccName(ba?.accountName ?? currentUser.name);
+    setAdvancePurpose(buildPurpose(step.name, accNum, bankNm));
+    setEditKey(null);
+    setProofKey(null);
+    setEmailStepId(null);
+  }
+
+  async function handleAdvanceRequest(step: TaskStep) {
+    const num = parseFloat(advanceAmount);
+    if (!num || num <= 0)       { toast.error("Nhập số tiền hợp lệ.");     return; }
+    if (!advancePurpose.trim()) { toast.error("Nhập mục đích tạm ứng.");   return; }
+    if (!advanceAccNumber.trim()) { toast.error("Nhập số tài khoản nhận."); return; }
+    if (!advanceAccName.trim())   { toast.error("Nhập tên chủ tài khoản."); return; }
+    setAdvanceSaving(true);
+    try {
+      await createAdvanceRequest({
+        taskId:          task.id,
+        stepId:          step.id,
+        stepName:        step.name,
+        requestedBy:     currentUser.id,
+        requestedByName: currentUser.name,
+        amount:          num,
+        purpose:         advancePurpose.trim(),
+        bankAccount: advanceBankId ? {
+          bankId:        advanceBankId,
+          bankName:      advanceBankName,
+          accountNumber: advanceAccNumber.trim(),
+          accountName:   advanceAccName.trim(),
+        } : undefined,
+      });
+      toast.success("Đã gửi đơn tạm ứng. Chờ phê duyệt.");
+      setAdvanceStepId(null);
+    } catch (err) {
+      toast.error((err as Error).message ?? "Gửi đơn thất bại.");
+    } finally {
+      setAdvanceSaving(false);
+    }
+  }
+
+  function openEmailPanel(step: TaskStep) {
+    const ids = new Set<string>();
+    if (step.assigneeId) ids.add(step.assigneeId);
+    (step.subTasks ?? []).forEach((st) => ids.add(st.userId));
+    setEmailStepId(step.id);
+    setEmailToIds(ids);
+    setEmailSubject(`[${task.name}] ${step.name}`);
+    setEmailBody("");
+    setEditKey(null);
+    setProofKey(null);
+    setAssigningStep(null);
+    setAddSubStep(null);
+  }
+
+  async function handleSendEmail(step: TaskStep) {
+    if (emailToIds.size === 0) { toast.error("Chưa chọn người nhận"); return; }
+    if (!emailSubject.trim()) { toast.error("Nhập tiêu đề email"); return; }
+    if (!emailBody.trim()) { toast.error("Nhập nội dung email"); return; }
+
+    const recipients = Array.from(emailToIds)
+      .map((id) => users.find((u) => u.id === id))
+      .filter((u): u is User => !!u && !!u.email)
+      .map((u) => ({ id: u.id, name: u.name, email: u.email }));
+
+    if (recipients.length === 0) { toast.error("Người được chọn chưa có email"); return; }
+
+    setEmailSending(true);
+    try {
+      const res = await fetch("/api/email/custom", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          senderUserId: currentUser.id,
+          recipients,
+          subject: emailSubject,
+          body: emailBody,
+          taskId: task.id,
+          stepName: step.name,
+        }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error);
+      toast.success(`Đã gửi email tới ${recipients.length} người`);
+      setEmailStepId(null);
+      onEmailSent?.();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Gửi thất bại");
+    } finally {
+      setEmailSending(false);
+    }
+  }
+
   async function handleImageFile(stepId: string, subId: string | undefined, file: File) {
     setProofSaving(true);
     try {
@@ -327,7 +481,35 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave }: P
               </div>
 
               <div className="flex-1 min-w-0">
-                <p className="font-medium text-sm dark:text-white truncate">{step.name}</p>
+                {/* Tên bước + badge tạm ứng cùng hàng */}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <p className="font-medium text-sm dark:text-white truncate">{step.name}</p>
+                  {taskAdvances.filter((a) => a.stepId === step.id).map((adv) => {
+                    const ADV_CLS: Record<string, string> = {
+                      PENDING:  "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
+                      APPROVED: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
+                      REJECTED: "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400",
+                      SETTLED:  "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
+                    };
+                    const ADV_LBL: Record<string, string> = {
+                      PENDING: "Chờ duyệt", APPROVED: "Đã duyệt",
+                      REJECTED: "Từ chối",  SETTLED: "Quyết toán",
+                    };
+                    return (
+                      <span
+                        key={adv.id}
+                        className={cn(
+                          "inline-flex items-center gap-1 shrink-0 px-1.5 py-0.5 rounded-full text-[10px] font-medium",
+                          ADV_CLS[adv.status] ?? ADV_CLS.PENDING
+                        )}
+                      >
+                        <CreditCard className="w-2.5 h-2.5" />
+                        {adv.amount.toLocaleString("vi-VN")}đ
+                        <span className="opacity-70">({ADV_LBL[adv.status]})</span>
+                      </span>
+                    );
+                  })}
+                </div>
                 <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                   {stepUser ? (
                     <UserAvatar user={stepUser} size="xs" showName namePosition="right" />
@@ -665,6 +847,216 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave }: P
                     })}
                   </div>
                 </Section>
+
+                {/* ── Danh sách tạm ứng đã nộp của bước này ── */}
+                {(() => {
+                  const stepAdvs = taskAdvances.filter((a) => (a as { stepId?: string }).stepId === step.id);
+                  if (!stepAdvs.length) return null;
+                  const ADV_LABEL: Record<string, { label: string; cls: string }> = {
+                    PENDING:  { label: "Chờ duyệt", cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" },
+                    APPROVED: { label: "Đã duyệt",  cls: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" },
+                    REJECTED: { label: "Từ chối",   cls: "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400" },
+                    SETTLED:  { label: "Quyết toán",cls: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400" },
+                  };
+                  return (
+                    <div className="space-y-1 mb-1">
+                      {stepAdvs.map((adv) => {
+                        const b = ADV_LABEL[adv.status] ?? ADV_LABEL.PENDING;
+                        return (
+                          <div key={adv.id} className="flex items-center gap-2 px-2.5 py-1.5 bg-amber-50/60 dark:bg-amber-900/10 border border-amber-100 dark:border-amber-900/30 rounded-xl text-xs">
+                            <CreditCard className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                            <span className={cn("px-1.5 py-0.5 rounded-full text-[10px] font-medium shrink-0", b.cls)}>{b.label}</span>
+                            <span className="font-bold text-slate-700 dark:text-slate-200 shrink-0">
+                              {adv.amount.toLocaleString("vi-VN")} đ
+                            </span>
+                            <span className="text-slate-400 truncate">{adv.purpose}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+
+                {/* ── Advance + Email buttons (cùng hàng) ── */}
+                {(() => {
+                  const isAdvOpen   = advanceStepId === step.id;
+                  const hasAssignees = !!step.assigneeId || (step.subTasks ?? []).length > 0;
+                  const isEmailOpen = emailStepId === step.id;
+
+                  // VietQR URL
+                  const qrAmount = parseFloat(advanceAmount) || 0;
+                  const qrReady  = isAdvOpen && qrAmount > 0 && advanceBankId && advanceAccNumber;
+                  const qrUrl    = qrReady
+                    ? `https://img.vietqr.io/image/${advanceBankId}-${advanceAccNumber}-compact2.png` +
+                      `?amount=${qrAmount}&addInfo=${encodeURIComponent(advancePurpose)}&accountName=${encodeURIComponent(advanceAccName)}`
+                    : "";
+
+                  return (
+                    <div className="pt-1 space-y-2">
+                      {/* Hàng nút */}
+                      <div className="flex justify-end gap-2">
+                        <button
+                          onClick={() => isAdvOpen ? setAdvanceStepId(null) : openAdvancePanel(step)}
+                          className={cn(
+                            "flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-xl border transition",
+                            isAdvOpen
+                              ? "bg-amber-500 text-white border-amber-500"
+                              : "text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-800 bg-white dark:bg-slate-800 hover:border-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20",
+                          )}
+                        >
+                          <CreditCard className="w-3.5 h-3.5" />
+                          Yêu cầu tạm ứng
+                        </button>
+
+                        {hasAssignees && (
+                          <button
+                            onClick={() => isEmailOpen ? setEmailStepId(null) : openEmailPanel(step)}
+                            className={cn(
+                              "flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-xl border transition",
+                              isEmailOpen
+                                ? "bg-blue-600 text-white border-blue-600"
+                                : "text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:border-blue-400 hover:text-blue-600",
+                            )}
+                          >
+                            <Mail className="w-3.5 h-3.5" />
+                            Gửi mail
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Form tạm ứng */}
+                      {isAdvOpen && (
+                        <div className="p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl space-y-3">
+                          <p className="text-xs font-semibold text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
+                            <CreditCard className="w-3.5 h-3.5" />
+                            Đề nghị tạm ứng — {step.name}
+                          </p>
+
+                          {/* Số tiền */}
+                          <div>
+                            <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400 block mb-1">Số tiền (VNĐ) *</label>
+                            <input
+                              type="number" min={1} step={1}
+                              value={advanceAmount}
+                              onChange={(e) => setAdvanceAmount(e.target.value)}
+                              placeholder="VD: 2000000"
+                              className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-400"
+                            />
+                            {advanceAmount && parseFloat(advanceAmount) > 0 && (
+                              <p className="text-[10px] text-amber-600 mt-0.5">= {parseFloat(advanceAmount).toLocaleString("vi-VN")} đ</p>
+                            )}
+                          </div>
+
+                          {/* Mục đích */}
+                          <div>
+                            <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400 block mb-1">Nội dung chuyển khoản *</label>
+                            <input
+                              value={advancePurpose}
+                              onChange={(e) => setAdvancePurpose(e.target.value)}
+                              className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-400"
+                            />
+                          </div>
+
+                          {/* Tài khoản ngân hàng */}
+                          <div className="space-y-2">
+                            <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400 block">Tài khoản nhận tiền *</label>
+
+                            {/* Ngân hàng */}
+                            <select
+                              value={advanceBankId}
+                              onChange={(e) => {
+                                const opt = e.target.options[e.target.selectedIndex];
+                                const newBankName = opt.value ? opt.text : "";
+                                setAdvanceBankId(e.target.value);
+                                setAdvanceBankName(newBankName);
+                                setAdvancePurpose(buildPurpose(step.name, advanceAccNumber, newBankName));
+                              }}
+                              className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-400"
+                            >
+                              <option value="">-- Chọn ngân hàng --</option>
+                              {VIETNAM_BANKS.map((b) => (
+                                <option key={b.id} value={b.id}>{b.name}</option>
+                              ))}
+                            </select>
+
+                            <div className="grid grid-cols-2 gap-2">
+                              <input
+                                value={advanceAccNumber}
+                                onChange={(e) => {
+                                  setAdvanceAccNumber(e.target.value);
+                                  setAdvancePurpose(buildPurpose(step.name, e.target.value, advanceBankName));
+                                }}
+                                placeholder="Số tài khoản *"
+                                className="px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-400"
+                              />
+                              <input
+                                value={advanceAccName}
+                                onChange={(e) => setAdvanceAccName(e.target.value)}
+                                placeholder="Tên chủ TK *"
+                                className="px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-400"
+                              />
+                            </div>
+                          </div>
+
+                          {/* QR Code — hiện tự động khi đủ thông tin */}
+                          {qrReady && (
+                            <div className="flex flex-col items-center gap-2 p-3 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700">
+                              <div className="flex items-center gap-1.5 text-[11px] font-medium text-slate-500 dark:text-slate-400 self-start">
+                                <QrCode className="w-3.5 h-3.5" />
+                                QR chuyển khoản
+                              </div>
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                src={qrUrl}
+                                alt="QR chuyển khoản"
+                                className="w-44 h-44 object-contain"
+                                onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                              />
+                              <p className="text-[10px] text-slate-400 text-center leading-relaxed">
+                                {advanceBankName} · {advanceAccNumber}<br/>
+                                {advanceAccName}<br/>
+                                <span className="font-semibold text-amber-600">{parseFloat(advanceAmount).toLocaleString("vi-VN")} đ</span>
+                              </p>
+                            </div>
+                          )}
+
+                          {/* Actions */}
+                          <div className="flex justify-end gap-2 pt-1">
+                            <button onClick={() => setAdvanceStepId(null)}
+                              className="px-3 py-1.5 text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400 transition">
+                              Hủy
+                            </button>
+                            <button
+                              onClick={() => handleAdvanceRequest(step)}
+                              disabled={advanceSaving}
+                              className="flex items-center gap-1.5 px-4 py-1.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white text-xs rounded-xl transition"
+                            >
+                              {advanceSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                              Gửi đơn
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Email compose panel */}
+                      {hasAssignees && isEmailOpen && (
+                        <EmailComposePanel
+                          step={step}
+                          users={users}
+                          emailToIds={emailToIds}
+                          setEmailToIds={setEmailToIds}
+                          subject={emailSubject}
+                          setSubject={setEmailSubject}
+                          body={emailBody}
+                          setBody={setEmailBody}
+                          sending={emailSending}
+                          onSend={() => handleSendEmail(step)}
+                          onClose={() => setEmailStepId(null)}
+                        />
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             )}
           </div>
@@ -805,6 +1197,135 @@ function ProofList({ proofs }: { proofs: Proof[] }) {
           <span className="truncate max-w-[100px]">{p.fileName}</span>
         </a>
       ))}
+    </div>
+  );
+}
+
+// ── Email Compose Panel ───────────────────────────────────────
+
+function EmailComposePanel({
+  step, users, emailToIds, setEmailToIds,
+  subject, setSubject, body, setBody,
+  sending, onSend, onClose,
+}: {
+  step: TaskStep;
+  users: User[];
+  emailToIds: Set<string>;
+  setEmailToIds: (s: Set<string>) => void;
+  subject: string;
+  setSubject: (s: string) => void;
+  body: string;
+  setBody: (s: string) => void;
+  sending: boolean;
+  onSend: () => void;
+  onClose: () => void;
+}) {
+  // Collect all potential recipients: step assignee + sub-task assignees
+  const candidateIds = new Set<string>();
+  if (step.assigneeId) candidateIds.add(step.assigneeId);
+  (step.subTasks ?? []).forEach((st) => candidateIds.add(st.userId));
+
+  const candidates = Array.from(candidateIds)
+    .map((id) => users.find((u) => u.id === id))
+    .filter((u): u is User => !!u);
+
+  function toggleRecipient(id: string) {
+    const next = new Set(emailToIds);
+    next.has(id) ? next.delete(id) : next.add(id);
+    setEmailToIds(next);
+  }
+
+  return (
+    <div className="mt-3 p-3 bg-white dark:bg-slate-800 border border-blue-200 dark:border-blue-800 rounded-xl space-y-3">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1.5 text-xs font-semibold text-blue-600 dark:text-blue-400">
+          <Mail className="w-3.5 h-3.5" />
+          Soạn email cho bước này
+        </div>
+        <button onClick={onClose} className="p-1 text-slate-400 hover:text-slate-600">
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+
+      {/* Recipients */}
+      <div>
+        <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-1.5">Gửi đến</p>
+        <div className="flex flex-wrap gap-1.5">
+          {candidates.map((u) => {
+            const selected = emailToIds.has(u.id);
+            const hasEmail = !!u.email;
+            return (
+              <button
+                key={u.id}
+                onClick={() => hasEmail && toggleRecipient(u.id)}
+                disabled={!hasEmail}
+                title={hasEmail ? u.email : "Người dùng chưa có email"}
+                className={cn(
+                  "flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-full border transition",
+                  !hasEmail
+                    ? "opacity-40 cursor-not-allowed bg-slate-100 dark:bg-slate-700 text-slate-400 border-slate-200 dark:border-slate-600"
+                    : selected
+                    ? "bg-blue-600 text-white border-blue-600"
+                    : "bg-white dark:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-600 hover:border-blue-400",
+                )}
+              >
+                <span className={cn(
+                  "w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 text-[9px] font-bold",
+                  selected ? "bg-white/30 border-white/60 text-white" : "border-slate-300 dark:border-slate-500",
+                )}>
+                  {selected && "✓"}
+                </span>
+                {u.name}
+                {u.id === step.assigneeId && (
+                  <span className="text-[9px] opacity-70">(chính)</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+        {candidates.every((u) => !u.email) && (
+          <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">Không có người nhận nào có email trong hệ thống.</p>
+        )}
+      </div>
+
+      {/* Subject */}
+      <div>
+        <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-1">Tiêu đề</p>
+        <input
+          value={subject}
+          onChange={(e) => setSubject(e.target.value)}
+          placeholder="Tiêu đề email..."
+          className="w-full px-3 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+      </div>
+
+      {/* Body */}
+      <div>
+        <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-1">Nội dung</p>
+        <textarea
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          rows={4}
+          placeholder="Viết nội dung email..."
+          className="w-full px-3 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+        />
+      </div>
+
+      {/* Actions */}
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] text-slate-400">
+          Gửi đến {emailToIds.size} người · Tên bạn sẽ hiện trong email
+        </p>
+        <button
+          onClick={onSend}
+          disabled={sending || emailToIds.size === 0 || !subject.trim() || !body.trim()}
+          className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs rounded-xl transition"
+        >
+          {sending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+          Gửi
+        </button>
+      </div>
     </div>
   );
 }

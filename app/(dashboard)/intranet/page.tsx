@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useState, useRef, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import {
   Globe, Plus, Send, Loader2, Pin, MessageSquare,
   ChevronDown, ChevronUp, Hash, Lock, Megaphone, CheckCircle2, XCircle, Clock,
   Search, Users, X, Settings, Trash2, UserPlus, UserMinus,
+  Smile, Paperclip, Camera, FileText, Download, Image as ImageIcon, Pencil,
 } from "lucide-react";
+import { ChannelChat } from "@/components/intranet/ChannelChat";
 import { toast } from "sonner";
 import { cn, getInitials, avatarColor } from "@/lib/utils";
 import { generateId } from "@/lib/utils";
@@ -13,16 +15,30 @@ import { useAuthStore } from "@/stores/useAuthStore";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import {
-  subscribeAnnouncements, saveAnnouncement, deleteAnnouncement,
+  subscribeAnnouncements, saveAnnouncement, updateAnnouncement, deleteAnnouncement,
   reactToAnnouncement, markAnnouncementViewed, approveAnnouncement, addNotification,
   getAnnouncementComments, addAnnouncementComment,
   subscribeChannels, saveChannel, updateChannel, deleteChannel,
-  subscribeChannelMessages, sendChannelMessage,
 } from "@/lib/firebase/firestore";
-import type { Announcement, Channel, ChannelMessage, AnnouncementComment, User } from "@/types";
+import { uploadFile } from "@/lib/firebase/storage";
+import type { Announcement, Channel, AnnouncementComment, User, UserRole, Attachment } from "@/types";
 
 // ── Announcement card ─────────────────────────────────────────────────────────
 const EMOJIS = ["👍", "❤️", "🎉", "🙌", "💡"];
+
+const QUICK_EMOJIS = [
+  "😊","👍","🎉","🔥","💡","❤️","🌟","✅","⚠️","📢",
+  "🗓️","💬","🤝","🏆","💪","🚀","🎯","📊","📌","🔔",
+  "🙏","😄","👏","🎊","🌈","⭐","💼","📋","🔑","🎁",
+];
+
+const ROLE_LABELS: Record<string, string> = {
+  staff: "Nhân viên",
+  teamLead: "Trưởng nhóm",
+  director: "Giám đốc",
+  hrAdmin: "HR / Admin",
+};
+const ALL_SELECTABLE_ROLES: UserRole[] = ["staff", "teamLead", "director", "hrAdmin"];
 
 function AnnouncementCard({ item, currentUserId, canDelete, canApprove, onApprove }: {
   item: Announcement;
@@ -33,12 +49,33 @@ function AnnouncementCard({ item, currentUserId, canDelete, canApprove, onApprov
 }) {
   const [showComments, setShowComments] = useState(false);
   const [comments, setComments] = useState<AnnouncementComment[]>([]);
-  const [newComment, setNewComment] = useState("");
   const [loadingComments, setLoadingComments] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [showRejectForm, setShowRejectForm] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
   const { currentUser } = useAuthStore();
+  const isAuthor = item.authorId === currentUserId;
+
+  // ── Edit state ──────────────────────────────────────────────────────────────
+  const [editing, setEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState(item.title);
+  const [editContent, setEditContent] = useState(item.content);
+  const [editPinned, setEditPinned] = useState(item.pinned);
+  const [editAttachments, setEditAttachments] = useState<Attachment[]>(item.attachments ?? []);
+  const [editShowEmoji, setEditShowEmoji] = useState(false);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const editContentRef = useRef<HTMLTextAreaElement>(null);
+  const editFileRef = useRef<HTMLInputElement>(null);
+  const editCameraRef = useRef<HTMLInputElement>(null);
+
+  // ── Comment composer state ──────────────────────────────────────────────────
+  const [commentText, setCommentText] = useState("");
+  const [commentFiles, setCommentFiles] = useState<Attachment[]>([]);
+  const [commentShowEmoji, setCommentShowEmoji] = useState(false);
+  const [uploadingComment, setUploadingComment] = useState(false);
+  const commentFileRef = useRef<HTMLInputElement>(null);
+  const commentCameraRef = useRef<HTMLInputElement>(null);
+  const commentTextRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     markAnnouncementViewed(item.id, currentUserId).catch(() => {});
@@ -54,9 +91,88 @@ function AnnouncementCard({ item, currentUserId, canDelete, canApprove, onApprov
     setShowComments((v) => !v);
   }
 
-  async function handleComment(e: React.FormEvent) {
-    e.preventDefault();
-    if (!newComment.trim() || !currentUser) return;
+  async function handleReact(emoji: string) {
+    const users = item.reactions?.[emoji] ?? [];
+    const already = users.includes(currentUserId);
+    await reactToAnnouncement(item.id, emoji, currentUserId, !already).catch(() => {});
+  }
+
+  // ── Edit handlers ───────────────────────────────────────────────────────────
+  function insertEmojiInEdit(emoji: string) {
+    const ta = editContentRef.current;
+    if (ta) {
+      const s = ta.selectionStart; const e = ta.selectionEnd;
+      setEditContent((v) => v.slice(0, s) + emoji + v.slice(e));
+      setTimeout(() => { ta.selectionStart = ta.selectionEnd = s + emoji.length; ta.focus(); }, 0);
+    } else {
+      setEditContent((v) => v + emoji);
+    }
+    setEditShowEmoji(false);
+  }
+
+  async function handleEditFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    if (!files.length) return;
+    for (const file of files) {
+      try {
+        const url = await uploadFile(file, "announcements");
+        setEditAttachments((prev) => [...prev, { id: generateId("att"), name: file.name, url, type: file.type, size: file.size }]);
+      } catch { toast.error("Tải file thất bại."); }
+    }
+    if (editFileRef.current) editFileRef.current.value = "";
+    if (editCameraRef.current) editCameraRef.current.value = "";
+  }
+
+  async function handleSaveEdit() {
+    if (!editTitle.trim() || !editContent.trim()) return;
+    setSavingEdit(true);
+    try {
+      await updateAnnouncement(item.id, {
+        title: editTitle.trim(),
+        content: editContent.trim(),
+        pinned: editPinned,
+        attachments: editAttachments,
+        updatedAt: new Date().toISOString(),
+      });
+      setEditing(false);
+      toast.success("Đã cập nhật thông báo.");
+    } catch {
+      toast.error("Cập nhật thất bại.");
+    } finally {
+      setSavingEdit(false);
+    }
+  }
+
+  // ── Comment handlers ────────────────────────────────────────────────────────
+  function insertEmojiInComment(emoji: string) {
+    const ta = commentTextRef.current;
+    if (ta) {
+      const s = ta.selectionStart; const e = ta.selectionEnd;
+      setCommentText((v) => v.slice(0, s) + emoji + v.slice(e));
+      setTimeout(() => { ta.selectionStart = ta.selectionEnd = s + emoji.length; ta.focus(); }, 0);
+    } else {
+      setCommentText((v) => v + emoji);
+    }
+    setCommentShowEmoji(false);
+  }
+
+  async function handleCommentFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    if (!files.length) return;
+    setUploadingComment(true);
+    for (const file of files) {
+      try {
+        const url = await uploadFile(file, "announcements/comments");
+        setCommentFiles((prev) => [...prev, { id: generateId("att"), name: file.name, url, type: file.type, size: file.size }]);
+      } catch { toast.error("Tải file thất bại."); }
+    }
+    setUploadingComment(false);
+    if (commentFileRef.current) commentFileRef.current.value = "";
+    if (commentCameraRef.current) commentCameraRef.current.value = "";
+  }
+
+  async function handleSendComment() {
+    if ((!commentText.trim() && commentFiles.length === 0) || !currentUser) return;
     setSubmitting(true);
     try {
       const c: AnnouncementComment = {
@@ -65,12 +181,14 @@ function AnnouncementCard({ item, currentUserId, canDelete, canApprove, onApprov
         authorId: currentUser.id,
         authorName: currentUser.name,
         authorAvatar: currentUser.avatar,
-        content: newComment.trim(),
+        content: commentText.trim(),
+        attachments: commentFiles,
         createdAt: new Date().toISOString(),
       };
       await addAnnouncementComment(item.id, c);
       setComments((prev) => [...prev, c]);
-      setNewComment("");
+      setCommentText("");
+      setCommentFiles([]);
     } catch {
       toast.error("Gửi bình luận thất bại.");
     } finally {
@@ -78,18 +196,17 @@ function AnnouncementCard({ item, currentUserId, canDelete, canApprove, onApprov
     }
   }
 
-  async function handleReact(emoji: string) {
-    const users = item.reactions?.[emoji] ?? [];
-    const already = users.includes(currentUserId);
-    await reactToAnnouncement(item.id, emoji, currentUserId, !already).catch(() => {});
-  }
-
+  // ── Render ──────────────────────────────────────────────────────────────────
   return (
-    <div className={cn(
-      "bg-[var(--card)] border rounded-2xl overflow-hidden",
-      item.status === "pending" ? "border-amber-300 dark:border-amber-600 opacity-90" : "border-[var(--border)]",
-      item.pinned && item.status !== "pending" && "border-amber-300 dark:border-amber-600"
-    )}>
+    <div
+      className={cn(
+        "bg-[var(--card)] border rounded-2xl overflow-hidden",
+        item.status === "pending" ? "border-amber-300 dark:border-amber-600 opacity-90" : "border-[var(--border)]",
+        item.pinned && item.status !== "pending" && "border-amber-300 dark:border-amber-600"
+      )}
+      onClick={() => { setEditShowEmoji(false); setCommentShowEmoji(false); }}
+    >
+      {/* Pending banner */}
       {item.status === "pending" && (
         <div className="border-b border-amber-200 dark:border-amber-700">
           <div className="flex items-center justify-between px-4 py-1.5 bg-amber-50 dark:bg-amber-900/20">
@@ -114,16 +231,14 @@ function AnnouncementCard({ item, currentUserId, canDelete, canApprove, onApprov
             <div className="px-4 pb-3 pt-2 space-y-2 bg-red-50 dark:bg-red-900/10">
               <p className="text-[10px] font-medium text-red-600">Lý do từ chối <span className="text-red-500">*</span></p>
               <textarea
-                autoFocus
-                rows={2}
-                value={rejectReason}
+                autoFocus rows={2} value={rejectReason}
                 onChange={(e) => setRejectReason(e.target.value)}
                 placeholder="Nhập lý do từ chối..."
                 className="w-full px-3 py-2 text-xs border border-red-200 rounded-lg bg-white dark:bg-slate-900 text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-red-400 resize-none"
               />
               <div className="flex gap-2">
                 <button onClick={() => setShowRejectForm(false)}
-                  className="flex-1 py-1 border border-[var(--border)] rounded-md text-[10px] text-[var(--foreground)] hover:bg-[var(--muted)] transition">
+                  className="flex-1 py-1 border border-slate-200 dark:border-slate-700 rounded-md text-[10px] text-[var(--foreground)] hover:bg-slate-100 dark:hover:bg-slate-800 transition">
                   Huỷ
                 </button>
                 <button
@@ -141,13 +256,16 @@ function AnnouncementCard({ item, currentUserId, canDelete, canApprove, onApprov
           )}
         </div>
       )}
+
+      {/* Pinned label */}
       {item.pinned && item.status === "published" && (
         <div className="flex items-center gap-1.5 px-4 py-1.5 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 text-xs font-semibold border-b border-amber-200 dark:border-amber-700">
           <Pin className="w-3 h-3" /> Đã ghim
         </div>
       )}
+
       <div className="p-5">
-        {/* Author */}
+        {/* Author row */}
         <div className="flex items-start gap-3 mb-3">
           <div className={cn("w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold text-white shrink-0", avatarColor(item.authorName))}>
             {item.authorAvatar
@@ -156,16 +274,173 @@ function AnnouncementCard({ item, currentUserId, canDelete, canApprove, onApprov
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-sm font-semibold text-[var(--foreground)]">{item.authorName}</p>
-            <p className="text-[10px] text-slate-400">{new Date(item.createdAt).toLocaleString("vi-VN", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</p>
+            <p className="text-[10px] text-slate-400">
+              {new Date(item.createdAt).toLocaleString("vi-VN", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+              {item.updatedAt !== item.createdAt && <span className="ml-1 italic">(đã sửa)</span>}
+            </p>
           </div>
-          {canDelete && item.authorId === currentUserId && (
-            <button onClick={() => deleteAnnouncement(item.id).catch(() => {})} className="text-slate-400 hover:text-red-500 text-xs transition">Xóa</button>
+          {/* Author actions */}
+          {isAuthor && !editing && (
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={(e) => { e.stopPropagation(); setEditing(true); }}
+                className="flex items-center gap-1 px-2 py-1 text-[10px] text-slate-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition"
+              >
+                <Pencil className="w-3 h-3" /> Sửa
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); deleteAnnouncement(item.id).catch(() => {}); }}
+                className="flex items-center gap-1 px-2 py-1 text-[10px] text-slate-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition"
+              >
+                <Trash2 className="w-3 h-3" /> Xóa
+              </button>
+            </div>
+          )}
+          {/* Manager delete (non-author) */}
+          {!isAuthor && canDelete && !editing && (
+            <button
+              onClick={(e) => { e.stopPropagation(); deleteAnnouncement(item.id).catch(() => {}); }}
+              className="flex items-center gap-1 px-2 py-1 text-[10px] text-slate-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition"
+            >
+              <Trash2 className="w-3 h-3" /> Xóa
+            </button>
           )}
         </div>
 
-        {/* Content */}
-        <h3 className="font-semibold text-[var(--foreground)] mb-1">{item.title}</h3>
-        <p className="text-sm text-[var(--muted-foreground)] whitespace-pre-wrap leading-relaxed">{item.content}</p>
+        {/* Content — or inline edit form */}
+        {editing ? (
+          <div className="space-y-2 mb-3" onClick={(e) => e.stopPropagation()}>
+            <input
+              value={editTitle}
+              onChange={(e) => setEditTitle(e.target.value)}
+              placeholder="Tiêu đề *"
+              className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <div className="relative">
+              <textarea
+                ref={editContentRef}
+                value={editContent}
+                onChange={(e) => setEditContent(e.target.value)}
+                rows={4}
+                className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+              />
+              {editShowEmoji && (
+                <div
+                  className="absolute top-full left-0 mt-1 z-30 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl p-2 grid grid-cols-10 gap-0.5 w-full"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {QUICK_EMOJIS.map((em) => (
+                    <button key={em} onClick={() => insertEmojiInEdit(em)}
+                      className="text-xl p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition hover:scale-110 leading-none">
+                      {em}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            {/* Toolbar */}
+            <div className="flex items-center gap-1">
+              <button type="button"
+                onClick={(e) => { e.stopPropagation(); setEditShowEmoji((v) => !v); }}
+                className={cn("p-1.5 rounded-lg text-sm transition",
+                  editShowEmoji ? "bg-blue-100 text-blue-600 dark:bg-blue-900/40" : "text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700"
+                )}>
+                <Smile className="w-3.5 h-3.5" />
+              </button>
+              <button type="button" onClick={() => editFileRef.current?.click()}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700 transition">
+                <Paperclip className="w-3.5 h-3.5" />
+              </button>
+              <button type="button" onClick={() => editCameraRef.current?.click()}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700 transition">
+                <Camera className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            {/* Existing + new attachments */}
+            {editAttachments.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {editAttachments.map((f) => {
+                  const isImg = f.type.startsWith("image/");
+                  return (
+                    <div key={f.id} className="relative">
+                      {isImg
+                        ? <img src={f.url} alt={f.name} className="w-14 h-14 object-cover rounded-lg border border-slate-200 dark:border-slate-700" />
+                        : <div className="flex items-center gap-1 pl-2 pr-5 py-1.5 bg-slate-100 dark:bg-slate-800 rounded-lg text-[10px] text-slate-600 dark:text-slate-400 max-w-[120px]">
+                            <FileText className="w-3 h-3 shrink-0" />
+                            <span className="truncate">{f.name}</span>
+                          </div>}
+                      <button
+                        onClick={() => setEditAttachments((prev) => prev.filter((x) => x.id !== f.id))}
+                        className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-red-500 text-white rounded-full flex items-center justify-center"
+                      >
+                        <X className="w-2.5 h-2.5" />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400 cursor-pointer select-none">
+              <input type="checkbox" checked={editPinned} onChange={(e) => setEditPinned(e.target.checked)} className="w-3.5 h-3.5 accent-blue-600" />
+              <Pin className="w-3 h-3 text-amber-500" /> Ghim thông báo
+            </label>
+            <div className="flex items-center justify-end gap-2">
+              <button onClick={() => { setEditing(false); setEditTitle(item.title); setEditContent(item.content); setEditPinned(item.pinned); setEditAttachments(item.attachments ?? []); }}
+                className="px-3 py-1.5 text-xs border border-slate-300 dark:border-slate-600 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 transition">
+                Huỷ
+              </button>
+              <button
+                onClick={handleSaveEdit}
+                disabled={savingEdit || !editTitle.trim() || !editContent.trim()}
+                className="flex items-center gap-1 px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-semibold rounded-xl transition"
+              >
+                {savingEdit && <Loader2 className="w-3 h-3 animate-spin" />} Lưu
+              </button>
+            </div>
+            {/* Hidden inputs */}
+            <input ref={editFileRef} type="file" className="hidden" multiple
+              accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.zip"
+              onChange={handleEditFileChange} />
+            <input ref={editCameraRef} type="file" className="hidden" accept="image/*" capture="user" onChange={handleEditFileChange} />
+          </div>
+        ) : (
+          <>
+            <h3 className="font-semibold text-[var(--foreground)] mb-1">{item.title}</h3>
+            <p className="text-sm text-[var(--muted-foreground)] whitespace-pre-wrap leading-relaxed">{item.content}</p>
+          </>
+        )}
+
+        {/* Attachments display (view mode) */}
+        {!editing && item.attachments?.length > 0 && (
+          <div className="mt-3 space-y-2">
+            {(() => {
+              const images = item.attachments.filter((a) => a.type.startsWith("image/"));
+              if (!images.length) return null;
+              return (
+                <div className={cn("grid gap-1.5 rounded-xl overflow-hidden",
+                  images.length === 1 ? "grid-cols-1" : images.length === 2 ? "grid-cols-2" : "grid-cols-3"
+                )}>
+                  {images.map((att) => (
+                    <a key={att.id} href={att.url} target="_blank" rel="noopener noreferrer">
+                      <img src={att.url} alt={att.name} loading="lazy" className="w-full h-40 object-cover hover:opacity-90 transition" />
+                    </a>
+                  ))}
+                </div>
+              );
+            })()}
+            {item.attachments.filter((a) => a.type.startsWith("video/")).map((att) => (
+              <video key={att.id} src={att.url} controls className="w-full rounded-xl max-h-64" />
+            ))}
+            {item.attachments.filter((a) => !a.type.startsWith("image/") && !a.type.startsWith("video/")).map((att) => (
+              <a key={att.id} href={att.url} target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-2.5 px-3 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-xl transition">
+                <FileText className="w-4 h-4 text-slate-400 shrink-0" />
+                <span className="text-xs text-[var(--foreground)] flex-1 truncate">{att.name}</span>
+                <Download className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+              </a>
+            ))}
+          </div>
+        )}
 
         {/* Reactions */}
         <div className="flex items-center gap-2 mt-4 flex-wrap">
@@ -173,9 +448,7 @@ function AnnouncementCard({ item, currentUserId, canDelete, canApprove, onApprov
             const users = item.reactions?.[emoji] ?? [];
             const active = users.includes(currentUserId);
             return (
-              <button
-                key={emoji}
-                onClick={() => handleReact(emoji)}
+              <button key={emoji} onClick={() => handleReact(emoji)}
                 className={cn("flex items-center gap-1 px-2 py-1 rounded-full text-sm border transition",
                   active ? "bg-blue-50 dark:bg-blue-900/20 border-blue-300 text-blue-700 dark:text-blue-400" : "border-[var(--border)] hover:bg-[var(--muted)]"
                 )}
@@ -184,11 +457,8 @@ function AnnouncementCard({ item, currentUserId, canDelete, canApprove, onApprov
               </button>
             );
           })}
-
-          <button
-            onClick={toggleComments}
-            className="ml-auto flex items-center gap-1 text-xs text-slate-400 hover:text-blue-500 transition"
-          >
+          <button onClick={toggleComments}
+            className="ml-auto flex items-center gap-1 text-xs text-slate-400 hover:text-blue-500 transition">
             <MessageSquare className="w-3.5 h-3.5" />
             {item.commentsCount > 0 ? `${item.commentsCount} bình luận` : "Bình luận"}
             {showComments ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
@@ -197,114 +467,140 @@ function AnnouncementCard({ item, currentUserId, canDelete, canApprove, onApprov
 
         {/* Comments section */}
         {showComments && (
-          <div className="mt-4 space-y-3 border-t border-[var(--border)] pt-4">
+          <div className="mt-4 space-y-3 border-t border-[var(--border)] pt-4" onClick={(e) => e.stopPropagation()}>
             {loadingComments && <Loader2 className="w-4 h-4 animate-spin text-blue-500" />}
+
+            {/* Comment list */}
             {comments.map((c) => (
               <div key={c.id} className="flex items-start gap-2">
                 <div className={cn("w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0", avatarColor(c.authorName))}>
-                  {getInitials(c.authorName)}
+                  {c.authorAvatar
+                    ? <img src={c.authorAvatar} className="w-full h-full rounded-full object-cover" alt="" />
+                    : getInitials(c.authorName)}
                 </div>
-                <div className="flex-1 bg-[var(--muted)] rounded-xl px-3 py-2">
-                  <p className="text-[10px] font-semibold text-[var(--foreground)]">{c.authorName}</p>
-                  <p className="text-xs text-[var(--muted-foreground)]">{c.content}</p>
+                <div className="flex-1 bg-slate-100 dark:bg-slate-800 rounded-2xl px-3 py-2 space-y-1">
+                  <p className="text-[10px] font-semibold text-[var(--foreground)]">{c.authorName}
+                    <span className="ml-1.5 font-normal text-slate-400">{new Date(c.createdAt).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}</span>
+                  </p>
+                  {c.content && <p className="text-xs text-[var(--foreground)] whitespace-pre-wrap">{c.content}</p>}
+                  {c.attachments && c.attachments.length > 0 && (
+                    <div className="space-y-1 pt-0.5">
+                      {c.attachments.filter((a) => a.type.startsWith("image/")).map((att) => (
+                        <a key={att.id} href={att.url} target="_blank" rel="noopener noreferrer">
+                          <img src={att.url} alt={att.name} loading="lazy" className="max-w-[180px] rounded-xl border border-slate-200 dark:border-slate-700 hover:opacity-90 transition" />
+                        </a>
+                      ))}
+                      {c.attachments.filter((a) => !a.type.startsWith("image/")).map((att) => (
+                        <a key={att.id} href={att.url} target="_blank" rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 px-2 py-1 bg-white dark:bg-slate-700 rounded-lg text-[10px] text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-600 transition">
+                          <FileText className="w-3 h-3" /> {att.name}
+                        </a>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
-            <form onSubmit={handleComment} className="flex gap-2">
-              <input
-                value={newComment}
-                onChange={(e) => setNewComment(e.target.value)}
-                placeholder="Viết bình luận..."
-                className="flex-1 px-3 py-1.5 text-xs border border-[var(--border)] rounded-full bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              <button type="submit" disabled={submitting || !newComment.trim()} className="p-1.5 bg-blue-600 disabled:opacity-50 text-white rounded-full transition">
-                <Send className="w-3.5 h-3.5" />
-              </button>
-            </form>
+
+            {/* Rich comment composer */}
+            <div className="space-y-2" onClick={(e) => e.stopPropagation()}>
+              {/* Pending files */}
+              {(commentFiles.length > 0 || uploadingComment) && (
+                <div className="flex flex-wrap gap-1.5 px-1">
+                  {uploadingComment && (
+                    <div className="flex items-center gap-1 px-2 py-1 bg-blue-50 dark:bg-blue-900/20 rounded-lg text-[10px] text-blue-600">
+                      <Loader2 className="w-2.5 h-2.5 animate-spin" /> Đang tải...
+                    </div>
+                  )}
+                  {commentFiles.map((f) => {
+                    const isImg = f.type.startsWith("image/");
+                    return (
+                      <div key={f.id} className="relative">
+                        {isImg
+                          ? <img src={f.url} alt={f.name} className="w-12 h-12 object-cover rounded-lg border border-slate-200 dark:border-slate-700" />
+                          : <div className="flex items-center gap-1 pl-1.5 pr-5 py-1 bg-slate-100 dark:bg-slate-800 rounded-lg text-[10px] text-slate-600 dark:text-slate-400 max-w-[100px]">
+                              <FileText className="w-2.5 h-2.5 shrink-0" />
+                              <span className="truncate">{f.name}</span>
+                            </div>}
+                        <button onClick={() => setCommentFiles((prev) => prev.filter((x) => x.id !== f.id))}
+                          className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-red-500 text-white rounded-full flex items-center justify-center">
+                          <X className="w-2 h-2" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Emoji panel */}
+              {commentShowEmoji && (
+                <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg p-2 grid grid-cols-10 gap-0.5"
+                  onClick={(e) => e.stopPropagation()}>
+                  {QUICK_EMOJIS.map((em) => (
+                    <button key={em} onClick={() => insertEmojiInComment(em)}
+                      className="text-lg p-0.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700 transition leading-none">
+                      {em}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Input row */}
+              <div className="flex items-end gap-2">
+                <div className="w-6 h-6 shrink-0" />
+                <div className="flex-1 flex items-end gap-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl px-2 py-1.5">
+                  <textarea
+                    ref={commentTextRef}
+                    value={commentText}
+                    onChange={(e) => setCommentText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSendComment(); }
+                    }}
+                    placeholder="Viết bình luận..."
+                    rows={1}
+                    className="flex-1 text-xs bg-transparent text-[var(--foreground)] placeholder-slate-400 focus:outline-none resize-none max-h-20 overflow-y-auto"
+                    style={{ minHeight: "20px" }}
+                    onInput={(e) => {
+                      const t = e.currentTarget;
+                      t.style.height = "auto";
+                      t.style.height = Math.min(t.scrollHeight, 80) + "px";
+                    }}
+                  />
+                  {/* Toolbar */}
+                  <div className="flex items-center gap-0.5 shrink-0 mb-0.5">
+                    <button type="button"
+                      onClick={(e) => { e.stopPropagation(); setCommentShowEmoji((v) => !v); }}
+                      className={cn("p-1 rounded-lg transition", commentShowEmoji ? "text-blue-500 bg-blue-50 dark:bg-blue-900/30" : "text-slate-400 hover:text-slate-600")}>
+                      <Smile className="w-3.5 h-3.5" />
+                    </button>
+                    <button type="button" onClick={() => commentFileRef.current?.click()}
+                      className="p-1 rounded-lg text-slate-400 hover:text-slate-600 transition">
+                      <Paperclip className="w-3.5 h-3.5" />
+                    </button>
+                    <button type="button" onClick={() => commentCameraRef.current?.click()}
+                      className="p-1 rounded-lg text-slate-400 hover:text-slate-600 transition">
+                      <Camera className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+                <button
+                  onClick={handleSendComment}
+                  disabled={submitting || (!commentText.trim() && commentFiles.length === 0)}
+                  className="p-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-full transition shrink-0"
+                >
+                  {submitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+            </div>
+
+            {/* Hidden file inputs */}
+            <input ref={commentFileRef} type="file" className="hidden" multiple
+              accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.zip"
+              onChange={handleCommentFileChange} />
+            <input ref={commentCameraRef} type="file" className="hidden" accept="image/*" capture="user" onChange={handleCommentFileChange} />
           </div>
         )}
       </div>
-    </div>
-  );
-}
-
-// ── Channel chat ──────────────────────────────────────────────────────────────
-function ChannelChat({ channel, currentUser }: { channel: Channel; currentUser: { id: string; name: string; avatar?: string } }) {
-  const [messages, setMessages] = useState<ChannelMessage[]>([]);
-  const [text, setText] = useState("");
-  const [sending, setSending] = useState(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const unsub = subscribeChannelMessages(channel.id, (msgs) => {
-      setMessages(msgs);
-      setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
-    });
-    return () => unsub();
-  }, [channel.id]);
-
-  async function handleSend(e: React.FormEvent) {
-    e.preventDefault();
-    if (!text.trim() || sending) return;
-    setSending(true);
-    try {
-      await sendChannelMessage(channel.id, {
-        channelId: channel.id,
-        senderId: currentUser.id,
-        senderName: currentUser.name,
-        senderAvatar: currentUser.avatar,
-        content: text.trim(),
-        attachments: [],
-        reactions: {},
-        timestamp: new Date().toISOString(),
-      });
-      setText("");
-    } catch {
-      toast.error("Gửi tin thất bại.");
-    } finally {
-      setSending(false);
-    }
-  }
-
-  return (
-    <div className="flex flex-col h-full">
-      <div className="flex-1 overflow-y-auto space-y-2 p-3">
-        {messages.length === 0 && (
-          <div className="text-center py-10 text-xs text-slate-400">Chưa có tin nhắn. Hãy bắt đầu cuộc trò chuyện!</div>
-        )}
-        {messages.map((msg) => {
-          const isMe = msg.senderId === currentUser.id;
-          return (
-            <div key={msg.id} className={cn("flex items-end gap-2", isMe && "flex-row-reverse")}>
-              <div className={cn("w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0", avatarColor(msg.senderName))}>
-                {getInitials(msg.senderName)}
-              </div>
-              <div className={cn("max-w-[70%] rounded-2xl px-3 py-2 text-sm",
-                isMe ? "bg-blue-600 text-white rounded-br-sm" : "bg-[var(--muted)] text-[var(--foreground)] rounded-bl-sm"
-              )}>
-                {!isMe && <p className="text-[10px] font-semibold mb-0.5 opacity-70">{msg.senderName}</p>}
-                {msg.content}
-                <p className={cn("text-[9px] mt-0.5 opacity-60", isMe ? "text-right" : "")}>
-                  {new Date(msg.timestamp).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}
-                </p>
-              </div>
-            </div>
-          );
-        })}
-        <div ref={bottomRef} />
-      </div>
-      <form onSubmit={handleSend} className="flex gap-2 p-3 border-t border-[var(--border)]">
-        <input
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder={`Nhắn tin vào #${channel.name}...`}
-          className="flex-1 px-3 py-2 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
-        <button type="submit" disabled={!text.trim() || sending}
-          className="px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl transition">
-          <Send className="w-4 h-4" />
-        </button>
-      </form>
     </div>
   );
 }
@@ -911,6 +1207,275 @@ function ManageChannelModal({
   );
 }
 
+// ── Create announcement modal ─────────────────────────────────────────────────
+function CreateAnnouncementModal({
+  onSave,
+  onClose,
+  posting,
+}: {
+  onSave: (title: string, content: string, attachments: Attachment[], pinned: boolean, targetRoles: UserRole[]) => void;
+  onClose: () => void;
+  posting: boolean;
+}) {
+  const [title, setTitle] = useState("");
+  const [content, setContent] = useState("");
+  const [pinned, setPinned] = useState(false);
+  const [targetRoles, setTargetRoles] = useState<UserRole[]>([]);
+  const [pendingFiles, setPendingFiles] = useState<Attachment[]>([]);
+  const [showEmoji, setShowEmoji] = useState(false);
+  const [uploadingFile, setUploadingFile] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const contentRef = useRef<HTMLTextAreaElement>(null);
+
+  function insertEmoji(emoji: string) {
+    const ta = contentRef.current;
+    if (ta) {
+      const start = ta.selectionStart ?? content.length;
+      const end = ta.selectionEnd ?? content.length;
+      setContent((v) => v.slice(0, start) + emoji + v.slice(end));
+      setTimeout(() => {
+        ta.selectionStart = ta.selectionEnd = start + emoji.length;
+        ta.focus();
+      }, 0);
+    } else {
+      setContent((v) => v + emoji);
+    }
+    setShowEmoji(false);
+  }
+
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    if (!files.length) return;
+    setUploadingFile(true);
+    try {
+      for (const file of files) {
+        const url = await uploadFile(file, "announcements");
+        setPendingFiles((prev) => [
+          ...prev,
+          { id: generateId("att"), name: file.name, url, type: file.type, size: file.size },
+        ]);
+      }
+    } catch {
+      toast.error("Tải file thất bại.");
+    } finally {
+      setUploadingFile(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      if (cameraInputRef.current) cameraInputRef.current.value = "";
+    }
+  }
+
+  function toggleRole(role: UserRole) {
+    setTargetRoles((prev) =>
+      prev.includes(role) ? prev.filter((r) => r !== role) : [...prev, role]
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+      <div
+        className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-lg flex flex-col max-h-[90vh] overflow-hidden"
+        onClick={(e) => { e.stopPropagation(); setShowEmoji(false); }}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 dark:border-slate-700 shrink-0">
+          <h3 className="font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-2">
+            <Megaphone className="w-4 h-4 text-blue-500" /> Đăng thông báo mới
+          </h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-5 space-y-3">
+          {/* Title */}
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Tiêu đề thông báo *"
+            className="w-full px-3 py-2.5 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+
+          {/* Content + emoji panel */}
+          <div className="relative">
+            <textarea
+              ref={contentRef}
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder="Nội dung thông báo..."
+              rows={5}
+              className="w-full px-3 py-2.5 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+            />
+            {showEmoji && (
+              <div
+                className="absolute top-full left-0 mt-1 z-30 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl p-2 grid grid-cols-10 gap-0.5 w-full"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {QUICK_EMOJIS.map((em) => (
+                  <button
+                    key={em}
+                    onClick={() => insertEmoji(em)}
+                    className="text-xl p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition hover:scale-110 leading-none"
+                  >
+                    {em}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Toolbar */}
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setShowEmoji((v) => !v); }}
+              title="Chèn emoji"
+              className={cn(
+                "p-2 rounded-xl text-sm transition",
+                showEmoji
+                  ? "bg-blue-100 text-blue-600 dark:bg-blue-900/40"
+                  : "text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800"
+              )}
+            >
+              <Smile className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              title="Đính kèm file / ảnh"
+              className="p-2 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+            >
+              <Paperclip className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => cameraInputRef.current?.click()}
+              title="Chụp / chọn ảnh từ camera"
+              className="p-2 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+            >
+              <Camera className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Pending attachments preview */}
+          {(pendingFiles.length > 0 || uploadingFile) && (
+            <div className="flex flex-wrap gap-2">
+              {uploadingFile && (
+                <div className="flex items-center gap-1.5 px-2 py-1 bg-blue-50 dark:bg-blue-900/20 rounded-lg text-xs text-blue-600">
+                  <Loader2 className="w-3 h-3 animate-spin" /> Đang tải...
+                </div>
+              )}
+              {pendingFiles.map((f) => {
+                const isImage = f.type.startsWith("image/");
+                return (
+                  <div key={f.id} className="relative">
+                    {isImage ? (
+                      <img
+                        src={f.url} alt={f.name}
+                        className="w-16 h-16 object-cover rounded-xl border border-slate-200 dark:border-slate-700"
+                      />
+                    ) : (
+                      <div className="flex items-center gap-1.5 pl-2 pr-6 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs max-w-[140px]">
+                        <FileText className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                        <span className="truncate text-slate-700 dark:text-slate-300">{f.name}</span>
+                      </div>
+                    )}
+                    <button
+                      onClick={() => setPendingFiles((prev) => prev.filter((x) => x.id !== f.id))}
+                      className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-red-500 text-white rounded-full flex items-center justify-center hover:bg-red-600 transition"
+                    >
+                      <X className="w-2.5 h-2.5" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Target roles */}
+          <div>
+            <p className="text-xs font-medium text-slate-500 mb-1.5">Hiển thị đến</p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setTargetRoles([])}
+                className={cn(
+                  "px-2.5 py-1 text-xs rounded-full border transition",
+                  targetRoles.length === 0
+                    ? "bg-blue-600 text-white border-blue-600"
+                    : "border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+                )}
+              >
+                Tất cả
+              </button>
+              {ALL_SELECTABLE_ROLES.map((role) => (
+                <button
+                  key={role}
+                  type="button"
+                  onClick={() => toggleRole(role)}
+                  className={cn(
+                    "px-2.5 py-1 text-xs rounded-full border transition",
+                    targetRoles.includes(role)
+                      ? "bg-blue-600 text-white border-blue-600"
+                      : "border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+                  )}
+                >
+                  {ROLE_LABELS[role]}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Pin */}
+          <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={pinned}
+              onChange={(e) => setPinned(e.target.checked)}
+              className="w-4 h-4 accent-blue-600"
+            />
+            <Pin className="w-3.5 h-3.5 text-amber-500" /> Ghim thông báo
+          </label>
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-slate-200 dark:border-slate-700">
+          <button
+            type="button" onClick={onClose}
+            className="px-3 py-2 text-sm border border-slate-300 dark:border-slate-600 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition text-slate-700 dark:text-slate-300"
+          >
+            Huỷ
+          </button>
+          <button
+            onClick={() => {
+              if (title.trim() && content.trim())
+                onSave(title.trim(), content.trim(), pendingFiles, pinned, targetRoles);
+            }}
+            disabled={posting || !title.trim() || !content.trim()}
+            className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-semibold rounded-xl transition"
+          >
+            {posting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+            Đăng
+          </button>
+        </div>
+      </div>
+
+      {/* Hidden file inputs */}
+      <input
+        ref={fileInputRef} type="file" className="hidden" multiple
+        accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.zip,.rar"
+        onChange={handleFileChange}
+      />
+      <input
+        ref={cameraInputRef} type="file" className="hidden"
+        accept="image/*" capture="user"
+        onChange={handleFileChange}
+      />
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function IntranetPage() {
   const { currentUser } = useAuthStore();
@@ -923,9 +1488,6 @@ export default function IntranetPage() {
 
   // New announcement form
   const [showPostForm, setShowPostForm] = useState(false);
-  const [postTitle, setPostTitle] = useState("");
-  const [postContent, setPostContent] = useState("");
-  const [postPinned, setPostPinned] = useState(false);
   const [posting, setPosting] = useState(false);
 
   // Channel modals
@@ -973,23 +1535,28 @@ export default function IntranetPage() {
 
   const activeChannel = channels.find((c) => c.id === activeChannelId) ?? null;
 
-  async function handlePost(e: React.FormEvent) {
-    e.preventDefault();
-    if (!postTitle.trim() || !postContent.trim() || !currentUser) return;
+  async function handlePost(
+    title: string,
+    content: string,
+    attachments: Attachment[],
+    pinned: boolean,
+    targetRoles: UserRole[],
+  ) {
+    if (!currentUser) return;
     setPosting(true);
     try {
       const a: Announcement = {
         id: generateId("ann"),
-        title: postTitle.trim(),
-        content: postContent.trim(),
+        title,
+        content,
         authorId: currentUser.id,
         authorName: currentUser.name,
         authorRole: currentUser.role,
         authorAvatar: currentUser.avatar,
-        targetRoles: [],
-        attachments: [],
+        targetRoles,
+        attachments,
         reactions: {},
-        pinned: postPinned,
+        pinned,
         commentsCount: 0,
         viewedBy: [currentUser.id],
         status: canApprovePost ? "published" : "pending",
@@ -997,7 +1564,7 @@ export default function IntranetPage() {
         updatedAt: new Date().toISOString(),
       };
       await saveAnnouncement(a);
-      setPostTitle(""); setPostContent(""); setPostPinned(false); setShowPostForm(false);
+      setShowPostForm(false);
       toast.success(canApprovePost ? "Đã đăng bản tin." : "Đã gửi bản tin. Chờ quản lý phê duyệt để công khai.");
     } catch {
       toast.error("Đăng thất bại.");
@@ -1089,38 +1656,6 @@ export default function IntranetPage() {
       {/* ── FEED TAB ─────────────────────────────────────────────────────────── */}
       {tab === "feed" && (
         <div className="flex-1 overflow-y-auto space-y-4 pr-1">
-          {/* Post form */}
-          {showPostForm && (
-            <form onSubmit={handlePost} className="bg-[var(--card)] border border-blue-300 rounded-2xl p-5 space-y-3">
-              <h3 className="font-semibold text-[var(--foreground)]">Đăng thông báo mới</h3>
-              <input
-                value={postTitle}
-                onChange={(e) => setPostTitle(e.target.value)}
-                placeholder="Tiêu đề thông báo *"
-                className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              <textarea
-                value={postContent}
-                onChange={(e) => setPostContent(e.target.value)}
-                placeholder="Nội dung thông báo..."
-                rows={4}
-                className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-              />
-              <div className="flex items-center justify-between">
-                <label className="flex items-center gap-2 text-sm text-[var(--foreground)] cursor-pointer">
-                  <input type="checkbox" checked={postPinned} onChange={(e) => setPostPinned(e.target.checked)} className="w-4 h-4 accent-blue-600" />
-                  <Pin className="w-3.5 h-3.5 text-amber-500" /> Ghim thông báo
-                </label>
-                <div className="flex gap-2">
-                  <button type="button" onClick={() => setShowPostForm(false)} className="px-3 py-1.5 text-sm border border-[var(--border)] rounded-xl hover:bg-[var(--muted)] transition">Huỷ</button>
-                  <button type="submit" disabled={posting || !postTitle.trim() || !postContent.trim()}
-                    className="flex items-center gap-1.5 px-4 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-semibold rounded-xl transition">
-                    {posting && <Loader2 className="w-3.5 h-3.5 animate-spin" />} Đăng
-                  </button>
-                </div>
-              </div>
-            </form>
-          )}
 
           {loading ? (
             <div className="flex justify-center py-16"><Loader2 className="w-7 h-7 animate-spin text-blue-500" /></div>
@@ -1232,6 +1767,15 @@ export default function IntranetPage() {
             )}
           </div>
         </div>
+      )}
+
+      {/* Create announcement modal */}
+      {showPostForm && (
+        <CreateAnnouncementModal
+          onSave={handlePost}
+          onClose={() => setShowPostForm(false)}
+          posting={posting}
+        />
       )}
 
       {/* Create channel modal */}

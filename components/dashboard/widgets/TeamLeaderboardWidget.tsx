@@ -2,15 +2,23 @@
 
 import { Trophy } from "lucide-react";
 import { useTaskStore } from "@/stores/useTaskStore";
+import { useDashboardFilter } from "@/stores/useDashboardFilter";
 import { useMemo } from "react";
 import { getInitials, avatarColor } from "@/lib/utils";
 
 export default function TeamLeaderboardWidget() {
   const { tasks, users } = useTaskStore();
+  const { mode, year, month, quarter, getRange, getLabel } = useDashboardFilter();
 
   const scores = useMemo(() => {
+    const range = getRange();
+    // Fallback: current month when mode === "all"
     const now = new Date();
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const fallbackStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+    const fallbackEnd   = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59).toISOString();
+    const start = range?.start ?? fallbackStart;
+    const end   = range?.end   ?? fallbackEnd;
+
     return users
       .filter((u) => u.isActive && u.role !== "guest")
       .map((u) => {
@@ -18,7 +26,8 @@ export default function TeamLeaderboardWidget() {
           (t) =>
             (t.mainPerformerId === u.id || (t.stakeholders ?? []).some((s) => s.userId === u.id && s.role === "assignee")) &&
             t.deadlineBase &&
-            new Date(t.deadlineBase) >= monthStart,
+            t.deadlineBase >= start.slice(0, 10) &&
+            t.deadlineBase <= end.slice(0, 10),
         );
         const done = myTasks.filter((t) => t.status === "done");
         const rate = myTasks.length > 0 ? Math.round((done.length / myTasks.length) * 100) : 0;
@@ -27,15 +36,16 @@ export default function TeamLeaderboardWidget() {
       .filter((s) => s.total > 0)
       .sort((a, b) => b.rate - a.rate)
       .slice(0, 5);
-  }, [tasks, users]);
+  }, [tasks, users, mode, year, month, quarter]);
 
   const MEDALS = ["🥇", "🥈", "🥉"];
+  const periodLabel = mode === "all" ? "tháng này" : getLabel();
 
   return (
     <div className="flex flex-col h-full p-4">
       <h3 className="font-semibold text-[var(--foreground)] text-sm flex items-center gap-1.5 mb-3">
         <Trophy className="w-4 h-4 text-amber-500" />
-        Xếp hạng nhóm (tháng này)
+        Xếp hạng nhóm ({periodLabel})
       </h3>
       <div className="space-y-2 flex-1 overflow-y-auto min-h-0">
         {scores.length === 0 ? (

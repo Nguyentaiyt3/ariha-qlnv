@@ -6,7 +6,8 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
 } from "recharts";
 import { useTaskStore } from "@/stores/useTaskStore";
-import { CheckCircle2, Clock, ShieldAlert, Layers, TrendingUp, TrendingDown } from "lucide-react";
+import { useDashboardFilter } from "@/stores/useDashboardFilter";
+import { CheckCircle2, Clock, ShieldAlert, Layers } from "lucide-react";
 import Link from "next/link";
 import { format, subWeeks, startOfWeek, endOfWeek, parseISO, isValid } from "date-fns";
 import { vi } from "date-fns/locale";
@@ -116,16 +117,23 @@ function toDate(v: unknown): Date | null {
 // ── Main widget ───────────────────────────────────────────────────
 export default function AnalyticsSummaryWidget() {
   const { tasks } = useTaskStore();
+  const { mode, year, month, quarter, getRange, getLabel } = useDashboardFilter();
   const { ref, width, xs, sm, md } = useContainerWidth();
 
   const stats = useMemo(() => {
-    const active  = tasks.filter((t) => t.status !== "cancelled");
+    const range = getRange();
+    const filtered = range
+      ? tasks.filter((t) =>
+          t.deadlineBase &&
+          t.deadlineBase >= range.start.slice(0, 10) &&
+          t.deadlineBase <= range.end.slice(0, 10),
+        )
+      : tasks;
+
+    const active  = filtered.filter((t) => t.status !== "cancelled");
     const total   = active.length;
     const done    = active.filter((t) => t.status === "done").length;
-    const inProg  = active.filter((t) => t.status === "in_progress").length;
-    const review  = active.filter((t) => t.status === "review").length;
-    const todo    = active.filter((t) => t.status === "todo").length;
-    const cancelled = tasks.filter((t) => t.status === "cancelled").length;
+    const cancelled = filtered.filter((t) => t.status === "cancelled").length;
 
     const today   = new Date().toISOString().slice(0, 10);
     const overdue = active.filter((t) => t.deadlineBase && t.deadlineBase < today && t.status !== "done").length;
@@ -135,10 +143,10 @@ export default function AnalyticsSummaryWidget() {
       ? Math.round(active.reduce((s, t) => s + (t.progress ?? 0), 0) / total) : 0;
 
     const statusData = STATUS_ITEMS.map((s) => ({
-      ...s, value: tasks.filter((t) => t.status === s.key).length,
+      ...s, value: filtered.filter((t) => t.status === s.key).length,
     }));
 
-    // 6-week trend
+    // 6-week trend (always based on all tasks, not filtered — shows historical context)
     const weeks = Array.from({ length: 6 }, (_, i) => {
       const ws  = startOfWeek(subWeeks(new Date(), 5 - i), { weekStartsOn: 1 });
       const we  = endOfWeek(ws, { weekStartsOn: 1 });
@@ -148,8 +156,8 @@ export default function AnalyticsSummaryWidget() {
       return { label: lbl, created, completed };
     });
 
-    return { total, done, inProg, review, todo, cancelled, overdue, risk, completionRate, avgProgress, statusData, weeks };
-  }, [tasks]);
+    return { total, done, cancelled, overdue, risk, completionRate, avgProgress, statusData, weeks };
+  }, [tasks, mode, year, month, quarter]);
 
   // Adaptive KPI grid: 4 cols if ≥ 600px, else 2 cols
   const kpiCols = md ? "grid-cols-4" : "grid-cols-2";
@@ -161,7 +169,12 @@ export default function AnalyticsSummaryWidget() {
     <div ref={ref} className="flex flex-col h-full p-3 sm:p-4 gap-2.5 sm:gap-3">
       {/* Header */}
       <div className="flex items-center justify-between shrink-0">
-        <h3 className="font-bold text-sm text-[var(--foreground)]">Tổng quan tổ chức</h3>
+        <div>
+          <h3 className="font-bold text-sm text-[var(--foreground)]">Tổng quan tổ chức</h3>
+          {mode !== "all" && (
+            <p className="text-[10px] text-blue-500 font-medium">{getLabel()}</p>
+          )}
+        </div>
         <Link href="/tasks" className="text-[10px] text-[var(--muted-foreground)] hover:text-blue-500 transition-colors">
           Xem tất cả →
         </Link>

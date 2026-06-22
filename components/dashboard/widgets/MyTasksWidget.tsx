@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useAuthStore } from "@/stores/useAuthStore";
+import { useDashboardFilter } from "@/stores/useDashboardFilter";
 import { isOverdue } from "@/lib/utils";
 import Link from "next/link";
 import type { Task } from "@/types";
@@ -100,11 +101,19 @@ export default function MyTasksWidget() {
   const { tasks } = useTaskStore();
   const uid = currentUser?.id ?? "";
   const { ref, xs, sm } = useContainerWidth();
+  const { mode, year, month, quarter, getRange, getLabel } = useDashboardFilter();
 
   const { mainTasks, supportTasks, allMyTasks, overdueCount, urgentCount } = useMemo(() => {
-    const mainTasks    = tasks.filter((t) => t.mainPerformerId === uid);
+    const range = getRange();
+    const inRange = (t: Task) => {
+      if (!range) return true;
+      if (!t.deadlineBase) return false;
+      return t.deadlineBase >= range.start.slice(0, 10) && t.deadlineBase <= range.end.slice(0, 10);
+    };
+
+    const mainTasks    = tasks.filter((t) => t.mainPerformerId === uid && inRange(t));
     const supportTasks = tasks.filter(
-      (t) => t.mainPerformerId !== uid && (t.stakeholders ?? []).some((s) => s.userId === uid),
+      (t) => t.mainPerformerId !== uid && (t.stakeholders ?? []).some((s) => s.userId === uid) && inRange(t),
     );
     const seen = new Set<string>();
     const allMyTasks = [...mainTasks, ...supportTasks].filter((t) => {
@@ -113,7 +122,7 @@ export default function MyTasksWidget() {
     const overdueCount = allMyTasks.filter((t) => isOverdue(t.deadlineBase) && t.status !== "done").length;
     const urgentCount  = allMyTasks.filter((t) => t.priority === "urgent" && t.status !== "done").length;
     return { mainTasks, supportTasks, allMyTasks, overdueCount, urgentCount };
-  }, [tasks, uid]);
+  }, [tasks, uid, mode, year, month, quarter]);
 
   // Donut size scales with available width
   const donutSize = sm ? 90 : xs ? 80 : 70;
@@ -122,7 +131,12 @@ export default function MyTasksWidget() {
     <div ref={ref} className="flex flex-col h-full p-3 sm:p-4 gap-2.5">
       {/* Header */}
       <div className="flex items-center justify-between shrink-0">
-        <h3 className="font-bold text-sm text-[var(--foreground)]">Nhiệm vụ của tôi</h3>
+        <div>
+          <h3 className="font-bold text-sm text-[var(--foreground)]">Nhiệm vụ của tôi</h3>
+          {mode !== "all" && (
+            <p className="text-[10px] text-blue-500 font-medium">{getLabel()}</p>
+          )}
+        </div>
         <Link href="/tasks" className="text-[10px] text-[var(--muted-foreground)] hover:text-blue-500 transition-colors">
           Xem tất cả →
         </Link>

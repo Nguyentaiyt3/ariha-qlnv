@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Star, Send, EyeOff } from "lucide-react";
+import { Star, Send, EyeOff, CheckCircle2, RotateCcw } from "lucide-react";
 import { saveEvaluation } from "@/lib/firebase/firestore";
 import type { KPIFramework, Evaluation } from "@/types";
 import { generateId } from "@/lib/utils";
@@ -13,7 +13,7 @@ interface Props {
   type: "self" | "manager" | "peer";
   framework?: KPIFramework;
   period: string;
-  onDone?: () => void;
+  onDone?: (saved: Evaluation) => void;
 }
 
 export default function EvaluationForm({ targetUserId, evaluatorId, type, framework, period, onDone }: Props) {
@@ -21,6 +21,7 @@ export default function EvaluationForm({ targetUserId, evaluatorId, type, framew
   const [comment, setComment] = useState("");
   const [isAnonymous, setIsAnonymous] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [submitted, setSubmitted] = useState<Evaluation | null>(null);
 
   const TYPE_LABELS = { self: "Tự đánh giá", manager: "Quản lý đánh giá", peer: "Đồng nghiệp đánh giá" };
 
@@ -38,6 +39,12 @@ export default function EvaluationForm({ targetUserId, evaluatorId, type, framew
 
   const isComplete = indicators.every((i) => scores[i.id] !== undefined);
 
+  const totalWeight = indicators.reduce((s, i) => s + i.weight, 0) || 100;
+  const overallScore = indicators.reduce(
+    (sum, ind) => sum + (scores[ind.id] ?? 0) * (ind.weight / totalWeight),
+    0,
+  ) * 10; // scores 1-10 → weighted avg * 10 = 0-100
+
   const handleSubmit = async () => {
     if (!isComplete) {
       toast.error("Vui lòng đánh giá đủ tất cả tiêu chí");
@@ -48,18 +55,20 @@ export default function EvaluationForm({ targetUserId, evaluatorId, type, framew
       const eval_: Evaluation = {
         id: generateId(),
         evaluatedUserId: targetUserId,
-        evaluatorId: type === "self" || isAnonymous ? "anonymous" : evaluatorId,
+        evaluatorId: isAnonymous && type === "peer" ? "anonymous" : evaluatorId,
         type,
         scores,
         comment: comment.trim(),
-        isAnonymous: type === "peer" ? isAnonymous : false,
+        isAnonymous: type === "peer" && isAnonymous,
         period,
         frameworkId: framework?.id,
+        overallScore: Math.round(overallScore),
         createdAt: new Date().toISOString(),
       };
       await saveEvaluation(eval_);
       toast.success("Đã gửi đánh giá thành công");
-      onDone?.();
+      setSubmitted(eval_);
+      onDone?.(eval_);
     } catch {
       toast.error("Gửi đánh giá thất bại");
     } finally {
@@ -67,11 +76,64 @@ export default function EvaluationForm({ targetUserId, evaluatorId, type, framew
     }
   };
 
+  function resetForm() {
+    setScores({});
+    setComment("");
+    setIsAnonymous(false);
+    setSubmitted(null);
+  }
+
+  // ── Success state ─────────────────────────────────────────
+  if (submitted) {
+    const stars = Math.round(submitted.overallScore! / 20);
+    return (
+      <div className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-6 text-center space-y-4">
+        <CheckCircle2 className="w-12 h-12 text-green-500 mx-auto" />
+        <div>
+          <p className="text-lg font-semibold text-[var(--foreground)]">Đã gửi đánh giá!</p>
+          <p className="text-sm text-[var(--muted-foreground)] mt-1">Kỳ {period} · {TYPE_LABELS[type]}</p>
+        </div>
+        <div className="inline-flex items-center gap-1.5 bg-amber-50 dark:bg-amber-900/20 px-4 py-2 rounded-full">
+          {[1, 2, 3, 4, 5].map((s) => (
+            <Star key={s} className={`w-5 h-5 ${s <= stars ? "fill-amber-400 text-amber-400" : "text-slate-300"}`} />
+          ))}
+          <span className="text-sm font-bold text-amber-600 ml-1">{submitted.overallScore}/100</span>
+        </div>
+        {submitted.comment && (
+          <p className="text-sm text-[var(--muted-foreground)] italic">"{submitted.comment}"</p>
+        )}
+        <div className="grid grid-cols-2 gap-2 text-left">
+          {indicators.map((ind) => (
+            <div key={ind.id} className="flex items-center justify-between px-3 py-2 bg-[var(--muted)] rounded-lg text-xs">
+              <span className="text-[var(--muted-foreground)] truncate">{ind.name}</span>
+              <span className="font-semibold text-[var(--foreground)] ml-2">{submitted.scores[ind.id]}/10</span>
+            </div>
+          ))}
+        </div>
+        <button
+          onClick={resetForm}
+          className="flex items-center gap-2 mx-auto text-sm text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition"
+        >
+          <RotateCcw className="w-4 h-4" /> Đánh giá lại
+        </button>
+      </div>
+    );
+  }
+
+  // ── Form ──────────────────────────────────────────────────
   return (
     <div className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-6">
-      <div className="mb-5">
-        <h3 className="font-semibold text-[var(--foreground)] text-lg">{TYPE_LABELS[type]}</h3>
-        <p className="text-sm text-[var(--muted-foreground)] mt-0.5">Kỳ đánh giá: {period}</p>
+      <div className="flex items-center justify-between mb-5">
+        <div>
+          <h3 className="font-semibold text-[var(--foreground)] text-lg">{TYPE_LABELS[type]}</h3>
+          <p className="text-sm text-[var(--muted-foreground)] mt-0.5">Kỳ đánh giá: {period}</p>
+        </div>
+        {isComplete && (
+          <div className="text-right">
+            <p className="text-2xl font-bold text-blue-600">{Math.round(overallScore)}</p>
+            <p className="text-xs text-[var(--muted-foreground)]">/ 100</p>
+          </div>
+        )}
       </div>
 
       <div className="space-y-5 mb-6">

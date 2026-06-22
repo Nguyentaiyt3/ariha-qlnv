@@ -1,7 +1,8 @@
 import type { Task, User } from "@/types";
 import { formatDate, daysUntilDeadline } from "@/lib/utils";
+import { senderBlock } from "./_shared";
 
-export function renderDeadlineAlert(task: Task, recipients: User[]): string {
+export function renderDeadlineAlert(task: Task, recipients: User[], sender?: User): string {
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
   const days = task.deadlineBase ? daysUntilDeadline(task.deadlineBase) : 0;
 
@@ -24,11 +25,12 @@ export function renderDeadlineAlert(task: Task, recipients: User[]): string {
         <p style="color:#78350f;font-size:14px;margin:0 0 12px;">Tiến độ hiện tại: <strong>${task.progress}%</strong></p>
         <p style="color:#92400e;font-size:13px;margin:0;">Hạn chót: <strong>${task.deadlineBase ? formatDate(task.deadlineBase) : "—"}</strong></p>
       </div>
-      <div style="text-align:center;">
+      <div style="text-align:center;margin-bottom:20px;">
         <a href="${appUrl}/tasks/${task.id}" style="display:inline-block;background:#f59e0b;color:#fff;text-decoration:none;padding:12px 28px;border-radius:10px;font-size:15px;font-weight:600;">
           Cập nhật tiến độ ngay →
         </a>
       </div>
+      ${senderBlock(sender)}
     </div>
     <div style="background:#f8fafc;padding:16px 32px;border-top:1px solid #e2e8f0;text-align:center;">
       <p style="color:#94a3b8;font-size:12px;margin:0;">ARiHA WorkHub · Email tự động</p>
