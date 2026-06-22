@@ -4,16 +4,15 @@ import { useState, useRef, useEffect } from "react";
 import {
   Plus, ChevronDown, ChevronRight, Camera, Link2, X,
   Loader2, TrendingUp, TrendingDown, Image as ImageIcon, Paperclip, AlertTriangle,
-  Mail, Send, CreditCard, Check, QrCode, ChevronDown as ChevDown,
-  Wallet, Upload, FileText,
+  Mail, Send, CreditCard, Check, QrCode, DollarSign,
 } from "lucide-react";
 import { cn, generateId, formatDate, priorityLabel } from "@/lib/utils";
 import { uploadFile } from "@/lib/firebase/storage";
 import { UserAvatar } from "@/components/common/UserAvatar";
-import type { Task, TaskStep, StepSubTask, User, TaskPriority, Proof, AdvanceRequest, ReimbursementRequest, FinancialProof } from "@/types";
+import type { Task, TaskStep, StepSubTask, User, TaskPriority, Proof, AdvanceRequest, FinancialProof } from "@/types";
 import {
   createAdvanceRequest, subscribeAdvanceRequests,
-  createDirectReimbursementRequest, subscribeReimbursementRequests,
+  createTransaction, EXPENSE_CATEGORIES,
 } from "@/lib/firebase/finance";
 import { toast } from "sonner";
 
@@ -63,8 +62,6 @@ const BLANK_SUB = {
   priority: "medium" as TaskPriority,
   deadline: "",
   note: "",
-  amountType: "none" as "none" | "income" | "expense",
-  amount: 0,
 };
 
 // ── Main component ────────────────────────────────────────────
@@ -87,10 +84,6 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
   const [taskAdvances, setTaskAdvances] = useState<AdvanceRequest[]>([]);
   useEffect(() => subscribeAdvanceRequests(task.id, setTaskAdvances), [task.id]);
 
-  // Reimbursement requests realtime
-  const [taskReimbs, setTaskReimbs] = useState<ReimbursementRequest[]>([]);
-  useEffect(() => subscribeReimbursementRequests(task.id, setTaskReimbs), [task.id]);
-
   // Advance request panel
   const [advanceStepId,     setAdvanceStepId]     = useState<string | null>(null);
   const [advanceAmount,     setAdvanceAmount]      = useState("");
@@ -101,16 +94,19 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
   const [advanceAccName,    setAdvanceAccName]     = useState("");
   const [advanceSaving,     setAdvanceSaving]      = useState(false);
 
-  // Tự ứng (reimbursement) panel
-  const [reimbStepId,       setReimbStepId]       = useState<string | null>(null);
-  const [reimbAmount,       setReimbAmount]       = useState("");
-  const [reimbDesc,         setReimbDesc]         = useState("");
-  const [reimbProofs,       setReimbProofs]       = useState<FinancialProof[]>([]);
-  const [reimbProofUrl,     setReimbProofUrl]     = useState("");
-  const [reimbUploading,    setReimbUploading]    = useState(false);
-  const [reimbSaving,       setReimbSaving]       = useState(false);
-  const reimbFileRef        = useRef<HTMLInputElement>(null);
-  const reimbCameraRef      = useRef<HTMLInputElement>(null);
+  // Thêm thu/chi (transaction) panel
+  const [txStepId,     setTxStepId]     = useState<string | null>(null);
+  const [txFundSource, setTxFundSource] = useState<"ADVANCE" | "OUT_OF_POCKET" | "REVENUE">("OUT_OF_POCKET");
+  const [txAmount,     setTxAmount]     = useState("");
+  const [txCategory,   setTxCategory]   = useState<string>(EXPENSE_CATEGORIES[0]);
+  const [txDesc,       setTxDesc]       = useState("");
+  const [txProofs,     setTxProofs]     = useState<FinancialProof[]>([]);
+  const [txProofUrl,   setTxProofUrl]   = useState("");
+  const [txUploading,  setTxUploading]  = useState(false);
+  const [txSaving,     setTxSaving]     = useState(false);
+  const [txAdvanceId,  setTxAdvanceId]  = useState("");
+  const txFileRef   = useRef<HTMLInputElement>(null);
+  const txCameraRef = useRef<HTMLInputElement>(null);
 
   // Email compose panel
   const [emailStepId, setEmailStepId] = useState<string | null>(null);
@@ -205,8 +201,8 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
       id: generateId("sub"),
       userId: subForm.userId,
       priority: subForm.priority,
-      amountType: subForm.amountType,
-      amount: subForm.amount,
+      amountType: "none",
+      amount: 0,
       progress: 0,
       proofs: [],
       status: "pending",
@@ -334,24 +330,27 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
     }
   }
 
-  function openReimbPanel(step: TaskStep) {
-    setReimbStepId(step.id);
-    setReimbAmount("");
-    setReimbDesc(`Tự ứng: ${step.name} - ${new Date().toLocaleDateString("vi-VN")} - ${currentUser.name}`);
-    setReimbProofs([]);
-    setReimbProofUrl("");
+  function openTxPanel(step: TaskStep) {
+    setTxStepId(step.id);
+    setTxFundSource("OUT_OF_POCKET");
+    setTxAmount("");
+    setTxCategory(EXPENSE_CATEGORIES[0]);
+    setTxDesc("");
+    setTxProofs([]);
+    setTxProofUrl("");
+    setTxAdvanceId("");
     setAdvanceStepId(null);
     setEmailStepId(null);
   }
 
-  async function handleReimbFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+  async function handleTxFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? []);
     if (!files.length) return;
-    setReimbUploading(true);
+    setTxUploading(true);
     try {
       for (const file of files) {
         const url = await uploadFile(file, "proofs");
-        setReimbProofs((prev) => [
+        setTxProofs((prev) => [
           ...prev,
           { id: generateId("proof"), name: file.name, url, type: file.type, size: file.size,
             uploadedBy: currentUser.id, uploadedAt: new Date().toISOString() },
@@ -360,46 +359,49 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
       toast.success(`Đã tải ${files.length} chứng từ.`);
     } catch { toast.error("Tải chứng từ thất bại."); }
     finally {
-      setReimbUploading(false);
-      if (reimbFileRef.current) reimbFileRef.current.value = "";
-      if (reimbCameraRef.current) reimbCameraRef.current.value = "";
+      setTxUploading(false);
+      if (txFileRef.current) txFileRef.current.value = "";
+      if (txCameraRef.current) txCameraRef.current.value = "";
     }
   }
 
-  function addReimbProofLink() {
-    const url = reimbProofUrl.trim();
+  function addTxProofLink() {
+    const url = txProofUrl.trim();
     if (!url) return;
-    setReimbProofs((prev) => [
+    setTxProofs((prev) => [
       ...prev,
       { id: generateId("proof"), name: url, url, type: "link",
         uploadedBy: currentUser.id, uploadedAt: new Date().toISOString() },
     ]);
-    setReimbProofUrl("");
+    setTxProofUrl("");
   }
 
-  async function handleReimbSubmit(step: TaskStep) {
-    const num = parseFloat(reimbAmount);
-    if (!num || num <= 0)  { toast.error("Nhập số tiền hợp lệ."); return; }
-    if (!reimbDesc.trim()) { toast.error("Nhập mô tả chi tiết."); return; }
-    if (reimbProofs.length === 0) { toast.error("Cần ít nhất 1 chứng từ."); return; }
-    setReimbSaving(true);
+  async function handleTxSubmit(step: TaskStep) {
+    const num = parseFloat(txAmount);
+    if (!num || num <= 0) { toast.error("Nhập số tiền hợp lệ."); return; }
+    if (!txDesc.trim()) { toast.error("Nhập mô tả."); return; }
+    if (txFundSource !== "REVENUE" && txProofs.length === 0) { toast.error("Cần ít nhất 1 chứng từ."); return; }
+    setTxSaving(true);
     try {
-      await createDirectReimbursementRequest({
-        taskId:          task.id,
-        stepId:          step.id,
-        stepName:        step.name,
-        requestedBy:     currentUser.id,
-        requestedByName: currentUser.name,
-        amount:          num,
-        description:     reimbDesc.trim(),
-        proofs:          reimbProofs,
+      await createTransaction({
+        taskId: task.id,
+        stepId: step.id,
+        createdBy: currentUser.id,
+        createdByName: currentUser.name,
+        amount: num,
+        direction: txFundSource === "REVENUE" ? "CREDIT" : "DEBIT",
+        fundSource: txFundSource,
+        category: txCategory,
+        description: txDesc.trim(),
+        proofs: txProofs,
+        ...(txFundSource === "ADVANCE" && txAdvanceId ? { advanceRequestId: txAdvanceId } : {}),
       });
-      toast.success("Đã gửi đơn tự ứng. Chờ quản lý duyệt hoàn tiền.");
-      setReimbStepId(null);
+      toast.success("Đã thêm giao dịch.");
+      setTxStepId(null);
     } catch (err) {
-      toast.error((err as Error).message ?? "Gửi đơn thất bại.");
+      toast.error((err as Error).message ?? "Thất bại.");
     } finally {
-      setReimbSaving(false);
+      setTxSaving(false);
     }
   }
 
@@ -593,26 +595,6 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
                       </span>
                     );
                   })}
-                  {taskReimbs.filter((r) => r.stepId === step.id).map((r) => {
-                    const REIMB_CLS: Record<string, string> = {
-                      SUBMITTED: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400",
-                      APPROVED:  "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
-                      PAID:      "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400",
-                      REJECTED:  "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400",
-                      DRAFT:     "bg-slate-100 text-slate-400",
-                    };
-                    const REIMB_LBL: Record<string, string> = {
-                      SUBMITTED: "Chờ hoàn", APPROVED: "Đã duyệt",
-                      PAID: "Đã hoàn", REJECTED: "Từ chối", DRAFT: "Nháp",
-                    };
-                    return (
-                      <span key={r.id} className={cn("inline-flex items-center gap-1 shrink-0 px-1.5 py-0.5 rounded-full text-[10px] font-medium", REIMB_CLS[r.status] ?? REIMB_CLS.SUBMITTED)}>
-                        <Wallet className="w-2.5 h-2.5" />
-                        {r.amount.toLocaleString("vi-VN")}đ
-                        <span className="opacity-70">({REIMB_LBL[r.status]})</span>
-                      </span>
-                    );
-                  })}
                 </div>
                 <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                   {stepUser ? (
@@ -798,24 +780,6 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
                           placeholder="Ghi chú công việc..."
                           className="col-span-2 px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
                         />
-                        <select
-                          value={subForm.amountType}
-                          onChange={(e) => setSubForm((f) => ({ ...f, amountType: e.target.value as typeof subForm.amountType }))}
-                          className="px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        >
-                          <option value="none">Không có thu/chi</option>
-                          <option value="income">Thu tiền</option>
-                          <option value="expense">Chi tiền</option>
-                        </select>
-                        {subForm.amountType !== "none" && (
-                          <input
-                            type="number" min={0}
-                            value={subForm.amount || ""}
-                            onChange={(e) => setSubForm((f) => ({ ...f, amount: Number(e.target.value) }))}
-                            placeholder="Số tiền (đ)"
-                            className="px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
-                          />
-                        )}
                       </div>
                       <div className="flex justify-end gap-2">
                         <button onClick={() => setAddSubStep(null)} className="px-3 py-1.5 text-xs text-slate-500 hover:text-slate-700">Hủy</button>
@@ -984,7 +948,7 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
                 {/* ── Advance + Email buttons (cùng hàng) ── */}
                 {(() => {
                   const isAdvOpen    = advanceStepId === step.id;
-                  const isReimbOpen  = reimbStepId === step.id;
+                  const isTxOpen     = txStepId === step.id;
                   const hasAssignees = !!step.assigneeId || (step.subTasks ?? []).length > 0;
                   const isEmailOpen  = emailStepId === step.id;
 
@@ -1013,18 +977,18 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
                           <CreditCard className="w-3.5 h-3.5" />
                           Tạm ứng
                         </button>
-                        {/* Tự ứng */}
+                        {/* Thêm thu/chi */}
                         <button
-                          onClick={() => isReimbOpen ? setReimbStepId(null) : openReimbPanel(step)}
+                          onClick={() => isTxOpen ? setTxStepId(null) : openTxPanel(step)}
                           className={cn(
                             "flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-xl border transition",
-                            isReimbOpen
-                              ? "bg-purple-600 text-white border-purple-600"
-                              : "text-purple-600 dark:text-purple-400 border-purple-200 dark:border-purple-800 bg-white dark:bg-slate-800 hover:border-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20",
+                            isTxOpen
+                              ? "bg-green-600 text-white border-green-600"
+                              : "text-green-700 dark:text-green-400 border-green-200 dark:border-green-800 bg-white dark:bg-slate-800 hover:border-green-400 hover:bg-green-50 dark:hover:bg-green-900/20",
                           )}
                         >
-                          <Wallet className="w-3.5 h-3.5" />
-                          Tự ứng
+                          <DollarSign className="w-3.5 h-3.5" />
+                          Thêm thu/chi
                         </button>
 
                         {hasAssignees && (
@@ -1157,77 +1121,128 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
                         </div>
                       )}
 
-                      {/* Form tự ứng */}
-                      {isReimbOpen && (
-                        <div className="p-3 bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800 rounded-xl space-y-3">
-                          <p className="text-xs font-semibold text-purple-700 dark:text-purple-400 flex items-center gap-1.5">
-                            <Wallet className="w-3.5 h-3.5" />
-                            Đề nghị hoàn ứng — {step.name}
+                      {/* Form thêm thu/chi */}
+                      {isTxOpen && (
+                        <div className="p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl space-y-3">
+                          <p className="text-xs font-semibold text-green-700 dark:text-green-400 flex items-center gap-1.5">
+                            <DollarSign className="w-3.5 h-3.5" />
+                            Thêm thu/chi — {step.name}
                           </p>
+
+                          {/* Nguồn tiền */}
+                          <div>
+                            <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400 block mb-1">Nguồn tiền *</label>
+                            <select
+                              value={txFundSource}
+                              onChange={(e) => setTxFundSource(e.target.value as "ADVANCE" | "OUT_OF_POCKET" | "REVENUE")}
+                              className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-green-400"
+                            >
+                              <option value="OUT_OF_POCKET">Tự ứng tiền túi</option>
+                              <option value="ADVANCE">Từ tạm ứng</option>
+                              <option value="REVENUE">Thu về</option>
+                            </select>
+                          </div>
+
+                          {/* Chọn đơn tạm ứng nếu chọn ADVANCE */}
+                          {txFundSource === "ADVANCE" && (
+                            <div>
+                              <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400 block mb-1">Đơn tạm ứng</label>
+                              <select
+                                value={txAdvanceId}
+                                onChange={(e) => setTxAdvanceId(e.target.value)}
+                                className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-green-400"
+                              >
+                                <option value="">-- Chọn đơn tạm ứng --</option>
+                                {taskAdvances.filter((a) => a.stepId === step.id && a.status === "APPROVED").map((a) => (
+                                  <option key={a.id} value={a.id}>
+                                    {a.amount.toLocaleString("vi-VN")}đ — {a.purpose}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
 
                           {/* Số tiền */}
                           <div>
-                            <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400 block mb-1">Số tiền đã chi (VNĐ) *</label>
+                            <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400 block mb-1">Số tiền (VNĐ) *</label>
                             <input
                               type="number" min={1} step={1}
-                              value={reimbAmount}
-                              onChange={(e) => setReimbAmount(e.target.value)}
+                              value={txAmount}
+                              onChange={(e) => setTxAmount(e.target.value)}
                               placeholder="VD: 500000"
-                              className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-purple-400"
+                              className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-green-400"
                             />
-                            {reimbAmount && parseFloat(reimbAmount) > 0 && (
-                              <p className="text-[10px] text-purple-600 mt-0.5">= {parseFloat(reimbAmount).toLocaleString("vi-VN")} đ</p>
+                            {txAmount && parseFloat(txAmount) > 0 && (
+                              <p className="text-[10px] text-green-600 mt-0.5">= {parseFloat(txAmount).toLocaleString("vi-VN")} đ</p>
                             )}
                           </div>
 
+                          {/* Danh mục (ẩn nếu REVENUE) */}
+                          {txFundSource !== "REVENUE" && (
+                            <div>
+                              <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400 block mb-1">Danh mục chi *</label>
+                              <select
+                                value={txCategory}
+                                onChange={(e) => setTxCategory(e.target.value)}
+                                className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-green-400"
+                              >
+                                {EXPENSE_CATEGORIES.map((cat) => (
+                                  <option key={cat} value={cat}>{cat}</option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
+
                           {/* Mô tả */}
                           <div>
-                            <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400 block mb-1">Mô tả chi tiết *</label>
+                            <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400 block mb-1">Mô tả *</label>
                             <textarea
-                              value={reimbDesc}
-                              onChange={(e) => setReimbDesc(e.target.value)}
+                              value={txDesc}
+                              onChange={(e) => setTxDesc(e.target.value)}
                               rows={2}
-                              placeholder="Mô tả khoản chi..."
-                              className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-purple-400 resize-none"
+                              placeholder="Mô tả giao dịch..."
+                              className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-green-400 resize-none"
                             />
                           </div>
 
                           {/* Chứng từ */}
                           <div className="space-y-2">
-                            <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400 block">Chứng từ * (≥1)</label>
+                            <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400 block">
+                              Chứng từ{txFundSource !== "REVENUE" ? " * (≥1)" : ""}
+                            </label>
 
                             {/* URL input */}
                             <div className="flex gap-1.5">
                               <input
-                                value={reimbProofUrl}
-                                onChange={(e) => setReimbProofUrl(e.target.value)}
-                                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addReimbProofLink(); } }}
+                                value={txProofUrl}
+                                onChange={(e) => setTxProofUrl(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addTxProofLink(); } }}
                                 placeholder="Dán link chứng từ..."
-                                className="flex-1 px-3 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-purple-400"
+                                className="flex-1 px-3 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-green-400"
                               />
                               <button
-                                onClick={addReimbProofLink}
-                                disabled={!reimbProofUrl.trim()}
-                                className="px-2.5 py-1.5 text-xs bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 rounded-xl hover:bg-purple-200 dark:hover:bg-purple-900/60 disabled:opacity-40 transition flex items-center gap-1"
+                                onClick={addTxProofLink}
+                                disabled={!txProofUrl.trim()}
+                                className="px-2.5 py-1.5 text-xs bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300 rounded-xl hover:bg-green-200 dark:hover:bg-green-900/60 disabled:opacity-40 transition flex items-center gap-1"
                               >
-                                <Link2 className="w-3 h-3" /> Thêm
+                                <Link2 className="w-3 h-3" /> Thêm link
                               </button>
                             </div>
 
                             {/* File + Camera buttons */}
                             <div className="flex gap-1.5">
                               <button
-                                onClick={() => reimbFileRef.current?.click()}
-                                disabled={reimbUploading}
-                                className="flex items-center gap-1 px-3 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white hover:border-purple-400 hover:text-purple-600 transition disabled:opacity-50"
+                                onClick={() => txFileRef.current?.click()}
+                                disabled={txUploading}
+                                className="flex items-center gap-1 px-3 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white hover:border-green-400 hover:text-green-600 transition disabled:opacity-50"
                               >
-                                <Upload className="w-3 h-3" />
-                                {reimbUploading ? "Đang tải..." : "Tải file / PDF"}
+                                <Paperclip className="w-3 h-3" />
+                                {txUploading ? "Đang tải..." : "Tải file / PDF"}
                               </button>
                               <button
-                                onClick={() => reimbCameraRef.current?.click()}
-                                disabled={reimbUploading}
-                                className="flex items-center gap-1 px-3 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white hover:border-purple-400 hover:text-purple-600 transition disabled:opacity-50"
+                                onClick={() => txCameraRef.current?.click()}
+                                disabled={txUploading}
+                                className="flex items-center gap-1 px-3 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white hover:border-green-400 hover:text-green-600 transition disabled:opacity-50"
                               >
                                 <Camera className="w-3 h-3" />
                                 Camera
@@ -1235,17 +1250,17 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
                             </div>
 
                             {/* Hidden inputs */}
-                            <input ref={reimbFileRef} type="file" accept="image/*,.pdf" className="hidden" onChange={handleReimbFileUpload} />
-                            <input ref={reimbCameraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleReimbFileUpload} />
+                            <input ref={txFileRef} type="file" accept="image/*,.pdf" className="hidden" onChange={handleTxFileUpload} />
+                            <input ref={txCameraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleTxFileUpload} />
 
                             {/* Proof list */}
-                            {reimbProofs.length > 0 && (
+                            {txProofs.length > 0 && (
                               <ul className="space-y-1">
-                                {reimbProofs.map((p, i) => (
+                                {txProofs.map((p, i) => (
                                   <li key={i} className="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-300">
-                                    {p.type === "link" ? <Link2 className="w-3 h-3 shrink-0 text-purple-500" /> : <FileText className="w-3 h-3 shrink-0 text-purple-500" />}
-                                    <a href={p.url} target="_blank" rel="noopener noreferrer" className="flex-1 truncate hover:underline text-purple-600 dark:text-purple-400">{p.name || p.url}</a>
-                                    <button onClick={() => setReimbProofs(prev => prev.filter((_, j) => j !== i))} className="text-slate-400 hover:text-red-500 transition">
+                                    <Link2 className="w-3 h-3 shrink-0 text-green-500" />
+                                    <a href={p.url} target="_blank" rel="noopener noreferrer" className="flex-1 truncate hover:underline text-green-600 dark:text-green-400">{p.name || p.url}</a>
+                                    <button onClick={() => setTxProofs(prev => prev.filter((_, j) => j !== i))} className="text-slate-400 hover:text-red-500 transition">
                                       <X className="w-3 h-3" />
                                     </button>
                                   </li>
@@ -1256,17 +1271,17 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
 
                           {/* Actions */}
                           <div className="flex justify-end gap-2 pt-1">
-                            <button onClick={() => setReimbStepId(null)}
+                            <button onClick={() => setTxStepId(null)}
                               className="px-3 py-1.5 text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400 transition">
                               Hủy
                             </button>
                             <button
-                              onClick={() => handleReimbSubmit(step)}
-                              disabled={reimbSaving || reimbUploading}
-                              className="flex items-center gap-1.5 px-4 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-xs rounded-xl transition"
+                              onClick={() => handleTxSubmit(step)}
+                              disabled={txSaving || txUploading}
+                              className="flex items-center gap-1.5 px-4 py-1.5 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-xs rounded-xl transition"
                             >
-                              {reimbSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
-                              Gửi đơn
+                              {txSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                              Ghi giao dịch
                             </button>
                           </div>
                         </div>

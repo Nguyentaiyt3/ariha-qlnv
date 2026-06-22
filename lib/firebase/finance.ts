@@ -492,15 +492,14 @@ export async function reconcileAdvance(
     );
   }
 
-  // 2. Lấy tất cả đơn tạm ứng APPROVED của task
+  // 2. Lấy tất cả đơn tạm ứng của task rồi filter client-side
+  // (tránh composite index: taskId + status)
   const advSnap = await getDocs(
-    query(
-      collection(db, "advanceRequests"),
-      where("taskId", "==", taskId),
-      where("status", "==", "APPROVED"),
-    )
+    query(collection(db, "advanceRequests"), where("taskId", "==", taskId))
   );
-  const advances = advSnap.docs.map((d) => d.data() as AdvanceRequest);
+  const advances = advSnap.docs
+    .map((d) => d.data() as AdvanceRequest)
+    .filter((a) => a.status === "APPROVED");
 
   if (advances.length === 0) {
     throw new Error("Không có đơn tạm ứng nào cần quyết toán.");
@@ -509,18 +508,15 @@ export async function reconcileAdvance(
   // 3. Tính tổng tạm ứng đã cấp
   const totalAdvanced = advances.reduce((s, a) => s + a.amount, 0);
 
-  // 4. Tính tổng thực chi từ tạm ứng (chỉ giao dịch ADVANCE + VALID)
+  // 4. Tính tổng thực chi từ tạm ứng — lấy tất cả tx rồi filter client-side
+  // (tránh composite index: fundSource + status + direction)
   const txSnap = await getDocs(
-    query(
-      collection(db, "tasks", taskId, "transactions"),
-      where("fundSource", "==", "ADVANCE"),
-      where("status", "==", "VALID"),
-      where("direction", "==", "DEBIT"),
-    )
+    collection(db, "tasks", taskId, "transactions")
   );
-  const totalActualSpent = txSnap.docs.reduce(
-    (s, d) => s + (d.data() as FinancialTransaction).amount, 0
-  );
+  const totalActualSpent = txSnap.docs
+    .map((d) => d.data() as FinancialTransaction)
+    .filter((t) => t.fundSource === "ADVANCE" && t.status === "VALID" && t.direction === "DEBIT")
+    .reduce((s, t) => s + t.amount, 0);
 
   // 5. Tính chênh lệch và xác định loại quyết toán
   const difference = totalAdvanced - totalActualSpent;

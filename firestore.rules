@@ -1,0 +1,12 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Mọi người dùng đã đăng nhập được đọc/ghi ─────────────────────────────
+    // RBAC thực thi ở tầng ứng dụng (roles check trong code).
+    // Rule đơn giản này phù hợp cho enterprise app nội bộ đã xác thực.
+    match /{document=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}
