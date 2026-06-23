@@ -27,10 +27,17 @@ export function scoreT1(deadlineBase: string | undefined, referenceDate: string)
 
 // ── T2 · Chất lượng ───────────────────────────────────────────
 
-/** Dùng cho nhiệm vụ chính: từ 360° evaluations, fallback sang manager rating / KPI */
+/**
+ * Dùng cho nhiệm vụ chính.
+ * Thứ tự ưu tiên:
+ *   1. 360° evaluations (overallScore 0–100 → /10)
+ *   2. progress (0–100 → /10)  — phản ánh mức hoàn thành thực tế
+ *   3. KPI (kpiCurrent/kpiTarget × 10) — chỉ dùng khi cả hai > 0
+ *   4. Trung lập 5
+ */
 export function scoreT2Task(
   evals: Evaluation[],
-  fallbackRating?: number,   // completionProposal.reviewRating (1–5)
+  progress?: number,        // task.progress (0–100)
   kpiTarget?: number,
   kpiCurrent?: number,
 ): number {
@@ -38,13 +45,13 @@ export function scoreT2Task(
     const avg = evals.reduce((s, e) => s + (e.overallScore ?? 0), 0) / evals.length;
     return roundHalf(Math.min(10, avg / 10));
   }
-  if (fallbackRating && fallbackRating > 0) {
-    return roundHalf(Math.min(10, fallbackRating * 2));
+  if (progress != null && progress > 0) {
+    return roundHalf(Math.min(10, progress / 10));
   }
-  if (kpiTarget && kpiTarget > 0 && kpiCurrent != null) {
+  if (kpiTarget && kpiTarget > 0 && kpiCurrent != null && kpiCurrent > 0) {
     return roundHalf(Math.min(10, (kpiCurrent / kpiTarget) * 10));
   }
-  return 5; // không đủ dữ liệu → trung lập
+  return 5;
 }
 
 /** Dùng cho từng bước: KPI × hệ số proof, hoặc chỉ proof nếu không có KPI */

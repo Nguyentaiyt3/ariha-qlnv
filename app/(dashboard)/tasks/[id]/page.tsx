@@ -608,7 +608,7 @@ export default function TaskDetailsPage() {
       const t1 = scoreT1(task.deadlineBase, submittedAt);
       const t2 = scoreT2Task(
         taskEvaluations,
-        undefined,
+        task.progress,
         task.kpi?.target,
         task.kpi?.current,
       );
@@ -749,7 +749,7 @@ export default function TaskDetailsPage() {
     // Dùng điểm đã lưu nếu có, ngược lại tính real-time
     const stepsWithProof = (taskData.steps ?? []).filter((s) => (s.proofs?.length ?? 0) > 0).length;
     const t1Score = savedScore?.t1 ?? scoreT1(taskData.deadlineBase, referenceDate);
-    const t2Score = savedScore?.t2 ?? scoreT2Task(evals, undefined, taskData.kpi?.target, taskData.kpi?.current);
+    const t2Score = savedScore?.t2 ?? scoreT2Task(evals, taskData.progress, taskData.kpi?.target, taskData.kpi?.current);
     const t3Score = savedScore?.t3 ?? scoreT3Task(taskData.totalAmount, taskData.totalExpense, stepsWithProof, taskData.steps?.length);
 
     const total = savedScore?.total ?? (t1Score * evalConfig.weights.t1 + t2Score * evalConfig.weights.t2 + t3Score * evalConfig.weights.t3);
