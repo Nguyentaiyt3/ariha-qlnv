@@ -11,14 +11,15 @@ import {
 import { cn, formatDate, formatDateTime, formatRelativeTime, statusLabel, priorityLabel, getInitials, avatarColor, isTaskVisible } from "@/lib/utils";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useAuthStore } from "@/stores/useAuthStore";
-import { subscribeTask, updateTask, deleteTask, getEmailLogs, getAuditTrail, addAuditEvent, addNotification, getEvaluations, saveEvaluation } from "@/lib/firebase/firestore";
+import { subscribeTask, updateTask, deleteTask, getEmailLogs, getAuditTrail, addAuditEvent, addNotification, getEvaluations, saveEvaluation, getEvaluationConfig } from "@/lib/firebase/firestore";
 import { uploadFile } from "@/lib/firebase/storage";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { StepsTab } from "@/components/tasks/StepsTab";
 import { TaskChat } from "@/components/tasks/TaskChat";
 import { FinancialWidget } from "@/components/tasks/FinancialWidget";
 import { UserAvatar } from "@/components/common/UserAvatar";
-import type { Task, User as UserType, EmailLog, AuditEvent, Evaluation, CompletionProposal, TaskResource, ChangeRequest } from "@/types";
+import type { Task, User as UserType, EmailLog, AuditEvent, Evaluation, CompletionProposal, TaskResource, ChangeRequest, EvaluationConfig } from "@/types";
+import { scoreT1, scoreT2Task, scoreT3Task, buildEval3TScore, DEFAULT_EVAL_CONFIG, GRADE_LABEL } from "@/lib/eval3T";
 import { generateId } from "@/lib/utils";
 import { toast } from "sonner";
 
@@ -217,6 +218,8 @@ export default function TaskDetailsPage() {
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [evaluations, setEvaluations] = useState<Evaluation[]>([]);
+  const [taskEvaluations, setTaskEvaluations] = useState<Evaluation[]>([]);
+  const [evalConfig, setEvalConfig] = useState<EvaluationConfig>(DEFAULT_EVAL_CONFIG);
   const [evalRatings, setEvalRatings] = useState<Record<string, number>>({});
   const [evalComments, setEvalComments] = useState<Record<string, string>>({});
   const [submittingEval, setSubmittingEval] = useState(false);
@@ -267,6 +270,20 @@ export default function TaskDetailsPage() {
       router.push("/tasks");
     }
   }, [task, currentUser, router]);
+
+  // Load evaluation config (weights + thresholds, HR-configurable)
+  useEffect(() => {
+    getEvaluationConfig().then(setEvalConfig).catch(console.error);
+  }, []);
+
+  // Load 360° evaluations for this task's main performer
+  useEffect(() => {
+    const performerId = task?.mainPerformerId;
+    if (!performerId) return;
+    getEvaluations(performerId)
+      .then((evals) => setTaskEvaluations(evals.filter((e) => e.taskId === id)))
+      .catch(console.error);
+  }, [task?.mainPerformerId, id]);
 
   // Load tab data on switch
   useEffect(() => {
@@ -585,11 +602,26 @@ export default function TaskDetailsPage() {
     if (!currentUser || !task || !proposalSummary.trim()) return;
     setSubmittingProposal(true);
     try {
+      const submittedAt = new Date().toISOString();
+
+      // Tính điểm 3T tại thời điểm gửi đề xuất
+      const t1 = scoreT1(task.deadlineBase, submittedAt);
+      const t2 = scoreT2Task(
+        taskEvaluations,
+        undefined,
+        task.kpi?.target,
+        task.kpi?.current,
+      );
+      const stepsWithProof = (task.steps ?? []).filter((s) => (s.proofs?.length ?? 0) > 0).length;
+      const t3 = scoreT3Task(task.totalAmount, task.totalExpense, stepsWithProof, task.steps?.length);
+      const score3T = buildEval3TScore(t1, t2, t3, evalConfig);
+
       const proposal: CompletionProposal = {
         submittedBy: currentUser.id,
-        submittedAt: new Date().toISOString(),
+        submittedAt,
         summary: proposalSummary.trim(),
         status: "pending",
+        score3T,
       };
       await updateTask(id, { completionProposal: proposal });
       const managers = users.filter(
@@ -707,6 +739,95 @@ export default function TaskDetailsPage() {
     ...(task.stakeholders ?? []).filter((s) => s.role === "assignee").map((s) => s.userId),
   ].filter(Boolean) as string[])).filter((uid) => uid !== currentUser?.id);
 
+  // ── 3T Evaluation display ──────────────────────────────────────
+  function Eval3TCards({ taskData, referenceDate, evals, savedScore }: {
+    taskData: Task;
+    referenceDate: string;
+    evals: Evaluation[];
+    savedScore?: typeof taskData.completionProposal extends undefined ? undefined : NonNullable<CompletionProposal["score3T"]>;
+  }) {
+    // Dùng điểm đã lưu nếu có, ngược lại tính real-time
+    const stepsWithProof = (taskData.steps ?? []).filter((s) => (s.proofs?.length ?? 0) > 0).length;
+    const t1Score = savedScore?.t1 ?? scoreT1(taskData.deadlineBase, referenceDate);
+    const t2Score = savedScore?.t2 ?? scoreT2Task(evals, undefined, taskData.kpi?.target, taskData.kpi?.current);
+    const t3Score = savedScore?.t3 ?? scoreT3Task(taskData.totalAmount, taskData.totalExpense, stepsWithProof, taskData.steps?.length);
+
+    const total = savedScore?.total ?? (t1Score * evalConfig.weights.t1 + t2Score * evalConfig.weights.t2 + t3Score * evalConfig.weights.t3);
+    const grade = savedScore?.grade ?? (
+      total >= evalConfig.thresholds.xuatSac ? "xuatSac" :
+      total > evalConfig.thresholds.hoanThanhTot ? "hoanThanhTot" :
+      total >= evalConfig.thresholds.hoanThanh ? "hoanThanh" : "khongHoanThanh"
+    );
+
+    const gradeColors: Record<string, string> = {
+      xuatSac:        "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300 border-amber-200 dark:border-amber-800",
+      hoanThanhTot:   "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300 border-green-200 dark:border-green-800",
+      hoanThanh:      "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300 border-blue-200 dark:border-blue-800",
+      khongHoanThanh: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300 border-red-200 dark:border-red-800",
+    };
+
+    function ScoreBar({ score, color }: { score: number; color: string }) {
+      return (
+        <div className="w-full bg-slate-100 dark:bg-slate-700 rounded-full h-1.5 mt-1">
+          <div className={cn("h-1.5 rounded-full transition-all", color)} style={{ width: `${score * 10}%` }} />
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-2">
+        {/* Tổng điểm + xếp loại */}
+        <div className={cn("flex items-center justify-between px-3 py-2 rounded-xl border font-semibold", gradeColors[grade])}>
+          <span className="text-xs">{GRADE_LABEL[grade as keyof typeof GRADE_LABEL]}</span>
+          <span className="text-lg font-black">{Math.round(total * 10) / 10}<span className="text-xs font-normal">/10</span></span>
+        </div>
+
+        {/* 3 tiêu chí */}
+        <div className="grid grid-cols-3 gap-2">
+          {/* T1 */}
+          <div className="rounded-xl p-3 border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-center">
+            <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-1">T1 · Tiến độ</p>
+            <p className={cn("text-base font-black", t1Score >= 8 ? "text-green-600 dark:text-green-400" : t1Score >= 6 ? "text-amber-600 dark:text-amber-400" : "text-red-600 dark:text-red-400")}>
+              {t1Score}
+            </p>
+            <ScoreBar score={t1Score} color={t1Score >= 8 ? "bg-green-500" : t1Score >= 6 ? "bg-amber-400" : "bg-red-500"} />
+            <p className="text-[10px] text-slate-400 mt-1 leading-tight">
+              {taskData.deadlineBase ? `HĐ ${formatDate(taskData.deadlineBase)}` : "Chưa có hạn"}
+            </p>
+          </div>
+
+          {/* T2 */}
+          <div className="rounded-xl p-3 border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-center">
+            <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-1">T2 · Chất lượng</p>
+            <p className={cn("text-base font-black", t2Score >= 8 ? "text-green-600 dark:text-green-400" : t2Score >= 6 ? "text-amber-600 dark:text-amber-400" : "text-red-600 dark:text-red-400")}>
+              {t2Score}
+            </p>
+            <ScoreBar score={t2Score} color={t2Score >= 8 ? "bg-green-500" : t2Score >= 6 ? "bg-amber-400" : "bg-red-500"} />
+            <p className="text-[10px] text-slate-400 mt-1 leading-tight">
+              {evals.length > 0 ? `${evals.length} đánh giá 360°` : "KPI / minh chứng"}
+            </p>
+          </div>
+
+          {/* T3 */}
+          <div className="rounded-xl p-3 border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-center">
+            <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-1">T3 · Tài nguyên</p>
+            <p className={cn("text-base font-black", t3Score >= 8 ? "text-green-600 dark:text-green-400" : t3Score >= 6 ? "text-amber-600 dark:text-amber-400" : "text-red-600 dark:text-red-400")}>
+              {t3Score}
+            </p>
+            <ScoreBar score={t3Score} color={t3Score >= 8 ? "bg-green-500" : t3Score >= 6 ? "bg-amber-400" : "bg-red-500"} />
+            <p className="text-[10px] text-slate-400 mt-1 leading-tight">
+              {(taskData.totalAmount ?? 0) > 0 ? "Ngân sách" : `${stepsWithProof}/${taskData.steps?.length ?? 0} bước`}
+            </p>
+          </div>
+        </div>
+
+        {savedScore && (
+          <p className="text-[10px] text-slate-400 text-right">Chốt lúc {formatDateTime(savedScore.computedAt)}</p>
+        )}
+      </div>
+    );
+  }
+
   return (
     <>
     <div className="max-w-5xl mx-auto space-y-5 animate-fade-in">
@@ -785,7 +906,7 @@ export default function TaskDetailsPage() {
                   <div>
                     <label className="block text-[10px] text-slate-400 mb-1 flex items-center gap-1">
                       Hạn hoàn thành
-                      <ShieldAlert className="w-3 h-3 text-amber-500" title="Thay đổi cần phê duyệt" />
+                      <span title="Thay đổi cần phê duyệt"><ShieldAlert className="w-3 h-3 text-amber-500" /></span>
                     </label>
                     <input
                       type="date"
@@ -813,7 +934,7 @@ export default function TaskDetailsPage() {
                 <div>
                   <label className="block text-[10px] text-slate-400 mb-1 flex items-center gap-1">
                     Người thực hiện chính
-                    <ShieldAlert className="w-3 h-3 text-amber-500" title="Thay đổi cần phê duyệt" />
+                    <span title="Thay đổi cần phê duyệt"><ShieldAlert className="w-3 h-3 text-amber-500" /></span>
                   </label>
                   <select
                     value={editForm.mainPerformerId}
@@ -1014,6 +1135,11 @@ export default function TaskDetailsPage() {
                     <ClipboardCheck className="w-4 h-4 text-green-600" />
                     Đề xuất kết thúc nhiệm vụ
                   </p>
+                  {/* 3T preview — computed against today */}
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-2">Đánh giá 3T (dự kiến)</p>
+                    <Eval3TCards taskData={task} referenceDate={new Date().toISOString()} evals={taskEvaluations} />
+                  </div>
                   <textarea
                     value={proposalSummary}
                     onChange={(e) => setProposalSummary(e.target.value)}
@@ -1052,6 +1178,17 @@ export default function TaskDetailsPage() {
                   <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-1">Tóm tắt từ người thực hiện</p>
                   <p className="text-sm text-slate-700 dark:text-slate-200">{task.completionProposal.summary}</p>
                   <p className="text-[10px] text-slate-400 mt-1">{formatDateTime(task.completionProposal.submittedAt)}</p>
+                </div>
+
+                {/* 3T evaluation — T1 & T3 auto-computed, T2 from manager rating */}
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-2">Đánh giá 3T</p>
+                  <Eval3TCards
+                    taskData={task}
+                    referenceDate={task.completionProposal.submittedAt}
+                    evals={taskEvaluations}
+                    savedScore={task.completionProposal.score3T}
+                  />
                 </div>
 
                 {task.completionProposal.status !== "pending" && (

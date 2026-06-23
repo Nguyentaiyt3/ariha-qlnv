@@ -97,6 +97,28 @@ export interface StepSubTask {
   completedAt?: string;
 }
 
+export interface Eval3TScore {
+  t1: number;      // 0–10
+  t2: number;      // 0–10
+  t3: number;      // 0–10
+  total: number;   // trung bình có trọng số
+  grade: "xuatSac" | "hoanThanhTot" | "hoanThanh" | "khongHoanThanh";
+  computedAt: string;
+}
+
+/** Cấu hình đánh giá 3T — HR/Admin có thể chỉnh từ Settings */
+export interface EvaluationConfig {
+  weights: { t1: number; t2: number; t3: number }; // tổng = 1
+  thresholds: {
+    xuatSac: number;      // >= threshold → Xuất sắc     (default 10)
+    hoanThanhTot: number; // >  threshold → Hoàn thành tốt (default 8)
+    hoanThanh: number;    // >= threshold → Hoàn thành     (default 5)
+    // < hoanThanh → Không hoàn thành
+  };
+  updatedAt?: string;
+  updatedBy?: string;
+}
+
 export interface CompletionProposal {
   submittedBy: string;
   submittedAt: string;
@@ -106,6 +128,7 @@ export interface CompletionProposal {
   reviewedAt?: string;
   reviewComment?: string;
   reviewRating?: number;
+  score3T?: Eval3TScore;
 }
 
 export type ChangeRequestType = "deadline_change" | "performer_change" | "issue_raised";

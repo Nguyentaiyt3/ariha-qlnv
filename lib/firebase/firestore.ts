@@ -557,6 +557,23 @@ export async function saveEvaluation(evaluation: Evaluation): Promise<void> {
   await setDoc(doc(db, "evaluations", evaluation.id), deepStrip(evaluation) as DocumentData, { merge: true });
 }
 
+// ─── EVALUATION CONFIG ────────────────────────────────────────
+
+import type { EvaluationConfig } from "@/types";
+import { DEFAULT_EVAL_CONFIG } from "@/lib/eval3T";
+
+export async function getEvaluationConfig(): Promise<EvaluationConfig> {
+  const db = getDb();
+  const snap = await getDoc(doc(db, "evaluationConfig", "default"));
+  if (!snap.exists()) return DEFAULT_EVAL_CONFIG;
+  return snap.data() as EvaluationConfig;
+}
+
+export async function saveEvaluationConfig(config: EvaluationConfig): Promise<void> {
+  const db = getDb();
+  await setDoc(doc(db, "evaluationConfig", "default"), deepStrip(config) as DocumentData);
+}
+
 // ─── REQUEST TEMPLATES ────────────────────────────────────────
 
 export async function getRequestTemplates(includeAllStatuses = false): Promise<RequestTemplate[]> {

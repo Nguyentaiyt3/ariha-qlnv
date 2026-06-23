@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Settings, Save, Clock, AlertTriangle } from "lucide-react";
-import { getMilestoneConfigs, saveMilestoneConfig } from "@/lib/firebase/firestore";
-import type { MilestoneConfig } from "@/types";
+import { Settings, Save, Clock, AlertTriangle, BarChart3 } from "lucide-react";
+import { getMilestoneConfigs, saveMilestoneConfig, getEvaluationConfig, saveEvaluationConfig } from "@/lib/firebase/firestore";
+import type { MilestoneConfig, EvaluationConfig } from "@/types";
 import { DEFAULT_MILESTONE_CONFIG } from "@/lib/deadline-calc";
+import { DEFAULT_EVAL_CONFIG, GRADE_LABEL } from "@/lib/eval3T";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { generateId } from "@/lib/utils";
@@ -21,6 +22,8 @@ export default function SystemSettingsPage() {
     createdAt: new Date().toISOString(),
   });
   const [saving, setSaving] = useState(false);
+  const [evalConfig, setEvalConfig] = useState<EvaluationConfig>(DEFAULT_EVAL_CONFIG);
+  const [savingEval, setSavingEval] = useState(false);
 
   const canEdit = currentUser ? hasPermission(currentUser.role, "*") || currentUser.role === "hrAdmin" : false;
 
@@ -29,6 +32,7 @@ export default function SystemSettingsPage() {
       const def = configs.find((c) => c.id === "default") ?? configs[0];
       if (def) setConfig(def);
     });
+    getEvaluationConfig().then(setEvalConfig).catch(console.error);
   }, []);
 
   if (!canEdit) {
@@ -48,6 +52,32 @@ export default function SystemSettingsPage() {
       toast.error("Lưu thất bại");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSaveEval = async () => {
+    const { t1, t2, t3 } = evalConfig.weights;
+    if (Math.abs(t1 + t2 + t3 - 1) > 0.01) {
+      toast.error("Tổng trọng số T1+T2+T3 phải bằng 100%");
+      return;
+    }
+    const { xuatSac, hoanThanhTot, hoanThanh } = evalConfig.thresholds;
+    if (xuatSac <= hoanThanhTot || hoanThanhTot <= hoanThanh || hoanThanh <= 0) {
+      toast.error("Ngưỡng phải theo thứ tự: Xuất sắc > Hoàn thành tốt > Hoàn thành > 0");
+      return;
+    }
+    setSavingEval(true);
+    try {
+      await saveEvaluationConfig({
+        ...evalConfig,
+        updatedAt: new Date().toISOString(),
+        updatedBy: currentUser?.id,
+      });
+      toast.success("Đã lưu cấu hình đánh giá 3T");
+    } catch {
+      toast.error("Lưu thất bại");
+    } finally {
+      setSavingEval(false);
     }
   };
 
@@ -111,6 +141,79 @@ export default function SystemSettingsPage() {
             Thay đổi này chỉ áp dụng cho nhiệm vụ tạo mới. Nhiệm vụ hiện tại giữ nguyên deadline 3 giai đoạn.
           </p>
         </div>
+      </div>
+
+      {/* Evaluation 3T config */}
+      <div className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-5 mb-5">
+        <h2 className="font-semibold text-[var(--foreground)] flex items-center gap-2 mb-1">
+          <BarChart3 className="w-4 h-4 text-purple-500" />
+          Cấu hình đánh giá 3T
+        </h2>
+        <p className="text-sm text-[var(--muted-foreground)] mb-5">
+          Trọng số và ngưỡng xếp loại được áp dụng khi tính điểm tự động lúc gửi đề xuất kết thúc nhiệm vụ.
+        </p>
+
+        {/* Trọng số */}
+        <p className="text-xs font-semibold text-[var(--foreground)] mb-3 uppercase tracking-wider">Trọng số (tổng = 100%)</p>
+        <div className="grid grid-cols-3 gap-3 mb-5">
+          {(["t1", "t2", "t3"] as const).map((key) => (
+            <div key={key}>
+              <label className="block text-xs font-medium text-[var(--muted-foreground)] mb-1">
+                {key === "t1" ? "T1 · Tiến độ" : key === "t2" ? "T2 · Chất lượng" : "T3 · Tài nguyên"}
+              </label>
+              <div className="flex items-center gap-1">
+                <input
+                  type="number" min={0} max={100} step={5}
+                  value={Math.round(evalConfig.weights[key] * 100)}
+                  onChange={(e) => setEvalConfig((c) => ({ ...c, weights: { ...c.weights, [key]: Number(e.target.value) / 100 } }))}
+                  className="w-full px-2 py-2 text-sm border border-[var(--border)] rounded-lg bg-[var(--background)] text-[var(--foreground)] text-center focus:outline-none focus:ring-2 focus:ring-purple-500"
+                />
+                <span className="text-sm text-[var(--muted-foreground)]">%</span>
+              </div>
+            </div>
+          ))}
+        </div>
+        <p className={`text-xs mb-5 ${Math.abs(evalConfig.weights.t1 + evalConfig.weights.t2 + evalConfig.weights.t3 - 1) > 0.01 ? "text-red-500 font-semibold" : "text-[var(--muted-foreground)]"}`}>
+          Tổng hiện tại: {Math.round((evalConfig.weights.t1 + evalConfig.weights.t2 + evalConfig.weights.t3) * 100)}%
+          {Math.abs(evalConfig.weights.t1 + evalConfig.weights.t2 + evalConfig.weights.t3 - 1) > 0.01 ? " ⚠ Phải bằng 100%" : " ✓"}
+        </p>
+
+        {/* Ngưỡng xếp loại */}
+        <p className="text-xs font-semibold text-[var(--foreground)] mb-3 uppercase tracking-wider">Ngưỡng xếp loại</p>
+        <div className="space-y-3 mb-4">
+          {([
+            { key: "xuatSac",      label: GRADE_LABEL.xuatSac,        hint: "≥ ngưỡng",  color: "text-amber-600" },
+            { key: "hoanThanhTot", label: GRADE_LABEL.hoanThanhTot,   hint: "> ngưỡng",  color: "text-green-600" },
+            { key: "hoanThanh",    label: GRADE_LABEL.hoanThanh,      hint: "≥ ngưỡng",  color: "text-blue-600"  },
+          ] as const).map(({ key, label, hint, color }) => (
+            <div key={key} className="flex items-center gap-3">
+              <span className={`w-36 text-sm font-medium ${color}`}>{label}</span>
+              <span className="text-xs text-[var(--muted-foreground)] w-16">{hint}</span>
+              <input
+                type="number" min={0} max={10} step={0.5}
+                value={evalConfig.thresholds[key]}
+                onChange={(e) => setEvalConfig((c) => ({ ...c, thresholds: { ...c.thresholds, [key]: Number(e.target.value) } }))}
+                className="w-20 px-2 py-1.5 text-sm border border-[var(--border)] rounded-lg bg-[var(--background)] text-[var(--foreground)] text-center focus:outline-none focus:ring-2 focus:ring-purple-500"
+              />
+              <span className="text-xs text-[var(--muted-foreground)]">/ 10</span>
+            </div>
+          ))}
+          <div className="flex items-center gap-3">
+            <span className="w-36 text-sm font-medium text-red-600">{GRADE_LABEL.khongHoanThanh}</span>
+            <span className="text-xs text-[var(--muted-foreground)] w-16">&lt; ngưỡng HT</span>
+            <span className="w-20 px-2 py-1.5 text-sm text-center text-[var(--muted-foreground)]">{evalConfig.thresholds.hoanThanh}</span>
+            <span className="text-xs text-[var(--muted-foreground)]">(tự động)</span>
+          </div>
+        </div>
+
+        <button
+          onClick={handleSaveEval}
+          disabled={savingEval}
+          className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-60"
+        >
+          {savingEval ? <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" /> : <Save className="w-4 h-4" />}
+          Lưu cấu hình đánh giá
+        </button>
       </div>
 
       {/* Risk flag config */}
