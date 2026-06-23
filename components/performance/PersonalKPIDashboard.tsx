@@ -79,6 +79,8 @@ interface Props {
   users?: User[];
   tasks: Task[];
   evaluations: Evaluation[];
+  /** All evaluations across the org — used for team member qualitative scoring */
+  allEvaluations?: Evaluation[];
   framework?: KPIFramework;
   period: string;
   trendData: Array<{ period: string } & PerformanceResult>;
@@ -87,20 +89,21 @@ interface Props {
 }
 
 export default function PersonalKPIDashboard({
-  currentUser, users, tasks, evaluations, framework,
+  currentUser, users, tasks, evaluations, allEvaluations, framework,
   period, trendData, periodStart, periodEnd,
 }: Props) {
   // ── Core metrics ─────────────────────────────────────────
   const score = useMemo(
     () => calcPerformanceScore({
       tasks, evaluations,
+      allEvaluations,
       userId: currentUser.id,
       periodStart, periodEnd,
       role: currentUser.role,
       department: currentUser.department,
       allUsers: users,
     }),
-    [tasks, evaluations, currentUser, periodStart, periodEnd, users],
+    [tasks, evaluations, allEvaluations, currentUser, periodStart, periodEnd, users],
   );
 
   const managerWeights = getManagerWeights(currentUser.role);

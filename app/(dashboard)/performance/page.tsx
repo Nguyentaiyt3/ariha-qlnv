@@ -339,12 +339,13 @@ export default function PerformancePage() {
       const { start, end } = periodToRange(p);
       const s = calcPerformanceScore({
         tasks, evaluations,
+        allEvaluations: canManageKPI ? allEvaluations : undefined,
         userId: currentUser.id, periodStart: start, periodEnd: end,
         role: currentUser.role, department: currentUser.department, allUsers: users,
       });
       return { period: p, ...s };
     });
-  }, [trendPeriods, tasks, evaluations, currentUser, users]);
+  }, [trendPeriods, tasks, evaluations, allEvaluations, currentUser, users, canManageKPI]);
 
   const myScore    = scores.find((s) => s.userId === currentUser?.id);
   const drillUser  = drillUserId ? users.find((u) => u.id === drillUserId) : null;
@@ -451,6 +452,7 @@ export default function PerformancePage() {
           users={users}
           tasks={tasks}
           evaluations={evaluations}
+          allEvaluations={canManageKPI ? allEvaluations : undefined}
           framework={frameworks.find((f) => f.department === currentUser.department && f.year === CURRENT_YEAR)}
           period={periodLabel(selectedPeriod)}
           trendData={trendData}

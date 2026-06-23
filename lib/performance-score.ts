@@ -3,6 +3,8 @@ import type { Task, Evaluation, User, UserRole } from "@/types";
 export interface PerformanceInput {
   tasks: Task[];
   evaluations: Evaluation[];
+  /** All evaluations across users — used for team member qualitative scoring. Falls back to evaluations if absent. */
+  allEvaluations?: Evaluation[];
   userId: string;
   periodStart: string;
   periodEnd: string;
@@ -52,13 +54,32 @@ function calcPersonalOnly(
   );
 
   const done   = myTasks.filter((t) => t.status === "done");
+  const active = myTasks.filter((t) => t.status !== "cancelled");
+
   const onTime = done.filter(
     (t) => t.deadlineBase && t.updatedAt && new Date(t.updatedAt) <= new Date(t.deadlineBase),
   );
 
-  const completionRate = myTasks.length > 0 ? done.length / myTasks.length : 0;
+  const completionRate = active.length > 0 ? done.length / active.length : 0;
   const onTimeRate     = done.length > 0 ? onTime.length / done.length : 0;
-  const executionScore = Math.round((completionRate * 0.5 + onTimeRate * 0.5) * 100);
+
+  // Weighted progress: done tasks = 100%, in-progress = avg step progress (continuous 0–1)
+  const weightedProgress = active.length > 0
+    ? active.reduce((sum, t) => {
+        if (t.status === "done") return sum + 1;
+        const steps = t.steps ?? [];
+        if (steps.length > 0) {
+          return sum + steps.reduce((s, st) => s + (st.progress ?? 0), 0) / steps.length / 100;
+        }
+        // No steps: estimate from status
+        if (t.status === "review")      return sum + 0.9;
+        if (t.status === "in_progress") return sum + 0.4;
+        return sum + 0.05; // todo
+      }, 0) / active.length
+    : 0;
+
+  // executionScore: 40% weighted progress + 30% completion rate + 30% on-time rate
+  const executionScore = Math.round((weightedProgress * 0.4 + completionRate * 0.3 + onTimeRate * 0.3) * 100);
 
   const myEvals = evaluations.filter((e) => e.evaluatedUserId === userId);
   let qualitativeScore = 0;
@@ -80,10 +101,13 @@ function calcPersonalOnly(
 }
 
 export function calcPerformanceScore(input: PerformanceInput): PerformanceResult {
-  const { tasks, evaluations, userId, periodStart, periodEnd, role, department, allUsers } = input;
+  const { tasks, evaluations, allEvaluations, userId, periodStart, periodEnd, role, department, allUsers } = input;
 
   const personal = calcPersonalOnly(tasks, evaluations, userId, periodStart, periodEnd);
   const weights  = role ? MANAGER_WEIGHTS[role] : undefined;
+
+  // Use allEvaluations for team member scoring so qualitative scores are correct
+  const teamEvals = allEvaluations ?? evaluations;
 
   let teamScore       = 0;
   let teamMemberCount = 0;
@@ -101,7 +125,7 @@ export function calcPerformanceScore(input: PerformanceInput): PerformanceResult
 
     if (teamMemberCount > 0) {
       const memberScores = members.map(
-        (u) => calcPersonalOnly(tasks, evaluations, u.id, periodStart, periodEnd).personalScore,
+        (u) => calcPersonalOnly(tasks, teamEvals, u.id, periodStart, periodEnd).personalScore,
       );
       teamScore  = Math.round(memberScores.reduce((s, v) => s + v, 0) / memberScores.length);
       totalScore = Math.round(personal.personalScore * weights.personal + teamScore * weights.team);
