@@ -82,7 +82,7 @@ export default function SystemSettingsPage() {
   };
 
   return (
-    <div className="max-w-2xl mx-auto px-4 py-8">
+    <div>
       <h1 className="text-2xl font-bold text-[var(--foreground)] flex items-center gap-2 mb-6">
         <Settings className="w-6 h-6 text-blue-500" />
         Cấu hình hệ thống

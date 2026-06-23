@@ -8,7 +8,8 @@ import { NotificationPanel } from "@/components/layout/NotificationPanel";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useNotificationStore } from "@/stores/useNotificationStore";
-import { subscribeTasks, subscribeUsers, subscribeNotifications } from "@/lib/firebase/firestore";
+import { subscribeTasks, subscribeUsers, subscribeNotifications, getPermissionConfig } from "@/lib/firebase/firestore";
+import { applyPermissionOverrides } from "@/lib/rbac/permissions";
 import { isTaskVisible } from "@/lib/utils";
 import CommandPalette from "@/components/common/CommandPalette";
 import { CreateTaskModal } from "@/components/tasks/CreateTaskModal";
@@ -53,6 +54,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       unsubNotifs();
     };
   }, [currentUser, setTasks, setUsers, setNotifications]);
+
+  // Load permission overrides from Firestore once on mount
+  useEffect(() => {
+    getPermissionConfig().then((overrides) => {
+      if (Object.keys(overrides).length > 0) applyPermissionOverrides(overrides);
+    }).catch(console.error);
+  }, []);
 
   // Dark mode
   useEffect(() => {

@@ -544,6 +544,14 @@ export async function getEvaluations(userId: string): Promise<Evaluation[]> {
   return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Evaluation));
 }
 
+export async function getTaskEvaluations(taskId: string): Promise<Evaluation[]> {
+  const db = getDb();
+  const snap = await getDocs(
+    query(collection(db, "evaluations"), where("taskId", "==", taskId), orderBy("createdAt", "desc"))
+  );
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Evaluation));
+}
+
 export async function getAllEvaluations(): Promise<Evaluation[]> {
   const db = getDb();
   const snap = await getDocs(
@@ -572,6 +580,22 @@ export async function getEvaluationConfig(): Promise<EvaluationConfig> {
 export async function saveEvaluationConfig(config: EvaluationConfig): Promise<void> {
   const db = getDb();
   await setDoc(doc(db, "evaluationConfig", "default"), deepStrip(config) as DocumentData);
+}
+
+// ─── PERMISSION CONFIG ────────────────────────────────────────
+
+import type { UserRole } from "@/types";
+
+export async function getPermissionConfig(): Promise<Partial<Record<UserRole, string[]>>> {
+  const db = getDb();
+  const snap = await getDoc(doc(db, "permissionConfig", "roles"));
+  if (!snap.exists()) return {};
+  return snap.data() as Partial<Record<UserRole, string[]>>;
+}
+
+export async function savePermissionConfig(config: Partial<Record<UserRole, string[]>>): Promise<void> {
+  const db = getDb();
+  await setDoc(doc(db, "permissionConfig", "roles"), config);
 }
 
 // ─── REQUEST TEMPLATES ────────────────────────────────────────

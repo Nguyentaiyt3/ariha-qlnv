@@ -85,7 +85,7 @@ export default function ProfilePage() {
   };
 
   return (
-    <div className="max-w-xl mx-auto px-4 py-8">
+    <div>
       <h1 className="text-2xl font-bold text-[var(--foreground)] flex items-center gap-2 mb-6">
         <User className="w-6 h-6 text-blue-500" />
         Hồ sơ cá nhân

@@ -359,6 +359,7 @@ export default function WorkflowPage() {
             workflow={builderWorkflow}
             allWorkflows={publishedWorkflows}
             canEdit={canCreate}
+            canApprove={canApprove}
             onSave={handleSaveVisual}
           />
         </div>

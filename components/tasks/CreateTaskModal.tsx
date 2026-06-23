@@ -1,15 +1,34 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { X, Plus, Loader2, Calendar, User, Flag, Building2, GitBranch } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { X, Plus, Loader2, Calendar, User, Flag, Building2, GitBranch, Paperclip, Camera, Link2, FileText, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn, generateId } from "@/lib/utils";
 import { createTask, getDefaultMilestoneConfig, getWorkflows } from "@/lib/firebase/firestore";
+import { uploadFile } from "@/lib/firebase/storage";
 import { calcPhaseDeadlines, DEFAULT_MILESTONE_CONFIG } from "@/lib/deadline-calc";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { hasPermission } from "@/lib/rbac/permissions";
-import type { Task, TaskPriority, TaskStatus, StakeholderRole, Workflow } from "@/types";
+import type { Task, TaskPriority, TaskStatus, StakeholderRole, Workflow, TaskResource } from "@/types";
+
+// Pending attachment — file held in memory until submit; links stored directly
+type PendingFile = {
+  kind: "file";
+  id: string;
+  file: File;
+  previewUrl: string; // object URL for local preview
+  name: string;
+  mimeType: string;
+  size: number;
+};
+type PendingLink = {
+  kind: "link";
+  id: string;
+  name: string;
+  url: string;
+};
+type PendingAttachment = PendingFile | PendingLink;
 
 interface CreateTaskModalProps {
   onClose: () => void;
@@ -45,6 +64,14 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
   const [kpiUnit, setKpiUnit] = useState("điểm");
   const [tags, setTags] = useState("");
 
+  // Attachments — held locally until submit
+  const [pending, setPending] = useState<PendingAttachment[]>([]);
+  const [showLinkForm, setShowLinkForm] = useState(false);
+  const [linkName, setLinkName] = useState("");
+  const [linkUrl, setLinkUrl] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+
   const activeUsers = users.filter((u) => u.isActive);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -56,6 +83,28 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
 
     setLoading(true);
     try {
+      // Upload pending files to Firebase Storage now (only on confirmed submit)
+      const uploadedResources: TaskResource[] = [];
+      for (const att of pending) {
+        if (att.kind === "link") {
+          uploadedResources.push({
+            id: att.id, type: "link",
+            name: att.name, url: att.url,
+            addedBy: currentUser.id, addedByName: currentUser.name,
+            addedAt: new Date().toISOString(),
+          });
+        } else {
+          const url = await uploadFile(att.file, "task-attachments");
+          uploadedResources.push({
+            id: att.id, type: "file",
+            name: att.name, url,
+            mimeType: att.mimeType, size: att.size,
+            addedBy: currentUser.id, addedByName: currentUser.name,
+            addedAt: new Date().toISOString(),
+          });
+        }
+      }
+
       // Get milestone config for 3-phase deadlines
       let milestoneConfig = await getDefaultMilestoneConfig();
       const configData = milestoneConfig ?? DEFAULT_MILESTONE_CONFIG;
@@ -110,6 +159,7 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
         approved: canAutoApprove,
         department: department.trim(),
         tags: tags.split(",").map((t) => t.trim()).filter(Boolean),
+        resources: uploadedResources.length > 0 ? uploadedResources : undefined,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -127,6 +177,49 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
     } finally {
       setLoading(false);
     }
+  }
+
+  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    const newItems: PendingFile[] = Array.from(files).map((file) => ({
+      kind: "file",
+      id: generateId("att"),
+      file,
+      previewUrl: URL.createObjectURL(file),
+      name: file.name,
+      mimeType: file.type,
+      size: file.size,
+    }));
+    setPending((prev) => [...prev, ...newItems]);
+    e.target.value = "";
+  }
+
+  function handleAddLink() {
+    if (!linkName.trim() || !linkUrl.trim()) { toast.error("Nhập tên và URL."); return; }
+    const url = linkUrl.trim().startsWith("http") ? linkUrl.trim() : `https://${linkUrl.trim()}`;
+    setPending((prev) => [
+      ...prev,
+      { kind: "link", id: generateId("att"), name: linkName.trim(), url },
+    ]);
+    setLinkName("");
+    setLinkUrl("");
+    setShowLinkForm(false);
+  }
+
+  function removeAttachment(id: string) {
+    setPending((prev) => {
+      const item = prev.find((a) => a.id === id);
+      if (item?.kind === "file") URL.revokeObjectURL(item.previewUrl);
+      return prev.filter((a) => a.id !== id);
+    });
+  }
+
+  function formatSize(bytes?: number) {
+    if (!bytes) return "";
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   }
 
   function addStakeholder(userId: string, role: StakeholderRole) {
@@ -385,6 +478,139 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
                     );
                   })}
                 </div>
+              )}
+            </div>
+
+            {/* Attachments */}
+            <div>
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                Đính kèm
+              </label>
+
+              {/* Action buttons */}
+              <div className="flex flex-wrap gap-2 mb-3">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 text-sm rounded-xl transition"
+                >
+                  <Paperclip className="w-4 h-4" />
+                  File / Ảnh
+                </button>
+                <button
+                  type="button"
+                  onClick={() => cameraInputRef.current?.click()}
+                  className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 text-sm rounded-xl transition"
+                >
+                  <Camera className="w-4 h-4" />
+                  Camera
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowLinkForm((v) => !v)}
+                  className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 text-sm rounded-xl transition"
+                >
+                  <Link2 className="w-4 h-4" />
+                  Thêm link
+                </button>
+
+                {/* Hidden file inputs */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  accept="*/*"
+                  className="hidden"
+                  onChange={handleFileChange}
+                />
+                <input
+                  ref={cameraInputRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  className="hidden"
+                  onChange={handleFileChange}
+                />
+              </div>
+
+              {/* Link form */}
+              {showLinkForm && (
+                <div className="mb-3 p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200 dark:border-slate-700 space-y-2">
+                  <input
+                    value={linkName}
+                    onChange={(e) => setLinkName(e.target.value)}
+                    placeholder="Tên đường dẫn"
+                    className="w-full px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-slate-900 dark:text-white"
+                  />
+                  <input
+                    value={linkUrl}
+                    onChange={(e) => setLinkUrl(e.target.value)}
+                    placeholder="https://..."
+                    className="w-full px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-slate-900 dark:text-white"
+                    onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), handleAddLink())}
+                  />
+                  <div className="flex gap-2">
+                    <button type="button" onClick={handleAddLink}
+                      className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg transition">
+                      Thêm
+                    </button>
+                    <button type="button" onClick={() => setShowLinkForm(false)}
+                      className="px-3 py-1.5 border border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 text-xs rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition">
+                      Huỷ
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Attachment list — local preview, uploaded on submit */}
+              {pending.length > 0 && (
+                <div className="space-y-1.5">
+                  {pending.map((att) => {
+                    const isImage = att.kind === "file" && att.mimeType.startsWith("image/");
+                    return (
+                      <div key={att.id} className="flex items-center gap-2.5 p-2.5 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-700">
+                        {/* Icon / thumbnail */}
+                        <div className="w-8 h-8 rounded-lg bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 flex items-center justify-center shrink-0 overflow-hidden">
+                          {isImage ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={(att as PendingFile).previewUrl} alt={att.name} className="w-full h-full object-cover" />
+                          ) : att.kind === "link" ? (
+                            <Link2 className="w-4 h-4 text-blue-500" />
+                          ) : (
+                            <FileText className="w-4 h-4 text-slate-400" />
+                          )}
+                        </div>
+
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-medium text-slate-700 dark:text-slate-200 truncate">{att.name}</p>
+                          {att.kind === "file" && att.size > 0 && (
+                            <p className="text-[10px] text-slate-400">{formatSize(att.size)}</p>
+                          )}
+                          {att.kind === "link" && (
+                            <p className="text-[10px] text-slate-400 truncate">{att.url}</p>
+                          )}
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => removeAttachment(att.id)}
+                          className="p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {pending.length > 0 && (
+                <p className="text-[10px] text-slate-400 mt-1.5 flex items-center gap-1">
+                  <Loader2 className="w-2.5 h-2.5" />
+                  {pending.filter(a => a.kind === "file").length > 0
+                    ? `${pending.filter(a => a.kind === "file").length} file sẽ được tải lên khi tạo nhiệm vụ`
+                    : null}
+                </p>
               )}
             </div>
           </div>

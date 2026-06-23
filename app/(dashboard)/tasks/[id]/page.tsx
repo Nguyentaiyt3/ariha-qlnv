@@ -11,7 +11,7 @@ import {
 import { cn, formatDate, formatDateTime, formatRelativeTime, statusLabel, priorityLabel, getInitials, avatarColor, isTaskVisible } from "@/lib/utils";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useAuthStore } from "@/stores/useAuthStore";
-import { subscribeTask, updateTask, deleteTask, getEmailLogs, getAuditTrail, addAuditEvent, addNotification, getEvaluations, saveEvaluation, getEvaluationConfig } from "@/lib/firebase/firestore";
+import { subscribeTask, updateTask, deleteTask, getEmailLogs, getAuditTrail, addAuditEvent, addNotification, getEvaluations, saveEvaluation, getEvaluationConfig, getTaskEvaluations } from "@/lib/firebase/firestore";
 import { uploadFile } from "@/lib/firebase/storage";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { StepsTab } from "@/components/tasks/StepsTab";
@@ -219,6 +219,7 @@ export default function TaskDetailsPage() {
   const [loading, setLoading] = useState(true);
   const [evaluations, setEvaluations] = useState<Evaluation[]>([]);
   const [taskEvaluations, setTaskEvaluations] = useState<Evaluation[]>([]);
+  const [taskAllEvals, setTaskAllEvals] = useState<Evaluation[]>([]);
   const [evalConfig, setEvalConfig] = useState<EvaluationConfig>(DEFAULT_EVAL_CONFIG);
   const [evalRatings, setEvalRatings] = useState<Record<string, number>>({});
   const [evalComments, setEvalComments] = useState<Record<string, string>>({});
@@ -276,6 +277,13 @@ export default function TaskDetailsPage() {
     getEvaluationConfig().then(setEvalConfig).catch(console.error);
   }, []);
 
+  // Load all evaluations for this task — drives warning banners
+  const refreshTaskAllEvals = useCallback(() => {
+    getTaskEvaluations(id).then(setTaskAllEvals).catch(console.error);
+  }, [id]);
+
+  useEffect(() => { refreshTaskAllEvals(); }, [refreshTaskAllEvals]);
+
   // Load 360° evaluations for this task's main performer
   useEffect(() => {
     const performerId = task?.mainPerformerId;
@@ -294,6 +302,7 @@ export default function TaskDetailsPage() {
       getAuditTrail(id).then(setAuditEvents).catch(console.error);
     } else if (activeTab === "evaluation" && currentUser) {
       getEvaluations(currentUser.id).then(setEvaluations).catch(console.error);
+      refreshTaskAllEvals();
     }
   }, [activeTab, id, task, currentUser]);
 
@@ -591,6 +600,7 @@ export default function TaskDetailsPage() {
       };
       await saveEvaluation(ev);
       setEvaluations((prev) => [...prev, ev]);
+      refreshTaskAllEvals();
       toast.success("Đã gửi đánh giá");
     } catch { toast.error("Gửi đánh giá thất bại"); }
     finally { setSubmittingEval(false); }
@@ -738,6 +748,14 @@ export default function TaskDetailsPage() {
     ...(task.steps ?? []).flatMap((s) => [s.assigneeId, ...(s.subTasks ?? []).map((st) => st.userId)]),
     ...(task.stakeholders ?? []).filter((s) => s.role === "assignee").map((s) => s.userId),
   ].filter(Boolean) as string[])).filter((uid) => uid !== currentUser?.id);
+
+  // Evaluation status — used for warning banners
+  const hasSelfEval = taskAllEvals.some(
+    (e) => e.evaluatedUserId === currentUser?.id && e.evaluatorId === currentUser?.id
+  );
+  const pendingPeerEvalWorkers = taskWorkers.filter((uid) =>
+    !taskAllEvals.some((e) => e.evaluatorId === currentUser?.id && e.evaluatedUserId === uid && e.taskId === id)
+  );
 
   // ── 3T Evaluation display ──────────────────────────────────────
   function Eval3TCards({ taskData, referenceDate, evals, savedScore }: {
@@ -1080,6 +1098,27 @@ export default function TaskDetailsPage() {
           </div>
         </div>
 
+        {/* Compact 3T grade — shown when task is done and score has been computed */}
+        {task.status === "done" && task.completionProposal?.score3T && (() => {
+          const s = task.completionProposal.score3T!;
+          const gradeColors: Record<string, string> = {
+            xuatSac:        "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300 border-amber-200 dark:border-amber-800",
+            hoanThanhTot:   "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300 border-green-200 dark:border-green-800",
+            hoanThanh:      "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300 border-blue-200 dark:border-blue-800",
+            khongHoanThanh: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300 border-red-200 dark:border-red-800",
+          };
+          return (
+            <div className={cn("mt-3 flex items-center justify-between px-3 py-2 rounded-xl border text-sm", gradeColors[s.grade])}>
+              <div className="flex items-center gap-2">
+                <BarChart3 className="w-3.5 h-3.5 shrink-0" />
+                <span className="font-semibold">{GRADE_LABEL[s.grade as keyof typeof GRADE_LABEL]}</span>
+                <span className="text-[10px] opacity-70 font-normal">T1 {s.t1} · T2 {s.t2} · T3 {s.t3}</span>
+              </div>
+              <span className="font-black text-base">{s.total}<span className="text-xs font-normal opacity-70">/10</span></span>
+            </div>
+          );
+        })()}
+
         {/* 3-phase deadlines */}
         <div className="flex gap-3 mt-4 flex-wrap">
           {[
@@ -1257,6 +1296,52 @@ export default function TaskDetailsPage() {
           </div>
         )}
       </div>
+
+      {/* Evaluation warning banners — shown when task is done and user hasn't evaluated yet */}
+      {task.status === "done" && currentUser && (
+        <div className="space-y-2">
+          {/* Self-evaluation reminder */}
+          {isMainPerformer && !hasSelfEval && (
+            <div className="flex items-start gap-3 p-3.5 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-xl">
+              <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">Chưa tự đánh giá</p>
+                <p className="text-xs text-amber-700 dark:text-amber-400 mt-0.5">
+                  Bạn chưa thực hiện tự đánh giá cho nhiệm vụ này. Tự đánh giá giúp cấp trên có đủ dữ liệu tính điểm T2 chính xác.
+                </p>
+              </div>
+              <button
+                onClick={() => setActiveTab("evaluation")}
+                className="shrink-0 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold rounded-lg transition"
+              >
+                Đánh giá ngay
+              </button>
+            </div>
+          )}
+
+          {/* Peer evaluation reminder */}
+          {pendingPeerEvalWorkers.length > 0 && (
+            <div className="flex items-start gap-3 p-3.5 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700 rounded-xl">
+              <AlertCircle className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-blue-800 dark:text-blue-300">Chưa đánh giá đồng nghiệp</p>
+                <p className="text-xs text-blue-700 dark:text-blue-400 mt-0.5">
+                  Còn {pendingPeerEvalWorkers.length} thành viên chưa được bạn đánh giá:{" "}
+                  {pendingPeerEvalWorkers
+                    .map((uid) => users.find((u) => u.id === uid)?.name ?? uid)
+                    .join(", ")}.
+                </p>
+              </div>
+              <button
+                onClick={() => setActiveTab("evaluation")}
+                className="shrink-0 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg transition"
+              >
+                Đánh giá ngay
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden shadow-sm">
@@ -1471,12 +1556,107 @@ export default function TaskDetailsPage() {
           })()}
 
           {/* Evaluation tab */}
-          {activeTab === "evaluation" && (
+          {activeTab === "evaluation" && currentUser && (
             <div className="space-y-4">
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                {hasPermission(currentUser?.role ?? "guest", "task:approve")
-                  ? "Bạn có thể đánh giá tất cả thành viên đã tham gia nhiệm vụ này."
-                  : "Đánh giá đồng nghiệp đã cùng thực hiện nhiệm vụ."}
+              {/* Evaluation criteria info */}
+              <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-100 dark:border-slate-800 space-y-1.5">
+                <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">Tiêu chí đánh giá 3T</p>
+                <div className="grid grid-cols-3 gap-2 text-[10px] text-slate-500 dark:text-slate-400">
+                  <div><span className="font-bold text-slate-700 dark:text-slate-200">T1 · Tiến độ</span><br/>So sánh ngày nộp với deadline gốc.</div>
+                  <div><span className="font-bold text-slate-700 dark:text-slate-200">T2 · Chất lượng</span><br/>TB đánh giá 360°, tự đánh giá, hoặc tiến độ KPI.</div>
+                  <div><span className="font-bold text-slate-700 dark:text-slate-200">T3 · Tài nguyên</span><br/>Chi phí thực / ngân sách, hoặc bước có minh chứng.</div>
+                </div>
+                <p className="text-[10px] text-slate-400">
+                  Trọng số: T1 {Math.round(evalConfig.weights.t1 * 100)}% · T2 {Math.round(evalConfig.weights.t2 * 100)}% · T3 {Math.round(evalConfig.weights.t3 * 100)}%
+                  {" · "}Ngưỡng: Xuất sắc ≥{evalConfig.thresholds.xuatSac} · Hoàn thành tốt &gt;{evalConfig.thresholds.hoanThanhTot} · Hoàn thành ≥{evalConfig.thresholds.hoanThanh}
+                </p>
+              </div>
+
+              {/* Self-evaluation block — only for main performer */}
+              {isMainPerformer && (() => {
+                const selfEval = taskAllEvals.find(
+                  (e) => e.evaluatedUserId === currentUser.id && e.evaluatorId === currentUser.id && e.taskId === id
+                );
+                const selfKey = `self_${currentUser.id}`;
+                return (
+                  <div className="p-4 bg-amber-50 dark:bg-amber-900/20 rounded-xl border border-amber-200 dark:border-amber-700">
+                    <div className="flex items-center gap-2 mb-3">
+                      <div className="w-7 h-7 rounded-full bg-amber-200 dark:bg-amber-800 flex items-center justify-center text-xs font-bold text-amber-800 dark:text-amber-200">
+                        {getInitials(currentUser.name)}
+                      </div>
+                      <div>
+                        <p className="text-sm font-semibold text-amber-900 dark:text-amber-200">{currentUser.name}</p>
+                        <p className="text-[10px] text-amber-600 dark:text-amber-400">Tự đánh giá</p>
+                      </div>
+                    </div>
+                    {selfEval ? (
+                      <div className="flex items-center gap-2 text-sm text-slate-500">
+                        <span>Đã tự đánh giá:</span>
+                        <span className="text-amber-500">{"★".repeat(selfEval.scores.overall ?? 0)}</span>
+                        {selfEval.comment && <span className="text-xs italic">"{selfEval.comment}"</span>}
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <div className="flex gap-1">
+                          {[1, 2, 3, 4, 5].map((star) => (
+                            <button
+                              key={star}
+                              onClick={() => setEvalRatings((r) => ({ ...r, [selfKey]: star }))}
+                              className="transition"
+                            >
+                              <Star className={cn(
+                                "w-6 h-6",
+                                (evalRatings[selfKey] ?? 0) >= star ? "fill-amber-400 text-amber-400" : "text-slate-300 dark:text-slate-600"
+                              )} />
+                            </button>
+                          ))}
+                        </div>
+                        <textarea
+                          value={evalComments[selfKey] ?? ""}
+                          onChange={(e) => setEvalComments((c) => ({ ...c, [selfKey]: e.target.value }))}
+                          placeholder="Nhận xét về kết quả công việc của bản thân (tùy chọn)..."
+                          rows={2}
+                          className="w-full px-3 py-2 text-sm border border-amber-200 dark:border-amber-700 rounded-xl bg-white dark:bg-slate-900 text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-amber-400 resize-none"
+                        />
+                        <button
+                          onClick={async () => {
+                            const rating = evalRatings[selfKey];
+                            if (!rating) { toast.error("Chọn số sao tự đánh giá"); return; }
+                            setSubmittingEval(true);
+                            try {
+                              const ev: Evaluation = {
+                                id: generateId("eval"),
+                                taskId: id,
+                                evaluatedUserId: currentUser.id,
+                                evaluatorId: currentUser.id,
+                                type: "self",
+                                isAnonymous: false,
+                                scores: { overall: rating },
+                                comment: evalComments[selfKey] ?? "",
+                                period: new Date().toISOString().slice(0, 7),
+                                overallScore: rating * 20,
+                                createdAt: new Date().toISOString(),
+                              };
+                              await saveEvaluation(ev);
+                              refreshTaskAllEvals();
+                              toast.success("Đã gửi tự đánh giá");
+                            } catch { toast.error("Gửi thất bại"); }
+                            finally { setSubmittingEval(false); }
+                          }}
+                          disabled={submittingEval || !evalRatings[selfKey]}
+                          className="px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white text-sm rounded-xl transition"
+                        >
+                          {submittingEval ? <Loader2 className="w-4 h-4 animate-spin inline" /> : "Gửi tự đánh giá"}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* Peer evaluation */}
+              <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                {hasPermission(currentUser.role, "task:approve") ? "Đánh giá thành viên" : "Đánh giá đồng nghiệp"}
               </p>
               {taskWorkers.length === 0 ? (
                 <p className="text-slate-400 text-sm text-center py-8">Không có thành viên nào để đánh giá.</p>
@@ -1485,7 +1665,9 @@ export default function TaskDetailsPage() {
                   const worker = users.find((u) => u.id === uid);
                   if (!worker) return null;
                   const already = evaluations.find(
-                    (e) => e.evaluatedUserId === uid && e.evaluatorId === currentUser?.id && e.taskId === id,
+                    (e) => e.evaluatedUserId === uid && e.evaluatorId === currentUser.id && e.taskId === id,
+                  ) ?? taskAllEvals.find(
+                    (e) => e.evaluatedUserId === uid && e.evaluatorId === currentUser.id && e.taskId === id,
                   );
                   return (
                     <div key={uid} className="p-4 bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-100 dark:border-slate-800">

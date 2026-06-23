@@ -339,6 +339,7 @@ export interface WorkflowEdge {
   source: string;
   target: string; // nodeId or "ext::workflowId::nodeId"
   label?: string;
+  required?: boolean; // true = must complete source before target
 }
 
 export interface Workflow {

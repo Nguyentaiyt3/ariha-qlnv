@@ -74,7 +74,7 @@ export default function NotificationSettingsPage() {
   };
 
   return (
-    <div className="max-w-2xl mx-auto px-4 py-8">
+    <div>
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-[var(--foreground)] flex items-center gap-2">
           <Bell className="w-6 h-6 text-blue-500" />
