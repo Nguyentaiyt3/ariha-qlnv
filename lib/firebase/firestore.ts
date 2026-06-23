@@ -258,7 +258,7 @@ export function subscribeTask(taskId: string, callback: (task: Task | null) => v
 export async function addAuditEvent(taskId: string, event: Omit<AuditEvent, "id">): Promise<void> {
   const db = getDb();
   const id = generateId("audit");
-  await setDoc(doc(db, "tasks", taskId, "auditTrail", id), { ...event, id });
+  await setDoc(doc(db, "tasks", taskId, "auditTrail", id), stripUndefined({ ...event, id }));
 }
 
 export async function getAuditTrail(taskId: string): Promise<AuditEvent[]> {

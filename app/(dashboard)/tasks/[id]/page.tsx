@@ -415,7 +415,8 @@ export default function TaskDetailsPage() {
       await addAuditEvent(id, {
         taskId: id, action: approved ? "change_approved" : "change_rejected",
         userId: currentUser.id, userName: currentUser.name,
-        note: comment, timestamp: new Date().toISOString(),
+        ...(comment ? { note: comment } : {}),
+        timestamp: new Date().toISOString(),
       });
       toast.success(approved ? "Đã phê duyệt thay đổi." : "Đã từ chối và hoàn tác thay đổi.");
     } catch { toast.error("Thao tác thất bại."); }
@@ -707,6 +708,7 @@ export default function TaskDetailsPage() {
   ].filter(Boolean) as string[])).filter((uid) => uid !== currentUser?.id);
 
   return (
+    <>
     <div className="max-w-5xl mx-auto space-y-5 animate-fade-in">
       {/* Back button */}
       <button
@@ -1531,6 +1533,7 @@ export default function TaskDetailsPage() {
       </div>
     </div>
 
+    {/* ─── Modals (rendered outside the scroll container) ──────── */}
     {/* ─── Change Request Modal ─────────────────────────────────── */}
     {showChangeModal && (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
@@ -1644,5 +1647,6 @@ export default function TaskDetailsPage() {
         </div>
       </div>
     )}
+    </>
   );
 }
