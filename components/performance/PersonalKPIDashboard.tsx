@@ -8,9 +8,9 @@ import {
 import {
   CheckCircle2, Clock, BarChart3, Star, Target,
   TrendingUp, TrendingDown, Minus, Award, ClipboardList,
-  MessageSquare, Zap,
+  MessageSquare, Zap, Users,
 } from "lucide-react";
-import { calcPerformanceScore, getRank, type PerformanceResult } from "@/lib/performance-score";
+import { calcPerformanceScore, getRank, getManagerWeights, type PerformanceResult } from "@/lib/performance-score";
 import type { Task, Evaluation, KPIFramework, User } from "@/types";
 import { cn, formatDate } from "@/lib/utils";
 
@@ -92,9 +92,18 @@ export default function PersonalKPIDashboard({
 }: Props) {
   // ── Core metrics ─────────────────────────────────────────
   const score = useMemo(
-    () => calcPerformanceScore({ tasks, evaluations, userId: currentUser.id, periodStart, periodEnd }),
-    [tasks, evaluations, currentUser.id, periodStart, periodEnd],
+    () => calcPerformanceScore({
+      tasks, evaluations,
+      userId: currentUser.id,
+      periodStart, periodEnd,
+      role: currentUser.role,
+      department: currentUser.department,
+      allUsers: users,
+    }),
+    [tasks, evaluations, currentUser, periodStart, periodEnd, users],
   );
+
+  const managerWeights = getManagerWeights(currentUser.role);
 
   const rank = getRank(score.totalScore);
 
@@ -257,6 +266,84 @@ export default function PersonalKPIDashboard({
           )}
         </div>
       </div>
+
+      {/* ── Manager unit score panel ────────────────────────── */}
+      {managerWeights && score.teamMemberCount > 0 && (
+        <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <h3 className="text-sm font-semibold text-[var(--foreground)] flex items-center gap-2">
+              <Users className="w-4 h-4 text-indigo-500" />
+              Hiệu suất đơn vị
+            </h3>
+            <span className="text-[11px] text-[var(--muted-foreground)] bg-[var(--muted)] px-2.5 py-1 rounded-full">
+              {score.teamMemberCount} thành viên ·&nbsp;
+              Cá nhân {managerWeights.personal * 100}% + Đơn vị {managerWeights.team * 100}%
+            </span>
+          </div>
+
+          <div className="space-y-3">
+            {/* Personal component */}
+            <div>
+              <div className="flex justify-between text-xs mb-1.5">
+                <span className="text-[var(--muted-foreground)]">
+                  Cá nhân ({managerWeights.personal * 100}%) ·&nbsp;
+                  <span className="font-medium text-[var(--foreground)]">
+                    đóng góp {Math.round(score.personalScore * managerWeights.personal)} điểm
+                  </span>
+                </span>
+                <span className="font-bold text-blue-600">{score.personalScore}/100</span>
+              </div>
+              <div className="h-2.5 bg-[var(--border)] rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-blue-500 rounded-full transition-all"
+                  style={{ width: `${score.personalScore}%` }}
+                />
+              </div>
+            </div>
+
+            {/* Team component */}
+            <div>
+              <div className="flex justify-between text-xs mb-1.5">
+                <span className="text-[var(--muted-foreground)]">
+                  Trung bình đơn vị ({managerWeights.team * 100}%) ·&nbsp;
+                  <span className="font-medium text-[var(--foreground)]">
+                    đóng góp {Math.round(score.teamScore * managerWeights.team)} điểm
+                  </span>
+                </span>
+                <span className="font-bold text-indigo-600">{score.teamScore}/100</span>
+              </div>
+              <div className="h-2.5 bg-[var(--border)] rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-indigo-500 rounded-full transition-all"
+                  style={{ width: `${score.teamScore}%` }}
+                />
+              </div>
+            </div>
+
+            {/* Combined result */}
+            <div className="flex items-center gap-3 pt-2 border-t border-[var(--border)]">
+              <div className="flex-1 h-3 bg-[var(--border)] rounded-full overflow-hidden flex">
+                <div
+                  className="h-full bg-blue-500 transition-all"
+                  style={{ width: `${managerWeights.personal * 100}%`, opacity: 0.3 + (score.personalScore / 100) * 0.7 }}
+                />
+                <div
+                  className="h-full bg-indigo-500 transition-all"
+                  style={{ width: `${managerWeights.team * 100}%`, opacity: 0.3 + (score.teamScore / 100) * 0.7 }}
+                />
+              </div>
+              <span className="text-sm font-black text-[var(--foreground)] shrink-0">{score.totalScore}/100</span>
+              <span className={cn(
+                "text-[11px] font-bold px-2 py-0.5 rounded-full shrink-0",
+                rank.color.replace("text-", "bg-").replace("600", "50"),
+                rank.color,
+              )}>
+                {rank.label}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── 4 metric tiles ──────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">

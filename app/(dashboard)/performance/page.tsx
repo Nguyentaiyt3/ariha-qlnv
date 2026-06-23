@@ -8,12 +8,13 @@ import {
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { getEvaluations, getAllEvaluations, getKPIFrameworks } from "@/lib/firebase/firestore";
-import { calcPerformanceScore, getRank } from "@/lib/performance-score";
+import { calcPerformanceScore, getRank, getManagerWeights } from "@/lib/performance-score";
 import type { Evaluation, KPIFramework as KPIFrameworkType, User } from "@/types";
 import PerformanceTrend from "@/components/performance/PerformanceTrend";
 import PersonalKPIDashboard from "@/components/performance/PersonalKPIDashboard";
 import EvaluationForm from "@/components/performance/EvaluationForm";
 import KPIFrameworkEditor from "@/components/performance/KPIFramework";
+import CompletedTasksTab from "@/components/performance/CompletedTasksTab";
 import { getInitials, avatarColor, formatDate } from "@/lib/utils";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { cn } from "@/lib/utils";
@@ -142,7 +143,24 @@ interface UserDetailPanelProps {
 }
 
 function UserDetailPanel({ user, score, evals, loadingEvals, period, canEvaluate, onEvaluate, onClose }: UserDetailPanelProps) {
-  const rank = getRank(score.totalScore);
+  const rank          = getRank(score.totalScore);
+  const isManagerScore = score.teamMemberCount > 0;
+  const mw            = getManagerWeights(user.role);
+
+  const metrics = isManagerScore
+    ? [
+        { label: "Điểm tổng",    value: `${score.totalScore}/100`,   color: rank.color },
+        { label: "Cá nhân",      value: `${score.personalScore}`,    color: "text-blue-600" },
+        { label: "Trung bình đơn vị", value: `${score.teamScore}`,   color: "text-indigo-600" },
+        { label: "Đúng hạn",     value: `${score.onTimeRate}%`,      color: "text-green-600" },
+      ]
+    : [
+        { label: "Điểm tổng",   value: `${score.totalScore}/100`,   color: rank.color },
+        { label: "Thực thi",    value: `${score.executionScore}`,   color: "text-blue-600" },
+        { label: "Định tính",   value: `${score.qualitativeScore}`, color: "text-purple-600" },
+        { label: "Đúng hạn",   value: `${score.onTimeRate}%`,      color: "text-green-600" },
+      ];
+
   return (
     <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-5 space-y-5">
       <div className="flex items-center justify-between">
@@ -173,13 +191,15 @@ function UserDetailPanel({ user, score, evals, loadingEvals, period, canEvaluate
         </div>
       </div>
 
+      {isManagerScore && mw && (
+        <div className="text-[11px] text-slate-500 flex items-center gap-1.5 bg-indigo-50 dark:bg-indigo-900/20 px-3 py-2 rounded-lg border border-indigo-100 dark:border-indigo-800">
+          <span className="font-semibold text-indigo-600">Quản lý</span>·
+          Điểm cá nhân {mw.personal * 100}% + Trung bình {score.teamMemberCount} thành viên {mw.team * 100}%
+        </div>
+      )}
+
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {[
-          { label: "Điểm tổng", value: `${score.totalScore}/100`, color: rank.color },
-          { label: "Thực thi",  value: `${score.executionScore}`,   color: "text-blue-600" },
-          { label: "Định tính", value: `${score.qualitativeScore}`, color: "text-purple-600" },
-          { label: "Đúng hạn",  value: `${score.onTimeRate}%`,      color: "text-green-600" },
-        ].map((item) => (
+        {metrics.map((item) => (
           <div key={item.label} className="bg-slate-50 dark:bg-slate-900 rounded-lg p-3 text-center">
             <p className={cn("text-lg font-bold", item.color)}>{item.value}</p>
             <p className="text-xs text-slate-400 mt-0.5">{item.label}</p>
@@ -246,7 +266,7 @@ export default function PerformancePage() {
 
   const [filterMode,     setFilterMode]     = useState<FilterMode>("quarterly");
   const [selectedPeriod, setSelectedPeriod] = useState(() => defaultPeriod("quarterly"));
-  const [activeTab, setActiveTab] = useState<"personal" | "overview" | "history" | "evaluate" | "kpi">("personal");
+  const [activeTab, setActiveTab] = useState<"personal" | "completed" | "overview" | "history" | "evaluate" | "kpi">("personal");
   const [evaluateTarget, setEvaluateTarget] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -288,7 +308,11 @@ export default function PerformancePage() {
     const src = canManageKPI ? allEvaluations : evaluations;
     return users
       .filter((u) => u.isActive && u.role !== "guest")
-      .map((u) => calcPerformanceScore({ tasks, evaluations: src, userId: u.id, periodStart: pStart, periodEnd: pEnd }))
+      .map((u) => calcPerformanceScore({
+        tasks, evaluations: src,
+        userId: u.id, periodStart: pStart, periodEnd: pEnd,
+        role: u.role, department: u.department, allUsers: users,
+      }))
       .sort((a, b) => b.totalScore - a.totalScore);
   }, [tasks, evaluations, allEvaluations, users, pStart, pEnd, canManageKPI]);
 
@@ -313,10 +337,14 @@ export default function PerformancePage() {
     if (!currentUser) return [];
     return trendPeriods.map((p) => {
       const { start, end } = periodToRange(p);
-      const s = calcPerformanceScore({ tasks, evaluations, userId: currentUser.id, periodStart: start, periodEnd: end });
+      const s = calcPerformanceScore({
+        tasks, evaluations,
+        userId: currentUser.id, periodStart: start, periodEnd: end,
+        role: currentUser.role, department: currentUser.department, allUsers: users,
+      });
       return { period: p, ...s };
     });
-  }, [trendPeriods, tasks, evaluations, currentUser]);
+  }, [trendPeriods, tasks, evaluations, currentUser, users]);
 
   const myScore    = scores.find((s) => s.userId === currentUser?.id);
   const drillUser  = drillUserId ? users.find((u) => u.id === drillUserId) : null;
@@ -341,12 +369,13 @@ export default function PerformancePage() {
     finally { setLoadingHistory(false); }
   }
 
-  // Tabs — "Đánh giá" visible to all (staff → self-eval only)
+  // Tabs — visible based on role
   const TABS: { id: typeof activeTab; label: string; hidden?: boolean }[] = [
     { id: "personal",  label: "KPI Cá nhân" },
+    { id: "completed", label: "Nhiệm vụ HT" },          // all roles
     { id: "overview",  label: "Tổng quan tổ chức", hidden: !canManageKPI },
     { id: "history",   label: "Lịch sử đánh giá",  hidden: !canManageKPI },
-    { id: "evaluate",  label: "Đánh giá" },
+    { id: "evaluate",  label: "Đánh giá" },              // all roles, staff = self only
     { id: "kpi",       label: "Khung KPI",           hidden: !canEditKPI },
   ];
 
@@ -430,21 +459,49 @@ export default function PerformancePage() {
         />
       )}
 
+      {/* ── Nhiệm vụ hoàn thành ────────────────────────────── */}
+      {activeTab === "completed" && currentUser && (
+        <CompletedTasksTab
+          currentUser={currentUser}
+          users={users}
+          tasks={tasks}
+          evaluations={evaluations}
+          canManageKPI={canManageKPI}
+        />
+      )}
+
       {/* ── Tổng quan tổ chức ──────────────────────────────── */}
       {activeTab === "overview" && (
         <div className="space-y-6">
           {myScore && currentUser && (
             <div className="bg-gradient-to-r from-blue-600 to-indigo-600 rounded-xl p-5 text-white">
               <p className="text-sm text-blue-200 mb-1">Điểm của bạn — {periodLabel(selectedPeriod)}</p>
-              <div className="flex items-end gap-4">
+              <div className="flex items-end gap-4 flex-wrap">
                 <div>
                   <span className="text-5xl font-bold">{myScore.totalScore}</span>
                   <span className="text-xl text-blue-200">/100</span>
                 </div>
                 <div className="mb-1">
                   <p className="text-base font-semibold">{getRank(myScore.totalScore).label}</p>
-                  <p className="text-xs text-blue-200">Thực thi: {myScore.executionScore} · Định tính: {myScore.qualitativeScore}</p>
-                  <p className="text-xs text-blue-200">Hoàn thành đúng hạn: {myScore.onTimeRate}%</p>
+                  {myScore.teamMemberCount > 0 ? (
+                    <>
+                      <p className="text-xs text-blue-200">
+                        Cá nhân: {myScore.personalScore} · Trung bình đơn vị: {myScore.teamScore}
+                      </p>
+                      <p className="text-xs text-blue-200">
+                        {(() => {
+                          const w = getManagerWeights(currentUser.role);
+                          return w ? `Công thức: ${w.personal * 100}% cá nhân + ${w.team * 100}% đơn vị` : null;
+                        })()}
+                        &nbsp;· {myScore.teamMemberCount} thành viên
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-xs text-blue-200">Thực thi: {myScore.executionScore} · Định tính: {myScore.qualitativeScore}</p>
+                      <p className="text-xs text-blue-200">Hoàn thành đúng hạn: {myScore.onTimeRate}%</p>
+                    </>
+                  )}
                 </div>
               </div>
               {evaluations.length > 0 && (
@@ -511,6 +568,11 @@ export default function PerformancePage() {
                       <div className="text-right shrink-0">
                         <p className="text-sm font-bold text-[var(--foreground)]">{score.totalScore}/100</p>
                         <p className={cn("text-xs font-medium", rank.color)}>{rank.label}</p>
+                        {score.teamMemberCount > 0 && (
+                          <p className="text-[10px] text-indigo-500 font-medium">
+                            đội: {score.teamScore}
+                          </p>
+                        )}
                       </div>
                       {canManageKPI && (
                         <Eye className={cn("w-4 h-4 shrink-0 transition", isDrill ? "text-blue-500" : "text-slate-300")} />
