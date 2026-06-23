@@ -24,6 +24,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "calendar:createPersonal",
     "profile:edit",
     "evaluation:self",
+    "kpi:read",
     "request:create",
     "request:read",
     "template:create",
