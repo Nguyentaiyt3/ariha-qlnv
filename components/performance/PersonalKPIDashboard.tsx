@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   RadialBarChart, RadialBar, ResponsiveContainer,
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -8,7 +8,7 @@ import {
 import {
   CheckCircle2, Clock, BarChart3, Star, Target,
   TrendingUp, TrendingDown, Minus, Award, ClipboardList,
-  MessageSquare, Zap,
+  MessageSquare, Zap, ChevronDown, Search,
 } from "lucide-react";
 import { calcPerformanceScore, getRank, type PerformanceResult } from "@/lib/performance-score";
 import type { Task, Evaluation, KPIFramework, User } from "@/types";
@@ -73,9 +73,17 @@ function MetricTile({
   );
 }
 
+// ── Completed-task step status ────────────────────────────────
+const STEP_STATUS_CFG = {
+  pending:    { label: "Chờ",        color: "#94A3B8" },
+  in_progress:{ label: "Đang làm",   color: "#F59E0B" },
+  completed:  { label: "Hoàn thành", color: "#22C55E" },
+} as const;
+
 // ── Props ─────────────────────────────────────────────────────
 interface Props {
   currentUser: User;
+  users?: User[];
   tasks: Task[];
   evaluations: Evaluation[];
   framework?: KPIFramework;
@@ -86,7 +94,7 @@ interface Props {
 }
 
 export default function PersonalKPIDashboard({
-  currentUser, tasks, evaluations, framework,
+  currentUser, users, tasks, evaluations, framework,
   period, trendData, periodStart, periodEnd,
 }: Props) {
   // ── Core metrics ─────────────────────────────────────────
@@ -159,6 +167,28 @@ export default function PersonalKPIDashboard({
       return { ...ind, actual, target, rate: target > 0 ? Math.min(100, Math.round((actual / target) * 100)) : 0 };
     });
   }, [framework, allMyActiveTasks]);
+
+  // ── Completed tasks list state ────────────────────────────
+  const [taskSearch, setTaskSearch]           = useState("");
+  const [taskGradeFilter, setTaskGradeFilter] = useState("all");
+  const [expandedTaskId, setExpandedTaskId]   = useState<string | null>(null);
+
+  const completedTasks = useMemo(
+    () => periodTasks.filter((t) => t.status === "done"),
+    [periodTasks],
+  );
+
+  const filteredCompletedTasks = useMemo(() => {
+    let list = completedTasks;
+    if (taskSearch.trim()) {
+      const q = taskSearch.toLowerCase();
+      list = list.filter((t) => t.name.toLowerCase().includes(q));
+    }
+    if (taskGradeFilter !== "all") {
+      list = list.filter((t) => t.completionProposal?.score3T?.grade === taskGradeFilter);
+    }
+    return list;
+  }, [completedTasks, taskSearch, taskGradeFilter]);
 
   // ── Gauge data ────────────────────────────────────────────
   const gaugeColor = score.totalScore >= 75 ? "#22C55E" : score.totalScore >= 60 ? "#3B82F6" : score.totalScore >= 45 ? "#F59E0B" : "#EF4444";
@@ -503,6 +533,247 @@ export default function PersonalKPIDashboard({
               </span>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* ── Nhiệm vụ hoàn thành ─────────────────────────────── */}
+      {completedTasks.length > 0 && (
+        <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+          {/* Header + controls */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <h3 className="text-sm font-semibold text-[var(--foreground)] flex items-center gap-2 shrink-0">
+              <CheckCircle2 className="w-4 h-4 text-green-500" />
+              Nhiệm vụ hoàn thành — {completedTasks.length} nhiệm vụ
+            </h3>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* Search */}
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--muted-foreground)]" />
+                <input
+                  type="text"
+                  placeholder="Tìm nhiệm vụ..."
+                  value={taskSearch}
+                  onChange={(e) => setTaskSearch(e.target.value)}
+                  className="pl-8 pr-3 py-1.5 text-xs rounded-lg border border-[var(--border)] bg-[var(--muted)] focus:outline-none focus:ring-1 focus:ring-blue-500 w-36"
+                />
+              </div>
+
+              {/* Grade filter chips */}
+              <div className="flex gap-1 flex-wrap">
+                {([
+                  { key: "all",             label: "Tất cả",       hex: "#64748B" },
+                  { key: "xuatSac",         label: "Xuất sắc",     hex: GRADE_CFG.xuatSac.color },
+                  { key: "hoanThanhTot",    label: "HT tốt",       hex: GRADE_CFG.hoanThanhTot.color },
+                  { key: "hoanThanh",       label: "HT",           hex: GRADE_CFG.hoanThanh.color },
+                  { key: "khongHoanThanh",  label: "Không HT",     hex: GRADE_CFG.khongHoanThanh.color },
+                ] as const).map(({ key, label, hex }) => (
+                  <button
+                    key={key}
+                    onClick={() => setTaskGradeFilter(taskGradeFilter === key ? "all" : key)}
+                    className={cn(
+                      "px-2 py-0.5 rounded-full text-[10px] font-semibold border transition-colors",
+                      taskGradeFilter === key
+                        ? "border-transparent text-white"
+                        : "border-[var(--border)] text-[var(--muted-foreground)] bg-[var(--muted)]",
+                    )}
+                    style={taskGradeFilter === key ? { background: hex } : {}}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Task list */}
+          {filteredCompletedTasks.length === 0 ? (
+            <p className="text-center text-xs text-[var(--muted-foreground)] py-6">
+              Không tìm thấy nhiệm vụ phù hợp.
+            </p>
+          ) : (
+            <div className="space-y-2 max-h-[520px] overflow-y-auto pr-0.5">
+              {filteredCompletedTasks.map((task) => {
+                const s3t     = task.completionProposal?.score3T;
+                const grade   = s3t ? GRADE_CFG[s3t.grade] : null;
+                const taskEvals = evaluations.filter((e) => e.taskId === task.id);
+                const isExpanded = expandedTaskId === task.id;
+
+                // Steps I'm assigned to
+                const myStepCount = (task.steps ?? []).filter((s) => s.assigneeId === currentUser.id).length;
+
+                // Overall eval star rating helper
+                const evalStar = (ev: { overallScore?: number; scores?: Record<string, number> }) => {
+                  const raw = ev.overallScore ?? (Object.values(ev.scores ?? {}).reduce((a, b) => a + b, 0) / Math.max(1, Object.values(ev.scores ?? {}).length));
+                  return Math.round(raw / 20);
+                };
+
+                return (
+                  <div key={task.id} className="border border-[var(--border)] rounded-xl overflow-hidden">
+                    {/* Collapsed row */}
+                    <button
+                      onClick={() => setExpandedTaskId(isExpanded ? null : task.id)}
+                      className="w-full flex items-center gap-3 p-3 hover:bg-[var(--muted)] transition-colors text-left"
+                    >
+                      <CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />
+
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-[var(--foreground)] truncate">{task.name}</p>
+                        <p className="text-[10px] text-[var(--muted-foreground)]">
+                          Hạn: {task.deadlineBase} · {task.steps?.length ?? 0} bước
+                          {myStepCount > 0 && (
+                            <span className="ml-1.5 text-blue-600 dark:text-blue-400 font-semibold">
+                              ★ {myStepCount} bước của bạn
+                            </span>
+                          )}
+                        </p>
+                      </div>
+
+                      {/* 3T grade badge */}
+                      {s3t && grade && (
+                        <span className={cn("text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0", grade.bg, grade.text)}>
+                          {s3t.total}/10
+                        </span>
+                      )}
+
+                      {/* Task eval stars */}
+                      {taskEvals.length > 0 && (
+                        <span className="flex items-center gap-0.5 shrink-0">
+                          {[1,2,3,4,5].map((s) => (
+                            <Star key={s} className={cn("w-3 h-3",
+                              s <= evalStar(taskEvals[0]) ? "fill-amber-400 text-amber-400" : "text-slate-300"
+                            )} />
+                          ))}
+                        </span>
+                      )}
+
+                      <ChevronDown className={cn("w-4 h-4 text-[var(--muted-foreground)] shrink-0 transition-transform duration-200", isExpanded && "rotate-180")} />
+                    </button>
+
+                    {/* Expanded content */}
+                    {isExpanded && (
+                      <div className="px-4 pb-4 space-y-3 border-t border-[var(--border)] pt-3 bg-[var(--muted)]/30">
+                        {/* Task-level evaluations */}
+                        {taskEvals.length > 0 && (
+                          <div className="space-y-1.5">
+                            <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--muted-foreground)] flex items-center gap-1.5">
+                              <MessageSquare className="w-3 h-3" /> Đánh giá nhiệm vụ
+                            </p>
+                            {taskEvals.map((ev) => (
+                              <div key={ev.id} className="bg-[var(--card)] rounded-lg p-2.5 border border-[var(--border)] text-xs space-y-1">
+                                <div className="flex items-center justify-between">
+                                  <span className="font-medium text-[var(--foreground)]">
+                                    {ev.type === "self" ? "Tự đánh giá" : ev.type === "manager" ? "Quản lý" : "Đồng nghiệp"}
+                                  </span>
+                                  <Stars value={evalStar(ev)} />
+                                </div>
+                                {ev.comment && <p className="text-[var(--muted-foreground)] leading-relaxed">{ev.comment}</p>}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* 3T breakdown */}
+                        {s3t && (
+                          <div className="space-y-1.5">
+                            <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--muted-foreground)] flex items-center gap-1.5">
+                              <Award className="w-3 h-3" /> Điểm 3T · {grade?.label}
+                            </p>
+                            <div className="grid grid-cols-3 gap-2">
+                              {([
+                                { label: "T1 Tiến độ",    v: s3t.t1, c: "#3B82F6" },
+                                { label: "T2 Chất lượng",  v: s3t.t2, c: "#8B5CF6" },
+                                { label: "T3 Nguồn lực",   v: s3t.t3, c: "#06B6D4" },
+                              ] as const).map((item) => (
+                                <div key={item.label} className="rounded-lg p-2 text-center" style={{ background: `${item.c}10` }}>
+                                  <p className="text-sm font-black" style={{ color: item.c }}>{item.v}<span className="text-[9px] font-normal text-[var(--muted-foreground)]">/10</span></p>
+                                  <p className="text-[9px] text-[var(--muted-foreground)] mt-0.5">{item.label}</p>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Steps */}
+                        {(task.steps?.length ?? 0) > 0 && (
+                          <div className="space-y-1.5">
+                            <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
+                              Các bước trong quy trình
+                            </p>
+                            <div className="space-y-1">
+                              {task.steps.map((step, si) => {
+                                const isMyStep     = step.assigneeId === currentUser.id;
+                                const assigneeName = users?.find((u) => u.id === step.assigneeId)?.name ?? step.assigneeId;
+                                const stCfg        = STEP_STATUS_CFG[step.status] ?? STEP_STATUS_CFG.pending;
+
+                                return (
+                                  <div
+                                    key={step.id}
+                                    className={cn(
+                                      "flex items-center gap-2.5 p-2 rounded-lg text-xs",
+                                      isMyStep
+                                        ? "bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700/60"
+                                        : "bg-[var(--card)] border border-[var(--border)]",
+                                    )}
+                                  >
+                                    {/* Step number */}
+                                    <span className={cn(
+                                      "w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0",
+                                      isMyStep ? "bg-blue-500 text-white" : "bg-[var(--muted)] text-[var(--muted-foreground)]",
+                                    )}>
+                                      {si + 1}
+                                    </span>
+
+                                    {/* Name + assignee */}
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center gap-1.5">
+                                        {isMyStep && (
+                                          <span className="text-[9px] font-bold text-blue-600 dark:text-blue-400 uppercase shrink-0">Bạn</span>
+                                        )}
+                                        <p className={cn("font-medium truncate", isMyStep ? "text-blue-700 dark:text-blue-300" : "text-[var(--foreground)]")}>
+                                          {step.name}
+                                        </p>
+                                      </div>
+                                      <p className="text-[10px] text-[var(--muted-foreground)] truncate">{assigneeName}</p>
+                                    </div>
+
+                                    {/* KPI */}
+                                    {step.kpiTarget > 0 && (
+                                      <span className="text-[10px] text-[var(--muted-foreground)] shrink-0 hidden sm:block">
+                                        {step.kpiCurrent}/{step.kpiTarget} {step.kpiUnit}
+                                      </span>
+                                    )}
+
+                                    {/* Progress */}
+                                    <div className="w-14 flex items-center gap-1 shrink-0">
+                                      <div className="flex-1 h-1.5 bg-[var(--border)] rounded-full overflow-hidden">
+                                        <div className="h-full rounded-full transition-all" style={{ width: `${step.progress}%`, background: stCfg.color }} />
+                                      </div>
+                                      <span className="text-[10px] font-semibold w-6 text-right" style={{ color: stCfg.color }}>
+                                        {step.progress}%
+                                      </span>
+                                    </div>
+
+                                    {/* Status badge */}
+                                    <span
+                                      className="text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0"
+                                      style={{ background: `${stCfg.color}18`, color: stCfg.color }}
+                                    >
+                                      {stCfg.label}
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 

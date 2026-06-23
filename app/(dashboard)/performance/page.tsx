@@ -1,7 +1,10 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
-import { TrendingUp, Star, BarChart3, ChevronLeft, Eye, ClipboardList, MessageSquare, User as UserIcon } from "lucide-react";
+import {
+  TrendingUp, Star, BarChart3, ChevronLeft, Eye,
+  ClipboardList, MessageSquare, User as UserIcon,
+} from "lucide-react";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { getEvaluations, getAllEvaluations, getKPIFrameworks } from "@/lib/firebase/firestore";
@@ -15,10 +18,94 @@ import { getInitials, avatarColor, formatDate } from "@/lib/utils";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { cn } from "@/lib/utils";
 
-const CURRENT_YEAR = new Date().getFullYear();
-const PERIODS = [
-  `Q1/${CURRENT_YEAR}`, `Q2/${CURRENT_YEAR}`, `Q3/${CURRENT_YEAR}`, `Q4/${CURRENT_YEAR}`,
-];
+// ─── Period helpers ───────────────────────────────────────────
+
+const CURRENT_YEAR  = new Date().getFullYear();
+const CURRENT_MONTH = new Date().getMonth() + 1; // 1–12
+const CURRENT_Q     = Math.ceil(CURRENT_MONTH / 3); // 1–4
+
+type FilterMode = "monthly" | "quarterly" | "yearly" | "3years";
+
+const MODE_LABELS: Record<FilterMode, string> = {
+  monthly:  "Tháng",
+  quarterly: "Quý",
+  yearly:   "Năm",
+  "3years": "3 năm",
+};
+
+function getPeriodOptions(mode: FilterMode): string[] {
+  if (mode === "monthly") {
+    const opts: string[] = [];
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(CURRENT_YEAR, CURRENT_MONTH - 1 - i, 1);
+      opts.push(`T${d.getMonth() + 1}/${d.getFullYear()}`);
+    }
+    return opts;
+  }
+  if (mode === "quarterly") {
+    return ["Q1", "Q2", "Q3", "Q4"].map((q) => `${q}/${CURRENT_YEAR}`);
+  }
+  if (mode === "yearly") {
+    return [`${CURRENT_YEAR - 2}`, `${CURRENT_YEAR - 1}`, `${CURRENT_YEAR}`];
+  }
+  return ["3years"];
+}
+
+function defaultPeriod(mode: FilterMode): string {
+  if (mode === "monthly")  return `T${CURRENT_MONTH}/${CURRENT_YEAR}`;
+  if (mode === "quarterly") return `Q${CURRENT_Q}/${CURRENT_YEAR}`;
+  if (mode === "yearly")   return `${CURRENT_YEAR}`;
+  return "3years";
+}
+
+function periodLabel(p: string): string {
+  if (p === "3years") return "3 năm gần nhất";
+  if (p.startsWith("T")) {
+    const [m, y] = p.split("/");
+    return `Tháng ${m.replace("T", "")}/${y}`;
+  }
+  if (p.startsWith("Q")) return p.replace("/", " / ");
+  return `Năm ${p}`;
+}
+
+function periodToRange(p: string): { start: string; end: string } {
+  // Monthly: "T3/2026"
+  if (p.startsWith("T")) {
+    const [m, y] = p.split("/");
+    const month = parseInt(m.replace("T", "")) - 1;
+    const year  = parseInt(y);
+    return {
+      start: new Date(year, month, 1).toISOString(),
+      end:   new Date(year, month + 1, 0, 23, 59, 59).toISOString(),
+    };
+  }
+  // Quarterly: "Q3/2026"
+  if (p.startsWith("Q")) {
+    const [q, y] = p.split("/");
+    const qi    = parseInt(q.replace("Q", "")) - 1;
+    const year  = parseInt(y);
+    const month = qi * 3;
+    return {
+      start: new Date(year, month, 1).toISOString(),
+      end:   new Date(year, month + 3, 0, 23, 59, 59).toISOString(),
+    };
+  }
+  // 3 years rolling
+  if (p === "3years") {
+    return {
+      start: new Date(CURRENT_YEAR - 3, 0, 1).toISOString(),
+      end:   new Date().toISOString(),
+    };
+  }
+  // Yearly: "2026"
+  const year = parseInt(p);
+  return {
+    start: new Date(year, 0, 1).toISOString(),
+    end:   new Date(year, 11, 31, 23, 59, 59).toISOString(),
+  };
+}
+
+// ─── Sub-components ───────────────────────────────────────────
 
 function StarRow({ value }: { value: number }) {
   return (
@@ -35,14 +122,12 @@ function StarRow({ value }: { value: number }) {
 
 function EvalTypeLabel({ type }: { type: string }) {
   const map: Record<string, { label: string; cls: string }> = {
-    self: { label: "Tự đánh giá", cls: "bg-blue-50 text-blue-600" },
-    manager: { label: "Quản lý", cls: "bg-purple-50 text-purple-600" },
-    peer: { label: "Đồng nghiệp", cls: "bg-green-50 text-green-600" },
+    self:    { label: "Tự đánh giá", cls: "bg-blue-50 text-blue-600" },
+    manager: { label: "Quản lý",     cls: "bg-purple-50 text-purple-600" },
+    peer:    { label: "Đồng nghiệp", cls: "bg-green-50 text-green-600" },
   };
   const info = map[type] ?? { label: type, cls: "bg-slate-100 text-slate-600" };
-  return (
-    <span className={cn("px-2 py-0.5 text-xs rounded-full font-medium", info.cls)}>{info.label}</span>
-  );
+  return <span className={cn("px-2 py-0.5 text-xs rounded-full font-medium", info.cls)}>{info.label}</span>;
 }
 
 interface UserDetailPanelProps {
@@ -60,7 +145,6 @@ function UserDetailPanel({ user, score, evals, loadingEvals, period, canEvaluate
   const rank = getRank(score.totalScore);
   return (
     <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-5 space-y-5">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div
@@ -89,13 +173,12 @@ function UserDetailPanel({ user, score, evals, loadingEvals, period, canEvaluate
         </div>
       </div>
 
-      {/* Score breakdown */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         {[
           { label: "Điểm tổng", value: `${score.totalScore}/100`, color: rank.color },
-          { label: "Thực thi", value: `${score.executionScore}`, color: "text-blue-600" },
+          { label: "Thực thi",  value: `${score.executionScore}`,   color: "text-blue-600" },
           { label: "Định tính", value: `${score.qualitativeScore}`, color: "text-purple-600" },
-          { label: "Đúng hạn", value: `${score.onTimeRate}%`, color: "text-green-600" },
+          { label: "Đúng hạn",  value: `${score.onTimeRate}%`,      color: "text-green-600" },
         ].map((item) => (
           <div key={item.label} className="bg-slate-50 dark:bg-slate-900 rounded-lg p-3 text-center">
             <p className={cn("text-lg font-bold", item.color)}>{item.value}</p>
@@ -104,11 +187,10 @@ function UserDetailPanel({ user, score, evals, loadingEvals, period, canEvaluate
         ))}
       </div>
 
-      {/* Evaluation history */}
       <div>
         <p className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3 flex items-center gap-2">
           <ClipboardList className="w-4 h-4 text-slate-400" />
-          Lịch sử đánh giá — {period}
+          Lịch sử đánh giá — {periodLabel(period)}
         </p>
         {loadingEvals ? (
           <p className="text-xs text-slate-400 text-center py-4">Đang tải...</p>
@@ -121,9 +203,7 @@ function UserDetailPanel({ user, score, evals, loadingEvals, period, canEvaluate
                 <div className="flex items-center justify-between gap-2 mb-1">
                   <div className="flex items-center gap-2">
                     <EvalTypeLabel type={ev.type} />
-                    {ev.isAnonymous && (
-                      <span className="text-xs text-slate-400 italic">Ẩn danh</span>
-                    )}
+                    {ev.isAnonymous && <span className="text-xs text-slate-400 italic">Ẩn danh</span>}
                   </div>
                   <div className="flex items-center gap-2">
                     <StarRow value={ev.overallScore ? Math.round(ev.overallScore / 20) : (ev.scores?.overall ?? 0)} />
@@ -154,29 +234,32 @@ function UserDetailPanel({ user, score, evals, loadingEvals, period, canEvaluate
   );
 }
 
+// ─── Page ─────────────────────────────────────────────────────
+
 export default function PerformancePage() {
   const { currentUser } = useAuthStore();
   const { tasks, users } = useTaskStore();
-  const [evaluations, setEvaluations] = useState<Evaluation[]>([]);
+
+  const [evaluations,    setEvaluations]    = useState<Evaluation[]>([]);
   const [allEvaluations, setAllEvaluations] = useState<Evaluation[]>([]);
-  const [frameworks, setFrameworks] = useState<KPIFrameworkType[]>([]);
-  const [selectedPeriod, setSelectedPeriod] = useState(PERIODS[Math.floor((new Date().getMonth()) / 3)]);
+  const [frameworks,     setFrameworks]     = useState<KPIFrameworkType[]>([]);
+
+  const [filterMode,     setFilterMode]     = useState<FilterMode>("quarterly");
+  const [selectedPeriod, setSelectedPeriod] = useState(() => defaultPeriod("quarterly"));
   const [activeTab, setActiveTab] = useState<"personal" | "overview" | "history" | "evaluate" | "kpi">("personal");
-  const [evaluateTarget, setEvaluateTarget] = useState<string>("");
+  const [evaluateTarget, setEvaluateTarget] = useState("");
   const [loading, setLoading] = useState(true);
 
-  // Drill-down state
-  const [drillUserId, setDrillUserId] = useState<string | null>(null);
-  const [drillEvals, setDrillEvals] = useState<Evaluation[]>([]);
-  const [loadingDrill, setLoadingDrill] = useState(false);
+  const [drillUserId,   setDrillUserId]   = useState<string | null>(null);
+  const [drillEvals,    setDrillEvals]    = useState<Evaluation[]>([]);
+  const [loadingDrill,  setLoadingDrill]  = useState(false);
 
-  // History tab state
-  const [historyUserId, setHistoryUserId] = useState<string>("");
-  const [historyEvals, setHistoryEvals] = useState<Evaluation[]>([]);
-  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [historyUserId,   setHistoryUserId]   = useState("");
+  const [historyEvals,    setHistoryEvals]    = useState<Evaluation[]>([]);
+  const [loadingHistory,  setLoadingHistory]  = useState(false);
 
   const canManageKPI = currentUser ? hasPermission(currentUser.role, "kpi:evaluate") : false;
-  const canEditKPI = currentUser ? hasPermission(currentUser.role, "kpi:*") : false;
+  const canEditKPI   = currentUser ? hasPermission(currentUser.role, "kpi:*")        : false;
 
   useEffect(() => {
     if (!currentUser) return;
@@ -184,60 +267,59 @@ export default function PerformancePage() {
       getEvaluations(currentUser.id).then(setEvaluations),
       getKPIFrameworks().then(setFrameworks),
     ];
-    if (canManageKPI) {
-      fetches.push(getAllEvaluations().then(setAllEvaluations));
-    }
+    if (canManageKPI) fetches.push(getAllEvaluations().then(setAllEvaluations));
     Promise.all(fetches).catch(console.error).finally(() => setLoading(false));
   }, [currentUser, canManageKPI]);
 
-  const periodToRange = (p: string): { start: string; end: string } => {
-    const [q, y] = p.split("/");
-    const qi = parseInt(q.replace("Q", "")) - 1;
-    const year = parseInt(y);
-    const month = qi * 3;
-    return {
-      start: new Date(year, month, 1).toISOString(),
-      end: new Date(year, month + 3, 0).toISOString(),
-    };
-  };
+  function switchMode(mode: FilterMode) {
+    setFilterMode(mode);
+    setSelectedPeriod(defaultPeriod(mode));
+    setDrillUserId(null);
+  }
+
+  const { start: pStart, end: pEnd } = useMemo(() => periodToRange(selectedPeriod), [selectedPeriod]);
 
   const evalsForPeriod = useMemo(() => {
-    const { start, end } = periodToRange(selectedPeriod);
-    return (canManageKPI ? allEvaluations : evaluations).filter(
-      (e) => e.createdAt >= start && e.createdAt <= end,
-    );
-  }, [evaluations, allEvaluations, selectedPeriod, canManageKPI]);
+    const src = canManageKPI ? allEvaluations : evaluations;
+    return src.filter((e) => e.createdAt >= pStart && e.createdAt <= pEnd);
+  }, [evaluations, allEvaluations, pStart, pEnd, canManageKPI]);
 
   const scores = useMemo(() => {
-    const { start, end } = periodToRange(selectedPeriod);
+    const src = canManageKPI ? allEvaluations : evaluations;
     return users
       .filter((u) => u.isActive && u.role !== "guest")
-      .map((u) =>
-        calcPerformanceScore({
-          tasks,
-          evaluations: canManageKPI ? allEvaluations : evaluations,
-          userId: u.id,
-          periodStart: start,
-          periodEnd: end,
-        }),
-      )
+      .map((u) => calcPerformanceScore({ tasks, evaluations: src, userId: u.id, periodStart: pStart, periodEnd: pEnd }))
       .sort((a, b) => b.totalScore - a.totalScore);
-  }, [tasks, evaluations, allEvaluations, users, selectedPeriod, canManageKPI]);
+  }, [tasks, evaluations, allEvaluations, users, pStart, pEnd, canManageKPI]);
 
-  const trendData = PERIODS.slice(0, PERIODS.indexOf(selectedPeriod) + 1).map((p) => {
-    const { start, end } = periodToRange(p);
-    const myScore = calcPerformanceScore({
-      tasks,
-      evaluations,
-      userId: currentUser?.id ?? "",
-      periodStart: start,
-      periodEnd: end,
+  // Trend periods adapt to filter mode
+  const trendPeriods = useMemo<string[]>(() => {
+    if (filterMode === "monthly") {
+      const ps: string[] = [];
+      for (let i = 5; i >= 0; i--) {
+        const d = new Date(CURRENT_YEAR, CURRENT_MONTH - 1 - i, 1);
+        ps.push(`T${d.getMonth() + 1}/${d.getFullYear()}`);
+      }
+      return ps;
+    }
+    if (filterMode === "quarterly") {
+      return ["Q1", "Q2", "Q3", "Q4"].slice(0, CURRENT_Q).map((q) => `${q}/${CURRENT_YEAR}`);
+    }
+    // yearly / 3years → 3-year yearly trend
+    return [`${CURRENT_YEAR - 2}`, `${CURRENT_YEAR - 1}`, `${CURRENT_YEAR}`];
+  }, [filterMode]);
+
+  const trendData = useMemo(() => {
+    if (!currentUser) return [];
+    return trendPeriods.map((p) => {
+      const { start, end } = periodToRange(p);
+      const s = calcPerformanceScore({ tasks, evaluations, userId: currentUser.id, periodStart: start, periodEnd: end });
+      return { period: p, ...s };
     });
-    return { period: p, ...myScore };
-  });
+  }, [trendPeriods, tasks, evaluations, currentUser]);
 
-  const myScore = scores.find((s) => s.userId === currentUser?.id);
-  const drillUser = drillUserId ? users.find((u) => u.id === drillUserId) : null;
+  const myScore    = scores.find((s) => s.userId === currentUser?.id);
+  const drillUser  = drillUserId ? users.find((u) => u.id === drillUserId) : null;
   const drillScore = drillUserId ? scores.find((s) => s.userId === drillUserId) : null;
 
   async function openDrill(userId: string) {
@@ -245,9 +327,8 @@ export default function PerformancePage() {
     setDrillUserId(userId);
     setLoadingDrill(true);
     try {
-      const { start, end } = periodToRange(selectedPeriod);
       const evals = await getEvaluations(userId);
-      setDrillEvals(evals.filter((e) => e.createdAt >= start && e.createdAt <= end));
+      setDrillEvals(evals.filter((e) => e.createdAt >= pStart && e.createdAt <= pEnd));
     } catch { setDrillEvals([]); }
     finally { setLoadingDrill(false); }
   }
@@ -255,47 +336,75 @@ export default function PerformancePage() {
   async function loadHistoryEvals(userId: string) {
     if (!userId) { setHistoryEvals([]); return; }
     setLoadingHistory(true);
-    try {
-      setHistoryEvals(await getEvaluations(userId));
-    } catch { setHistoryEvals([]); }
+    try { setHistoryEvals(await getEvaluations(userId)); }
+    catch { setHistoryEvals([]); }
     finally { setLoadingHistory(false); }
   }
 
-  const TABS: { id: "personal" | "overview" | "history" | "evaluate" | "kpi"; label: string; hidden?: boolean }[] = [
+  // Tabs — "Đánh giá" visible to all (staff → self-eval only)
+  const TABS: { id: typeof activeTab; label: string; hidden?: boolean }[] = [
     { id: "personal",  label: "KPI Cá nhân" },
     { id: "overview",  label: "Tổng quan tổ chức", hidden: !canManageKPI },
     { id: "history",   label: "Lịch sử đánh giá",  hidden: !canManageKPI },
-    { id: "evaluate",  label: "Đánh giá",            hidden: !canManageKPI },
-    { id: "kpi",       label: "Khung KPI",            hidden: !canEditKPI  },
+    { id: "evaluate",  label: "Đánh giá" },
+    { id: "kpi",       label: "Khung KPI",           hidden: !canEditKPI },
   ];
 
   return (
     <div className="px-4 py-6 max-w-5xl mx-auto">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      {/* ── Header ─────────────────────────────────────────── */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <h1 className="text-2xl font-bold text-[var(--foreground)] flex items-center gap-2">
           <TrendingUp className="w-6 h-6 text-blue-500" />
           Hiệu suất nhân viên
         </h1>
-        <select
-          value={selectedPeriod}
-          onChange={(e) => { setSelectedPeriod(e.target.value); setDrillUserId(null); }}
-          className="px-3 py-1.5 text-sm border border-[var(--border)] rounded-lg bg-[var(--card)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
-        >
-          {PERIODS.map((p) => (
-            <option key={p} value={p}>{p}</option>
-          ))}
-        </select>
+
+        {/* Period filter */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Mode segmented control */}
+          <div className="flex bg-[var(--muted)] rounded-lg p-0.5">
+            {(Object.keys(MODE_LABELS) as FilterMode[]).map((m) => (
+              <button
+                key={m}
+                onClick={() => switchMode(m)}
+                className={cn(
+                  "px-2.5 py-1 rounded-md text-xs font-medium transition-colors",
+                  filterMode === m
+                    ? "bg-[var(--card)] text-[var(--foreground)] shadow-sm"
+                    : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
+                )}
+              >
+                {MODE_LABELS[m]}
+              </button>
+            ))}
+          </div>
+
+          {filterMode !== "3years" ? (
+            <select
+              value={selectedPeriod}
+              onChange={(e) => { setSelectedPeriod(e.target.value); setDrillUserId(null); }}
+              className="px-3 py-1.5 text-sm border border-[var(--border)] rounded-lg bg-[var(--card)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              {getPeriodOptions(filterMode).map((p) => (
+                <option key={p} value={p}>{p}</option>
+              ))}
+            </select>
+          ) : (
+            <span className="px-3 py-1.5 text-sm text-[var(--muted-foreground)] border border-[var(--border)] rounded-lg bg-[var(--muted)]">
+              3 năm gần nhất
+            </span>
+          )}
+        </div>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 mb-6 border-b border-[var(--border)]">
+      {/* ── Tabs ───────────────────────────────────────────── */}
+      <div className="flex gap-1 mb-6 border-b border-[var(--border)] overflow-x-auto">
         {TABS.filter((t) => !t.hidden).map((tab) => (
           <button
             key={tab.id}
             onClick={() => { setActiveTab(tab.id); setDrillUserId(null); }}
             className={cn(
-              "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px",
+              "px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px whitespace-nowrap",
               activeTab === tab.id
                 ? "border-blue-500 text-blue-600"
                 : "border-transparent text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
@@ -306,29 +415,27 @@ export default function PerformancePage() {
         ))}
       </div>
 
-      {/* ── Personal KPI tab ─────────────────────────────────── */}
+      {/* ── KPI Cá nhân ────────────────────────────────────── */}
       {activeTab === "personal" && currentUser && (
         <PersonalKPIDashboard
           currentUser={currentUser}
+          users={users}
           tasks={tasks}
           evaluations={evaluations}
-          framework={frameworks.find(
-            (f) => f.department === currentUser.department && f.year === CURRENT_YEAR,
-          )}
-          period={selectedPeriod}
+          framework={frameworks.find((f) => f.department === currentUser.department && f.year === CURRENT_YEAR)}
+          period={periodLabel(selectedPeriod)}
           trendData={trendData}
-          periodStart={periodToRange(selectedPeriod).start}
-          periodEnd={periodToRange(selectedPeriod).end}
+          periodStart={pStart}
+          periodEnd={pEnd}
         />
       )}
 
-      {/* ── Overview tab ─────────────────────────────────────── */}
+      {/* ── Tổng quan tổ chức ──────────────────────────────── */}
       {activeTab === "overview" && (
         <div className="space-y-6">
-          {/* My score banner */}
           {myScore && currentUser && (
             <div className="bg-gradient-to-r from-blue-600 to-indigo-600 rounded-xl p-5 text-white">
-              <p className="text-sm text-blue-200 mb-1">Điểm của bạn — {selectedPeriod}</p>
+              <p className="text-sm text-blue-200 mb-1">Điểm của bạn — {periodLabel(selectedPeriod)}</p>
               <div className="flex items-end gap-4">
                 <div>
                   <span className="text-5xl font-bold">{myScore.totalScore}</span>
@@ -340,7 +447,6 @@ export default function PerformancePage() {
                   <p className="text-xs text-blue-200">Hoàn thành đúng hạn: {myScore.onTimeRate}%</p>
                 </div>
               </div>
-              {/* My own evaluations quick view */}
               {evaluations.length > 0 && (
                 <div className="mt-3 pt-3 border-t border-blue-500/40">
                   <p className="text-xs text-blue-200 mb-2">Đánh giá bạn nhận được trong kỳ này:</p>
@@ -358,7 +464,6 @@ export default function PerformancePage() {
             </div>
           )}
 
-          {/* Trend */}
           <div className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-5">
             <h3 className="font-semibold text-[var(--foreground)] mb-4 flex items-center gap-2">
               <BarChart3 className="w-4 h-4 text-blue-500" /> Xu hướng điểm số của bạn
@@ -366,17 +471,16 @@ export default function PerformancePage() {
             <PerformanceTrend data={trendData} />
           </div>
 
-          {/* Leaderboard */}
           <div className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-5">
             <h3 className="font-semibold text-[var(--foreground)] mb-4 flex items-center gap-2">
-              <Star className="w-4 h-4 text-amber-500" /> Bảng xếp hạng — {selectedPeriod}
+              <Star className="w-4 h-4 text-amber-500" /> Bảng xếp hạng — {periodLabel(selectedPeriod)}
             </h3>
             <div className="space-y-1">
               {scores.slice(0, 15).map((score, i) => {
-                const user = users.find((u) => u.id === score.userId);
+                const user  = users.find((u) => u.id === score.userId);
                 if (!user) return null;
-                const rank = getRank(score.totalScore);
-                const isMe = score.userId === currentUser?.id;
+                const rank    = getRank(score.totalScore);
+                const isMe    = score.userId === currentUser?.id;
                 const isDrill = drillUserId === score.userId;
                 return (
                   <div key={score.userId}>
@@ -384,23 +488,22 @@ export default function PerformancePage() {
                       onClick={() => canManageKPI ? openDrill(score.userId) : undefined}
                       className={cn(
                         "w-full flex items-center gap-3 p-3 rounded-lg transition-colors text-left",
-                        isMe ? "bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700" : "hover:bg-[var(--muted)]",
+                        isMe    ? "bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-700" : "hover:bg-[var(--muted)]",
                         isDrill && "ring-2 ring-blue-500",
                         canManageKPI && "cursor-pointer",
                       )}
                     >
                       <span className={cn(
                         "w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0",
-                        i === 0 ? "bg-amber-100 text-amber-700" : i === 1 ? "bg-gray-100 text-gray-600" : i === 2 ? "bg-orange-100 text-orange-700" : "bg-[var(--muted)] text-[var(--muted-foreground)]",
-                      )}>
-                        {i + 1}
-                      </span>
+                        i === 0 ? "bg-amber-100 text-amber-700"
+                          : i === 1 ? "bg-gray-100 text-gray-600"
+                          : i === 2 ? "bg-orange-100 text-orange-700"
+                          : "bg-[var(--muted)] text-[var(--muted-foreground)]",
+                      )}>{i + 1}</span>
                       <div
                         className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0"
                         style={{ background: avatarColor(user.name) }}
-                      >
-                        {getInitials(user.name)}
-                      </div>
+                      >{getInitials(user.name)}</div>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium text-[var(--foreground)] truncate">{user.name}</p>
                         <p className="text-xs text-[var(--muted-foreground)]">{user.department}</p>
@@ -414,7 +517,6 @@ export default function PerformancePage() {
                       )}
                     </button>
 
-                    {/* Inline drill-down */}
                     {isDrill && drillUser && drillScore && (
                       <div className="mt-1 ml-10">
                         <UserDetailPanel
@@ -444,7 +546,7 @@ export default function PerformancePage() {
         </div>
       )}
 
-      {/* ── History tab ─────────────────────────────────────── */}
+      {/* ── Lịch sử đánh giá ───────────────────────────────── */}
       {activeTab === "history" && canManageKPI && (
         <div className="space-y-5">
           <div>
@@ -462,7 +564,7 @@ export default function PerformancePage() {
           </div>
 
           {historyUserId && (() => {
-            const user = users.find((u) => u.id === historyUserId);
+            const user  = users.find((u) => u.id === historyUserId);
             const score = scores.find((s) => s.userId === historyUserId);
             if (!user || !score) return null;
             return (
@@ -488,31 +590,38 @@ export default function PerformancePage() {
         </div>
       )}
 
-      {/* ── Evaluate tab ─────────────────────────────────────── */}
-      {activeTab === "evaluate" && canManageKPI && (
+      {/* ── Đánh giá (all roles) ───────────────────────────── */}
+      {activeTab === "evaluate" && (
         <div className="space-y-5">
-          <div>
-            <label className="block text-sm font-medium text-[var(--foreground)] mb-2">Chọn nhân viên đánh giá</label>
-            <select
-              value={evaluateTarget}
-              onChange={(e) => setEvaluateTarget(e.target.value)}
-              className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-lg bg-[var(--card)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="">-- Tự đánh giá --</option>
-              {users.filter((u) => u.isActive && u.id !== currentUser?.id).map((u) => (
-                <option key={u.id} value={u.id}>{u.name} — {u.department}</option>
-              ))}
-            </select>
-          </div>
+          {canManageKPI ? (
+            <div>
+              <label className="block text-sm font-medium text-[var(--foreground)] mb-2">Chọn nhân viên đánh giá</label>
+              <select
+                value={evaluateTarget}
+                onChange={(e) => setEvaluateTarget(e.target.value)}
+                className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-lg bg-[var(--card)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">-- Tự đánh giá --</option>
+                {users.filter((u) => u.isActive && u.id !== currentUser?.id).map((u) => (
+                  <option key={u.id} value={u.id}>{u.name} — {u.department}</option>
+                ))}
+              </select>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 p-3 rounded-lg bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400 text-sm border border-blue-200 dark:border-blue-700">
+              <UserIcon className="w-4 h-4 shrink-0" />
+              Tự đánh giá kỳ {periodLabel(selectedPeriod)}
+            </div>
+          )}
+
           {currentUser && (
             <EvaluationForm
-              targetUserId={evaluateTarget || currentUser.id}
+              targetUserId={canManageKPI ? (evaluateTarget || currentUser.id) : currentUser.id}
               evaluatorId={currentUser.id}
-              type={evaluateTarget ? "manager" : "self"}
+              type={canManageKPI && evaluateTarget ? "manager" : "self"}
               period={selectedPeriod}
               onDone={(saved) => {
                 setEvaluateTarget("");
-                // Refresh all evaluations so the new entry appears in the history tab
                 if (canManageKPI) getAllEvaluations().then(setAllEvaluations).catch(console.error);
                 if (saved.evaluatedUserId === currentUser?.id) {
                   getEvaluations(currentUser.id).then(setEvaluations).catch(console.error);
@@ -523,7 +632,7 @@ export default function PerformancePage() {
         </div>
       )}
 
-      {/* ── KPI Framework tab ─────────────────────────────────── */}
+      {/* ── Khung KPI ──────────────────────────────────────── */}
       {activeTab === "kpi" && canEditKPI && (
         <KPIFrameworkEditor
           department={currentUser?.department ?? "Toàn công ty"}
