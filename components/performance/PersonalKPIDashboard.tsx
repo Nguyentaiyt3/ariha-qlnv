@@ -172,23 +172,50 @@ export default function PersonalKPIDashboard({
   const [taskSearch, setTaskSearch]           = useState("");
   const [taskGradeFilter, setTaskGradeFilter] = useState("all");
   const [expandedTaskId, setExpandedTaskId]   = useState<string | null>(null);
+  // Independent time filter for the completed-tasks section
+  const [cmpTimeFilter, setCmpTimeFilter]     = useState<"all" | "3m" | "6m" | "year" | "3y">("3y");
 
-  const completedTasks = useMemo(
-    () => periodTasks.filter((t) => t.status === "done"),
-    [periodTasks],
+  // All completed tasks — NOT restricted to page period so tasks from any time show up
+  const allCompletedTasks = useMemo(
+    () => allMyActiveTasks
+      .filter((t) => t.status === "done")
+      .sort((a, b) => (b.completedAt ?? b.deadlineBase ?? "").localeCompare(a.completedAt ?? a.deadlineBase ?? "")),
+    [allMyActiveTasks],
   );
 
   const filteredCompletedTasks = useMemo(() => {
-    let list = completedTasks;
+    const now  = new Date();
+    const cutoff: Record<string, Date> = {
+      "3m":   new Date(now.getFullYear(), now.getMonth() - 3, now.getDate()),
+      "6m":   new Date(now.getFullYear(), now.getMonth() - 6, now.getDate()),
+      year:   new Date(now.getFullYear(), 0, 1),
+      "3y":   new Date(now.getFullYear() - 3, 0, 1),
+    };
+
+    let list = allCompletedTasks;
+
+    // Time filter
+    if (cmpTimeFilter !== "all") {
+      const since = cutoff[cmpTimeFilter];
+      list = list.filter((t) => {
+        const d = t.completedAt ?? t.deadlineBase;
+        return d ? new Date(d) >= since : true;
+      });
+    }
+
+    // Text search
     if (taskSearch.trim()) {
       const q = taskSearch.toLowerCase();
       list = list.filter((t) => t.name.toLowerCase().includes(q));
     }
+
+    // Grade filter
     if (taskGradeFilter !== "all") {
       list = list.filter((t) => t.completionProposal?.score3T?.grade === taskGradeFilter);
     }
+
     return list;
-  }, [completedTasks, taskSearch, taskGradeFilter]);
+  }, [allCompletedTasks, cmpTimeFilter, taskSearch, taskGradeFilter]);
 
   // ── Gauge data ────────────────────────────────────────────
   const gaugeColor = score.totalScore >= 75 ? "#22C55E" : score.totalScore >= 60 ? "#3B82F6" : score.totalScore >= 45 ? "#F59E0B" : "#EF4444";
@@ -537,59 +564,92 @@ export default function PersonalKPIDashboard({
       )}
 
       {/* ── Nhiệm vụ hoàn thành ─────────────────────────────── */}
-      {completedTasks.length > 0 && (
-        <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
-          {/* Header + controls */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+        {/* Header + controls */}
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
             <h3 className="text-sm font-semibold text-[var(--foreground)] flex items-center gap-2 shrink-0">
               <CheckCircle2 className="w-4 h-4 text-green-500" />
-              Nhiệm vụ hoàn thành — {completedTasks.length} nhiệm vụ
+              Nhiệm vụ hoàn thành
+              <span className="ml-1 px-1.5 py-0.5 text-[10px] rounded-full bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 font-bold">
+                {filteredCompletedTasks.length}
+              </span>
             </h3>
 
-            <div className="flex items-center gap-2 flex-wrap">
-              {/* Search */}
-              <div className="relative">
-                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--muted-foreground)]" />
-                <input
-                  type="text"
-                  placeholder="Tìm nhiệm vụ..."
-                  value={taskSearch}
-                  onChange={(e) => setTaskSearch(e.target.value)}
-                  className="pl-8 pr-3 py-1.5 text-xs rounded-lg border border-[var(--border)] bg-[var(--muted)] focus:outline-none focus:ring-1 focus:ring-blue-500 w-36"
-                />
-              </div>
-
-              {/* Grade filter chips */}
-              <div className="flex gap-1 flex-wrap">
-                {([
-                  { key: "all",             label: "Tất cả",       hex: "#64748B" },
-                  { key: "xuatSac",         label: "Xuất sắc",     hex: GRADE_CFG.xuatSac.color },
-                  { key: "hoanThanhTot",    label: "HT tốt",       hex: GRADE_CFG.hoanThanhTot.color },
-                  { key: "hoanThanh",       label: "HT",           hex: GRADE_CFG.hoanThanh.color },
-                  { key: "khongHoanThanh",  label: "Không HT",     hex: GRADE_CFG.khongHoanThanh.color },
-                ] as const).map(({ key, label, hex }) => (
-                  <button
-                    key={key}
-                    onClick={() => setTaskGradeFilter(taskGradeFilter === key ? "all" : key)}
-                    className={cn(
-                      "px-2 py-0.5 rounded-full text-[10px] font-semibold border transition-colors",
-                      taskGradeFilter === key
-                        ? "border-transparent text-white"
-                        : "border-[var(--border)] text-[var(--muted-foreground)] bg-[var(--muted)]",
-                    )}
-                    style={taskGradeFilter === key ? { background: hex } : {}}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
+            {/* Time filter */}
+            <div className="flex bg-[var(--muted)] rounded-lg p-0.5">
+              {([
+                { key: "3m",   label: "3T" },
+                { key: "6m",   label: "6T" },
+                { key: "year", label: "Năm nay" },
+                { key: "3y",   label: "3 năm" },
+                { key: "all",  label: "Tất cả" },
+              ] as const).map(({ key, label }) => (
+                <button
+                  key={key}
+                  onClick={() => setCmpTimeFilter(key)}
+                  className={cn(
+                    "px-2.5 py-1 rounded-md text-[10px] font-medium transition-colors whitespace-nowrap",
+                    cmpTimeFilter === key
+                      ? "bg-[var(--card)] text-[var(--foreground)] shadow-sm"
+                      : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
           </div>
 
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Search */}
+            <div className="relative flex-1 min-w-0">
+              <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--muted-foreground)]" />
+              <input
+                type="text"
+                placeholder="Tìm tên nhiệm vụ..."
+                value={taskSearch}
+                onChange={(e) => setTaskSearch(e.target.value)}
+                className="w-full pl-8 pr-3 py-1.5 text-xs rounded-lg border border-[var(--border)] bg-[var(--muted)] focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+            </div>
+
+            {/* Grade filter chips */}
+            <div className="flex gap-1 flex-wrap shrink-0">
+              {([
+                { key: "all",             label: "Tất cả",   hex: "#64748B" },
+                { key: "xuatSac",         label: "Xuất sắc", hex: GRADE_CFG.xuatSac.color },
+                { key: "hoanThanhTot",    label: "HT tốt",   hex: GRADE_CFG.hoanThanhTot.color },
+                { key: "hoanThanh",       label: "HT",       hex: GRADE_CFG.hoanThanh.color },
+                { key: "khongHoanThanh",  label: "Không HT", hex: GRADE_CFG.khongHoanThanh.color },
+              ] as const).map(({ key, label, hex }) => (
+                <button
+                  key={key}
+                  onClick={() => setTaskGradeFilter(taskGradeFilter === key ? "all" : key)}
+                  className={cn(
+                    "px-2 py-0.5 rounded-full text-[10px] font-semibold border transition-colors",
+                    taskGradeFilter === key
+                      ? "border-transparent text-white"
+                      : "border-[var(--border)] text-[var(--muted-foreground)] bg-[var(--muted)]",
+                  )}
+                  style={taskGradeFilter === key ? { background: hex } : {}}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
           {/* Task list */}
-          {filteredCompletedTasks.length === 0 ? (
+          {allCompletedTasks.length === 0 ? (
+            <div className="text-center py-10 border-2 border-dashed border-[var(--border)] rounded-xl">
+              <CheckCircle2 className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+              <p className="text-sm text-[var(--muted-foreground)]">Chưa có nhiệm vụ hoàn thành nào.</p>
+            </div>
+          ) : filteredCompletedTasks.length === 0 ? (
             <p className="text-center text-xs text-[var(--muted-foreground)] py-6">
-              Không tìm thấy nhiệm vụ phù hợp.
+              Không có nhiệm vụ phù hợp với bộ lọc.
             </p>
           ) : (
             <div className="space-y-2 max-h-[520px] overflow-y-auto pr-0.5">
@@ -774,8 +834,7 @@ export default function PersonalKPIDashboard({
               })}
             </div>
           )}
-        </div>
-      )}
+      </div>
 
       {/* Empty state */}
       {allMyActiveTasks.length === 0 && myEvals.length === 0 && (
