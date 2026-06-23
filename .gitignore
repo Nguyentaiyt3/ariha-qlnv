@@ -40,3 +40,4 @@ firebase-debug.log
 # Editor
 .vscode/
 .idea/
+.env.local
