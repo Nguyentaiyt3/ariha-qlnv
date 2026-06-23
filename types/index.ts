@@ -39,6 +39,8 @@ export interface NotificationPrefs {
   inAppEnabled: boolean;
   digestFreq: "realtime" | "daily" | "weekly";
   disabledEventTypes?: EmailEventType[];
+  /** Số ngày giữ thông báo đã đọc trước khi tự xóa. 0 = không tự xóa. Mặc định 30. */
+  retentionDays?: number;
 }
 
 export interface GoogleToken {
@@ -104,6 +106,26 @@ export interface CompletionProposal {
   reviewedAt?: string;
   reviewComment?: string;
   reviewRating?: number;
+}
+
+export type ChangeRequestType = "deadline_change" | "performer_change" | "issue_raised";
+
+export interface ChangeRequest {
+  type: ChangeRequestType;
+  reason: string;
+  requestedBy: string;
+  requestedByName: string;
+  requestedAt: string;
+  previousStatus: TaskStatus;
+  status: "pending" | "approved" | "rejected";
+  changedFields?: {
+    deadlineBase?: { before: string; after: string };
+    mainPerformerId?: { before: string; after: string };
+  };
+  reviewedBy?: string;
+  reviewedByName?: string;
+  reviewedAt?: string;
+  reviewComment?: string;
 }
 
 export interface TaskStep {
@@ -215,6 +237,9 @@ export interface Task {
 
   // Completion proposal (main performer → manager approval)
   completionProposal?: CompletionProposal;
+
+  // Change request (deadline / performer / issue — requires re-approval)
+  pendingChangeRequest?: ChangeRequest | null;
 
   // Resources shared by main performer
   resources?: TaskResource[];
@@ -377,6 +402,8 @@ export interface PerformanceScore {
 // ─── NOTIFICATIONS ────────────────────────────────────────────
 
 export type NotificationType =
+  // Task lifecycle
+  | "task_created"
   | "task_assigned"
   | "task_overdue"
   | "deadline_alert"
@@ -384,11 +411,29 @@ export type NotificationType =
   | "comment_mention"
   | "approval_request"
   | "task_completed"
-  | "calendar_change_request"
-  | "calendar_change_approved"
   | "risk_flag"
   | "completion_proposal"
   | "completion_reviewed"
+  // Calendar
+  | "calendar_change_request"
+  | "calendar_change_approved"
+  // Finance — Tạm ứng
+  | "advance_created"
+  | "advance_approved"
+  | "advance_rejected"
+  | "advance_settlement_submitted"
+  | "advance_settlement_approved"
+  | "advance_settlement_rejected"
+  // Finance — Hoàn ứng
+  | "reimbursement_submitted"
+  | "reimbursement_approved"
+  | "reimbursement_paid"
+  // WorkNode (governance)
+  | "node_unlocked"
+  | "node_submitted"
+  | "node_approved"
+  | "node_rejected"
+  // Requests / Intranet
   | "request_submitted"
   | "request_approved"
   | "request_rejected"
@@ -403,10 +448,11 @@ export interface Notification {
   type: NotificationType;
   title: string;
   body: string;
-  link?: string;
+  link?: string;           // Route điều hướng khi click
   read: boolean;
   priority: "low" | "normal" | "urgent";
   taskId?: string;
+  actionRequired?: boolean; // true → hiển thị cảnh báo nhắc nhở nếu chưa xử lý
   createdAt: string;
 }
 
@@ -734,6 +780,7 @@ export type TransactionStatus = "PENDING_PROOF" | "VALID" | "REJECTED";
 export interface FinancialTransaction {
   id: string;
   taskId: string;
+  taskName?: string;            // Tên nhiệm vụ (denormalized để hiển thị nhanh)
   stepId?: string;              // Gắn vào bước cụ thể (tùy chọn)
   createdBy: string;            // userId người tạo
   createdByName: string;
@@ -843,6 +890,7 @@ export interface ReimbursementRequest {
 /** Tổng hợp tài chính của Task (denormalized để render nhanh, không cần query nhiều) */
 export interface TaskFinancialSummary {
   taskId: string;
+  taskName?: string;            // Tên nhiệm vụ (lưu để hiện nhanh trên finance page)
   budget: number;               // Ngân sách dự kiến được giao
   totalAdvanced: number;        // Tổng tạm ứng đã được duyệt
   totalAdvanceUsed: number;     // Đã chi từ tạm ứng (giao dịch ADVANCE hợp lệ)
@@ -855,4 +903,136 @@ export interface TaskFinancialSummary {
   budgetUtilizationPct: number; // = totalExpense / budget * 100
   financialStatus: "ACTIVE" | "RECONCILING" | "SETTLED";
   lastUpdated: string;
+}
+
+// ─── WORK NODE (Governance Model) ────────────────────────────
+
+/**
+ * Trạng thái vòng đời của một WorkNode.
+ * locked      : Điều kiện tiên quyết chưa được đáp ứng
+ * pending     : Đã mở khóa, chưa bắt đầu
+ * in_progress : Đang thực hiện
+ * review      : Đã nộp nghiệm thu, chờ phê duyệt
+ * completed   : Đã được duyệt / hoàn thành
+ * rejected    : Bị từ chối, cần làm lại
+ */
+export type NodeStatus =
+  | "locked"
+  | "pending"
+  | "in_progress"
+  | "review"
+  | "completed"
+  | "rejected";
+
+/** Điều kiện logic mở khóa node: tất cả (ALL) hay bất kỳ (ANY) prerequisite hoàn thành */
+export type PrerequisiteMode = "ALL" | "ANY";
+
+// ── [ĐẦU VÀO] ─────────────────────────────────────────────────
+
+export type InputResourceType = "text" | "link" | "budget";
+
+export interface InputResource {
+  id: string;
+  type: InputResourceType;
+  label: string;
+  content: string;   // Nội dung text hoặc URL
+  amount?: number;   // Chỉ dùng cho type="budget"
+}
+
+// ── [NỘI DUNG] ────────────────────────────────────────────────
+
+export interface NodeChecklistItem {
+  id: string;
+  label: string;
+  completed: boolean;
+  completedAt?: string;
+  completedBy?: string;
+}
+
+// ── [ĐẦU RA] ──────────────────────────────────────────────────
+
+export type OutputAttachmentType = "file" | "link" | "text";
+
+export interface OutputAttachment {
+  id: string;
+  type: OutputAttachmentType;
+  name: string;
+  content: string;    // URL cho file/link; nội dung text thuần
+  uploadedBy: string;
+  uploadedByName: string;
+  uploadedAt: string;
+}
+
+// ── [TIÊU CHÍ ĐÁNH GIÁ — 3T] ──────────────────────────────────
+
+/** T1: Tiến độ — auto-tính khi node hoàn thành */
+export interface T1Timeliness {
+  completedAt: string;
+  dueDate: string;
+  status: "on_time" | "late";
+  lateDays?: number;
+  lateHours?: number;
+}
+
+/** T2: Tiêu chuẩn chất lượng — người duyệt đánh giá thủ công */
+export interface T2Quality {
+  rating: 1 | 2 | 3 | 4 | 5;
+  verdict: "pass" | "fail";
+  evaluatorId: string;
+  evaluatorName: string;
+  evaluatedAt: string;
+  note?: string;
+}
+
+/** T3: Tài nguyên — auto-tính khi có actualCost */
+export interface T3Resources {
+  budgeted: number;
+  actual: number;
+  variance: number;       // actual − budgeted (dương = vượt ngân sách)
+  variancePct: number;    // variance / budgeted × 100
+  status: "under_budget" | "on_budget" | "over_budget";
+}
+
+// ── WorkNode Entity ────────────────────────────────────────────
+
+export interface WorkNode {
+  // Định danh & phân cấp
+  id: string;
+  rootTaskId: string;          // ID nhiệm vụ gốc (dùng để index & filter)
+  parentId: string | null;     // null = con trực tiếp của task gốc (L1)
+  ancestors: string[];         // Materialized path: [rootTaskId, L1Id, L2Id…] — không bao gồm id của chính node
+  depth: number;               // 0 = task, 1 = step, 2 = sub-step…
+
+  // [ĐẦU VÀO] Input & Schema
+  name: string;
+  description?: string;
+  assigneeId: string;          // Một người chịu trách nhiệm chính duy nhất
+  assigneeName: string;
+  approverIds: string[];       // Người duyệt nghiệm thu (nhận thông báo khi submit)
+  inputResources: InputResource[];
+  prerequisites: string[];     // Mảng Node ID phải hoàn thành trước
+  prerequisiteMode: PrerequisiteMode;
+  startDate?: string;
+  dueDate: string;
+  budget?: number;             // Ngân sách được cấp (đồng bộ từ InputResource type=budget)
+
+  // [NỘI DUNG] Process & Execution
+  checklist: NodeChecklistItem[];
+  status: NodeStatus;
+  progress: number;            // 0–100
+
+  // [ĐẦU RA] Output Validation
+  outputAttachments: OutputAttachment[];
+
+  // [TIÊU CHÍ] 3T Evaluation
+  actualCost?: number;
+  t1Timeliness?: T1Timeliness;
+  t2Quality?: T2Quality;
+  t3Resources?: T3Resources;
+
+  // Meta
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+  createdByName: string;
 }

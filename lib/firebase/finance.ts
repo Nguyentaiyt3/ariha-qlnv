@@ -23,6 +23,12 @@ import {
 } from "firebase/firestore";
 import { getDb } from "./config";
 import { generateId } from "@/lib/utils";
+import {
+  notifAdvanceCreated, notifAdvanceApproved, notifAdvanceRejected,
+  notifAdvanceSettlementSubmitted, notifAdvanceSettlementResult,
+  notifReimbursementSubmitted, notifReimbursementApproved, notifReimbursementPaid,
+  getUserIdsByRoles,
+} from "./notifications";
 import type {
   FinancialTransaction, AdvanceRequest, ReimbursementRequest,
   TaskFinancialSummary, FinancialProof,
@@ -113,15 +119,15 @@ export async function recomputeFinancialSummary(
   const totalPendingReimbursement = pendingReimbs.reduce((s, r) => s + r.amount, 0);
   const totalExpense = totalAdvanceUsed + totalOutOfPocket;
 
-  // Lấy budget từ task document nếu không truyền vào
-  let effectiveBudget = budget;
-  if (effectiveBudget === 0) {
-    const taskDoc = await getDoc(doc(db, "tasks", taskId));
-    effectiveBudget = (taskDoc.data()?.budget as number) ?? 0;
-  }
+  // Lấy budget + taskName từ task document
+  const taskDoc = await getDoc(doc(db, "tasks", taskId));
+  const taskData = taskDoc.data();
+  const effectiveBudget = budget > 0 ? budget : ((taskData?.budget as number) ?? 0);
+  const taskName = (taskData?.name as string) ?? taskId;
 
   const summary: TaskFinancialSummary = {
     taskId,
+    taskName,
     budget: effectiveBudget,
     totalAdvanced,
     totalAdvanceUsed,
@@ -197,6 +203,10 @@ export async function createTransaction(payload: {
   const txId = generateId("tx");
   const now = new Date().toISOString();
 
+  // ── Đọc tên nhiệm vụ để denormalize vào giao dịch ────────────
+  const taskSnap = await getDoc(doc(db, "tasks", payload.taskId));
+  const taskName = (taskSnap.data()?.name as string | undefined) ?? payload.taskId;
+
   // ── Validate số tiền ──────────────────────────────────────────
   if (payload.amount <= 0) throw new Error("Số tiền phải lớn hơn 0.");
 
@@ -254,6 +264,7 @@ export async function createTransaction(payload: {
   if (payload.fundSource === "OUT_OF_POCKET") {
     // Tự động tạo ReimbursementRequest ở trạng thái DRAFT
     const reimId = generateId("reim");
+    const reimStatus: ReimbursementRequest["status"] = hasProofs ? "SUBMITTED" : "DRAFT";
     reimbursementRequest = {
       id: reimId,
       taskId: payload.taskId,
@@ -263,7 +274,7 @@ export async function createTransaction(payload: {
       amount: payload.amount,
       description: payload.description,
       proofs: payload.proofs ?? [],
-      status: hasProofs ? "SUBMITTED" : "DRAFT", // Có chứng từ → nộp ngay
+      status: reimStatus,
       createdAt: now,
       updatedAt: now,
     };
@@ -271,12 +282,28 @@ export async function createTransaction(payload: {
       doc(db, "reimbursementRequests", reimId),
       stripUndef(reimbursementRequest)
     );
+
+    // Nếu đã có chứng từ ngay → thông báo approver luôn
+    if (reimStatus === "SUBMITTED") {
+      const approverIds = await getUserIdsByRoles(["director", "hrAdmin"]).catch(() => []);
+      const toNotify = approverIds.filter((uid) => uid !== payload.createdBy);
+      if (toNotify.length > 0) {
+        await notifReimbursementSubmitted({
+          approverIds: toNotify,
+          taskId: payload.taskId,
+          taskName: taskName ?? payload.taskId,
+          requesterName: payload.createdByName,
+          amount: payload.amount,
+        }).catch(() => {});
+      }
+    }
   }
 
   // ── Tạo giao dịch ────────────────────────────────────────────
   const transaction: FinancialTransaction = {
     id: txId,
     taskId: payload.taskId,
+    taskName,
     createdBy: payload.createdBy,
     createdByName: payload.createdByName,
     amount: payload.amount,
@@ -334,12 +361,30 @@ export async function addProofToTransaction(
     const reimSnap = await getDoc(reimRef);
     if (reimSnap.exists()) {
       const reim = reimSnap.data() as ReimbursementRequest;
+      const wasDraft = reim.status === "DRAFT";
       await updateDoc(reimRef, {
         proofs: [...reim.proofs, proof],
-        status: reim.status === "DRAFT" ? "SUBMITTED" : reim.status,
-        submittedAt: reim.status === "DRAFT" ? new Date().toISOString() : reim.submittedAt,
+        status: wasDraft ? "SUBMITTED" : reim.status,
+        submittedAt: wasDraft ? new Date().toISOString() : reim.submittedAt,
         updatedAt: new Date().toISOString(),
       });
+
+      // Khi DRAFT → SUBMITTED: thông báo approver
+      if (wasDraft) {
+        const approverIds = await getUserIdsByRoles(["director", "hrAdmin"]).catch(() => []);
+        const toNotify = approverIds.filter((uid) => uid !== tx.createdBy);
+        if (toNotify.length > 0) {
+          const taskSnap = await getDoc(doc(db, "tasks", taskId)).catch(() => null);
+          const tName = (taskSnap?.data()?.name as string | undefined) ?? taskId;
+          await notifReimbursementSubmitted({
+            approverIds: toNotify,
+            taskId,
+            taskName: tName,
+            requesterName: tx.createdByName,
+            amount: reim.amount,
+          }).catch(() => {});
+        }
+      }
     }
   }
 
@@ -409,6 +454,23 @@ export async function createAdvanceRequest(payload: {
   };
 
   await setDoc(doc(db, "advanceRequests", id), stripUndef(request));
+
+  // Thông báo cho director + hrAdmin về đơn tạm ứng mới
+  const taskSnap = await getDoc(doc(db, "tasks", payload.taskId)).catch(() => null);
+  const taskName = (taskSnap?.data()?.name as string | undefined) ?? payload.taskId;
+  const approverIds = await getUserIdsByRoles(["director", "hrAdmin"]).catch(() => []);
+  const notifApprovers = approverIds.filter((uid) => uid !== payload.requestedBy);
+  if (notifApprovers.length > 0) {
+    await notifAdvanceCreated({
+      approverIds: notifApprovers,
+      taskId: payload.taskId,
+      taskName,
+      requesterName: payload.requestedByName,
+      amount: payload.amount,
+      advanceId: id,
+    }).catch(() => {});
+  }
+
   return request;
 }
 
@@ -432,9 +494,20 @@ export async function approveAdvanceRequest(
     approvedBy,
     approvedByName,
     approvedAt: now,
-    remainingAmount: adv.amount, // Khi duyệt, số dư = toàn bộ số tiền xin
+    remainingAmount: adv.amount,
     updatedAt: now,
   });
+
+  // Thông báo cho người yêu cầu
+  const taskSnap = await getDoc(doc(db, "tasks", adv.taskId)).catch(() => null);
+  const taskName = (taskSnap?.data()?.name as string | undefined) ?? adv.taskId;
+  await notifAdvanceApproved({
+    recipientId: adv.requestedBy,
+    taskId: adv.taskId,
+    taskName,
+    approverName: approvedByName,
+    amount: adv.amount,
+  }).catch(() => {});
 }
 
 /** Từ chối đơn tạm ứng */
@@ -443,11 +516,24 @@ export async function rejectAdvanceRequest(
   reason: string
 ): Promise<void> {
   const db = getDb();
+  const snap = await getDoc(doc(db, "advanceRequests", requestId));
   await updateDoc(doc(db, "advanceRequests", requestId), {
     status: "REJECTED",
     rejectedReason: reason,
     updatedAt: new Date().toISOString(),
   });
+
+  if (snap.exists()) {
+    const adv = snap.data() as AdvanceRequest;
+    const taskSnap = await getDoc(doc(db, "tasks", adv.taskId)).catch(() => null);
+    const taskName = (taskSnap?.data()?.name as string | undefined) ?? adv.taskId;
+    await notifAdvanceRejected({
+      recipientId: adv.requestedBy,
+      taskId: adv.taskId,
+      taskName,
+      reason,
+    }).catch(() => {});
+  }
 }
 
 // ── Quyết toán hoàn ứng (reconcileAdvance) ───────────────────────────────────
@@ -579,6 +665,18 @@ export async function getFinancialSummary(taskId: string): Promise<TaskFinancial
   return snap.exists() ? (snap.data() as TaskFinancialSummary) : null;
 }
 
+/** Realtime listener TẤT CẢ financial summaries của toàn hệ thống (collectionGroup) */
+export function subscribeAllFinancialSummaries(
+  callback: (summaries: TaskFinancialSummary[]) => void
+): () => void {
+  const db = getDb();
+  return onSnapshot(
+    collectionGroup(db, "financialSummary"),
+    (snap) => callback(snap.docs.map((d) => d.data() as TaskFinancialSummary)),
+    (err) => console.error("[subscribeAllFinancialSummaries]", err.code, err.message)
+  );
+}
+
 /** Lấy danh sách đơn hoàn ứng của task */
 export async function getReimbursementRequests(taskId: string): Promise<ReimbursementRequest[]> {
   const db = getDb();
@@ -607,27 +705,45 @@ export async function approveReimbursement(
   approvedBy: string,
   approvedByName: string
 ): Promise<void> {
-  const db = getDb();
+  const db  = getDb();
   const now = new Date().toISOString();
+  const snap = await getDoc(doc(db, "reimbursementRequests", reimbId));
   await updateDoc(doc(db, "reimbursementRequests", reimbId), {
-    status: "APPROVED",
-    approvedBy,
-    approvedByName,
-    approvedAt: now,
-    updatedAt: now,
+    status: "APPROVED", approvedBy, approvedByName, approvedAt: now, updatedAt: now,
   });
+  if (snap.exists()) {
+    const reim = snap.data() as ReimbursementRequest;
+    const taskSnap = await getDoc(doc(db, "tasks", reim.taskId)).catch(() => null);
+    const taskName = (taskSnap?.data()?.name as string | undefined) ?? reim.taskId;
+    await notifReimbursementApproved({
+      recipientId: reim.requestedBy,
+      taskId: reim.taskId,
+      taskName,
+      approverName: approvedByName,
+    }).catch(() => {});
+  }
 }
 
 /** Xác nhận đã trả tiền hoàn ứng */
 export async function markReimbursementPaid(reimbId: string, taskId: string): Promise<void> {
-  const db = getDb();
+  const db  = getDb();
   const now = new Date().toISOString();
+  const snap = await getDoc(doc(db, "reimbursementRequests", reimbId));
   await updateDoc(doc(db, "reimbursementRequests", reimbId), {
-    status: "PAID",
-    paidAt: now,
-    updatedAt: now,
+    status: "PAID", paidAt: now, updatedAt: now,
   });
   await recomputeFinancialSummary(taskId);
+  if (snap.exists()) {
+    const reim = snap.data() as ReimbursementRequest;
+    const taskSnap = await getDoc(doc(db, "tasks", taskId)).catch(() => null);
+    const taskName = (taskSnap?.data()?.name as string | undefined) ?? taskId;
+    await notifReimbursementPaid({
+      recipientId: reim.requestedBy,
+      taskId,
+      taskName,
+      amount: reim.amount,
+    }).catch(() => {});
+  }
 }
 
 // ── Tạo đơn hoàn ứng trực tiếp từ bước (không cần giao dịch trước) ───────────
@@ -660,6 +776,22 @@ export async function createDirectReimbursementRequest(data: {
     createdAt:       now,
     updatedAt:       now,
   });
+
+  // Thông báo approver về yêu cầu hoàn ứng mới
+  const taskSnap = await getDoc(doc(db, "tasks", data.taskId)).catch(() => null);
+  const taskName = (taskSnap?.data()?.name as string | undefined) ?? data.taskId;
+  const approverIds = await getUserIdsByRoles(["director", "hrAdmin"]).catch(() => []);
+  const toNotify = approverIds.filter((uid) => uid !== data.requestedBy);
+  if (toNotify.length > 0) {
+    await notifReimbursementSubmitted({
+      approverIds: toNotify,
+      taskId: data.taskId,
+      taskName,
+      requesterName: data.requestedByName,
+      amount: data.amount,
+    }).catch(() => {});
+  }
+
   return id;
 }
 
@@ -679,6 +811,7 @@ export async function submitAdvanceSettlement(
 ): Promise<void> {
   const db = getDb();
   const now = new Date().toISOString();
+  const advSnap = await getDoc(doc(db, "advanceRequests", advId));
   await updateDoc(doc(db, "advanceRequests", advId), {
     status: "PENDING_SETTLEMENT",
     settlementAmountUsed: data.amountUsed,
@@ -687,6 +820,24 @@ export async function submitAdvanceSettlement(
     settlementSubmittedAt: now,
     updatedAt: now,
   });
+
+  // Thông báo approver về yêu cầu quyết toán
+  if (advSnap.exists()) {
+    const adv = advSnap.data() as AdvanceRequest;
+    const taskSnap = await getDoc(doc(db, "tasks", adv.taskId)).catch(() => null);
+    const taskName = (taskSnap?.data()?.name as string | undefined) ?? adv.taskId;
+    const approverIds = await getUserIdsByRoles(["director", "hrAdmin"]).catch(() => []);
+    const toNotify = approverIds.filter((uid) => uid !== adv.requestedBy);
+    if (toNotify.length > 0) {
+      await notifAdvanceSettlementSubmitted({
+        approverIds: toNotify,
+        taskId: adv.taskId,
+        taskName,
+        requesterName: adv.requestedByName,
+        advanceId: advId,
+      }).catch(() => {});
+    }
+  }
 }
 
 /**
@@ -721,6 +872,16 @@ export async function approveAdvanceSettlement(
     updatedAt: now,
   });
   await recomputeFinancialSummary(adv.taskId);
+
+  // Thông báo người yêu cầu: quyết toán được duyệt
+  const taskSnap2 = await getDoc(doc(db, "tasks", adv.taskId)).catch(() => null);
+  const taskName2 = (taskSnap2?.data()?.name as string | undefined) ?? adv.taskId;
+  await notifAdvanceSettlementResult({
+    recipientId: adv.requestedBy,
+    taskId: adv.taskId,
+    taskName: taskName2,
+    approved: true,
+  }).catch(() => {});
 }
 
 /**
@@ -732,6 +893,7 @@ export async function rejectAdvanceSettlement(
 ): Promise<void> {
   const db = getDb();
   const now = new Date().toISOString();
+  const snap = await getDoc(doc(db, "advanceRequests", advId));
   await updateDoc(doc(db, "advanceRequests", advId), {
     status: "APPROVED",
     settlementRejectedReason: reason,
@@ -740,6 +902,20 @@ export async function rejectAdvanceSettlement(
     settlementSubmittedAt: null,
     updatedAt: now,
   });
+
+  // Thông báo người yêu cầu: quyết toán bị từ chối
+  if (snap.exists()) {
+    const adv2 = snap.data() as AdvanceRequest;
+    const taskSnap3 = await getDoc(doc(db, "tasks", adv2.taskId)).catch(() => null);
+    const taskName3 = (taskSnap3?.data()?.name as string | undefined) ?? adv2.taskId;
+    await notifAdvanceSettlementResult({
+      recipientId: adv2.requestedBy,
+      taskId: adv2.taskId,
+      taskName: taskName3,
+      approved: false,
+      reason,
+    }).catch(() => {});
+  }
 }
 
 // ── Cross-task queries (Finance Dashboard) ────────────────────────────────────
@@ -834,18 +1010,81 @@ export async function getRecentTransactions(limitCount = 50): Promise<FinancialT
   return snap.docs.map((d) => d.data() as FinancialTransaction);
 }
 
-/** Realtime listener giao dịch mới nhất cross-task */
+/**
+ * Realtime listener giao dịch mới nhất cross-task.
+ * Không dùng orderBy/where trên collectionGroup để tránh cần deploy index.
+ * Sort + limit thực hiện client-side.
+ */
 export function subscribeRecentTransactions(
   callback: (data: FinancialTransaction[]) => void,
   limitCount = 50
 ): () => void {
   const db = getDb();
   return onSnapshot(
-    query(
-      collectionGroup(db, "transactions"),
-      orderBy("createdAt", "desc"),
-      limit(limitCount)
+    collectionGroup(db, "transactions"),
+    (snap) => {
+      const sorted = snap.docs
+        .map((d) => d.data() as FinancialTransaction)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+        .slice(0, limitCount);
+      callback(sorted);
+    },
+    (err) => console.error("[subscribeRecentTransactions]", err.code)
+  );
+}
+
+/**
+ * Listener toàn bộ giao dịch VALID cross-task dùng cho báo cáo tài chính.
+ * Không dùng where/orderBy (tránh cần composite index chưa deploy).
+ * Filter VALID + sort ASC thực hiện client-side.
+ */
+export function subscribeAllTransactionsForReport(
+  callback: (data: FinancialTransaction[]) => void
+): () => void {
+  const db = getDb();
+  return onSnapshot(
+    collectionGroup(db, "transactions"),
+    (snap) => callback(
+      snap.docs
+        .map((d) => d.data() as FinancialTransaction)
+        .filter((t) => t.status === "VALID")
     ),
-    (snap) => callback(snap.docs.map((d) => d.data() as FinancialTransaction))
+    (err) => console.error("[subscribeAllTransactionsForReport]", err.code)
+  );
+}
+
+// ── Số dư đầu kỳ (Opening Balance) ───────────────────────────────────────────
+
+export interface FinancialOpeningBalance {
+  amount: number;       // Số tiền tồn đầu trước khi hệ thống bắt đầu ghi nhận
+  asOfDate: string;     // Ngày bắt đầu áp dụng (ISO string)
+  updatedBy: string;
+  updatedAt: string;
+}
+
+const OPENING_BAL_PATH = "financialConfig";
+const OPENING_BAL_ID   = "openingBalance";
+
+export async function saveOpeningBalance(
+  amount: number,
+  userId: string
+): Promise<void> {
+  const db = getDb();
+  await setDoc(doc(db, OPENING_BAL_PATH, OPENING_BAL_ID), {
+    amount,
+    asOfDate: new Date().toISOString(),
+    updatedBy: userId,
+    updatedAt: new Date().toISOString(),
+  } satisfies FinancialOpeningBalance);
+}
+
+export function subscribeOpeningBalance(
+  callback: (bal: FinancialOpeningBalance | null) => void
+): () => void {
+  const db = getDb();
+  return onSnapshot(
+    doc(db, OPENING_BAL_PATH, OPENING_BAL_ID),
+    (snap) => callback(snap.exists() ? (snap.data() as FinancialOpeningBalance) : null),
+    (err) => console.error("[subscribeOpeningBalance]", err.code)
   );
 }

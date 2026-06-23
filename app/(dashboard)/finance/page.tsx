@@ -17,7 +17,8 @@ import {
   DollarSign, CreditCard, Wallet, TrendingUp, TrendingDown,
   Clock, CheckCircle2, XCircle, AlertTriangle, ArrowUpCircle,
   ArrowDownCircle, Check, X, Loader2, RefreshCw, FileText,
-  ChevronDown, ChevronUp, ChevronRight, Filter, Search, Receipt, QrCode,
+  ChevronDown, ChevronUp, ChevronRight, ChevronLeft, Filter, Search, Receipt, QrCode,
+  BarChart3, Pencil, Save,
 } from "lucide-react";
 import Link from "next/link";
 import {
@@ -33,7 +34,12 @@ import {
   subscribeMyAdvanceRequests,
   subscribeAllReimbursementRequests,
   subscribeMyReimbursementRequests,
+  subscribeAllFinancialSummaries,
   subscribeRecentTransactions,
+  subscribeAllTransactionsForReport,
+  subscribeOpeningBalance,
+  saveOpeningBalance,
+  type FinancialOpeningBalance,
   approveAdvanceRequest,
   rejectAdvanceRequest,
   approveAdvanceSettlement,
@@ -41,8 +47,11 @@ import {
   approveReimbursement,
   markReimbursementPaid,
 } from "@/lib/firebase/finance";
-import type { AdvanceRequest, ReimbursementRequest, FinancialTransaction } from "@/types";
-import { format, subMonths, startOfMonth, endOfMonth, parseISO, isWithinInterval } from "date-fns";
+import type { AdvanceRequest, ReimbursementRequest, FinancialTransaction, TaskFinancialSummary } from "@/types";
+import {
+  format, subMonths, startOfMonth, endOfMonth, parseISO, isWithinInterval,
+  startOfQuarter, endOfQuarter, startOfYear, endOfYear, subQuarters, subYears, addMonths, addQuarters, addYears,
+} from "date-fns";
 import { vi } from "date-fns/locale";
 
 // ── Hằng & helpers ─────────────────────────────────────────────────────────────
@@ -159,8 +168,21 @@ export default function FinanceDashboardPage() {
   const [advances,       setAdvances]       = useState<AdvanceRequest[]>([]);
   const [reimbursements, setReimbursements] = useState<ReimbursementRequest[]>([]);
   const [transactions,   setTransactions]   = useState<FinancialTransaction[]>([]);
+  const [allSummaries,   setAllSummaries]   = useState<TaskFinancialSummary[]>([]);
 
-  const [activeTab, setActiveTab] = useState<"advances" | "reimbursements" | "transactions">("advances");
+  const [reportTx,           setReportTx]           = useState<FinancialTransaction[]>([]);
+  const [reportPeriodType,   setReportPeriodType]   = useState<"month" | "quarter" | "year">("month");
+  const [reportPeriodOffset, setReportPeriodOffset] = useState(0);
+  const [openingBal,         setOpeningBal]         = useState<FinancialOpeningBalance | null>(null);
+  const [editingOpening,     setEditingOpening]     = useState(false);
+  const [openingInput,       setOpeningInput]       = useState("");
+  const [savingOpening,      setSavingOpening]      = useState(false);
+  const [detailFilter,       setDetailFilter]       = useState<"ALL" | "CREDIT" | "DEBIT">("ALL");
+  const [detailSearch,       setDetailSearch]       = useState("");
+  const [showPrePeriod,      setShowPrePeriod]      = useState(false);
+  const [trendRange,         setTrendRange]         = useState<"3m" | "6m" | "12m" | "3y">("6m");
+
+  const [activeTab, setActiveTab] = useState<"advances" | "reimbursements" | "transactions" | "tasks">("advances");
   const [advFilter, setAdvFilter] = useState<AdvanceRequest["status"] | "ALL">("ALL");
   const [rmbFilter, setRmbFilter] = useState<ReimbursementRequest["status"] | "ALL">("ALL");
   const [search,    setSearch]    = useState("");
@@ -183,7 +205,10 @@ export default function FinanceDashboardPage() {
       ? subscribeAllReimbursementRequests(setReimbursements)
       : subscribeMyReimbursementRequests(currentUser.id, setReimbursements);
     const unsub3 = subscribeRecentTransactions(setTransactions, 100);
-    return () => { unsub1(); unsub2(); unsub3(); };
+    const unsub4 = isApprover ? subscribeAllFinancialSummaries(setAllSummaries) : () => {};
+    const unsub5 = isApprover ? subscribeAllTransactionsForReport(setReportTx) : () => {};
+    const unsub6 = isApprover ? subscribeOpeningBalance(setOpeningBal) : () => {};
+    return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); unsub6(); };
   }, [currentUser]);
 
   // ── KPI aggregates ────────────────────────────────────────────────────────
@@ -205,18 +230,161 @@ export default function FinanceDashboardPage() {
   });
   const expenseThisMonth = txThisMonth.filter((t) => t.direction === "DEBIT").reduce((s, t) => s + t.amount, 0);
 
-  // ── 6-month cash flow chart data ──────────────────────────────────────────
-  const cashFlowData = Array.from({ length: 6 }, (_, i) => {
-    const monthDate = subMonths(new Date(), 5 - i);
-    const label = format(monthDate, "MM/yyyy", { locale: vi });
-    const range = { start: startOfMonth(monthDate), end: endOfMonth(monthDate) };
-    const monthTx = myTx.filter((t) => {
-      try { return isWithinInterval(parseISO(t.createdAt), range); } catch { return false; }
-    });
-    const chi = monthTx.filter((t) => t.direction === "DEBIT").reduce((s, t) => s + t.amount, 0);
-    const thu = monthTx.filter((t) => t.direction === "CREDIT").reduce((s, t) => s + t.amount, 0);
-    return { label, chi: Math.round(chi / 1000), thu: Math.round(thu / 1000) };
+  // ── Tổng hợp toàn đơn vị từ TaskFinancialSummary (denormalized, realtime) ──
+  const orgTotalRevenue = allSummaries.reduce((acc, s) => acc + s.totalRevenue, 0);
+  const orgTotalExpense = allSummaries.reduce((acc, s) => acc + s.totalExpense, 0);
+  const orgNetCashFlow  = orgTotalRevenue - orgTotalExpense;
+  const orgOutOfPocket  = allSummaries.reduce((acc, s) => acc + s.totalOutOfPocket, 0);
+  const orgBudgetTotal  = allSummaries.reduce((acc, s) => acc + (s.budget ?? 0), 0);
+  const netCashFlowAll  = isApproverView ? orgNetCashFlow
+    : myTx.filter((t) => t.fundSource === "REVENUE" && t.status === "VALID").reduce((s, t) => s + t.amount, 0)
+      - myTx.filter((t) => t.direction === "DEBIT" && t.status === "VALID").reduce((s, t) => s + t.amount, 0);
+
+  // ── Báo cáo tài chính theo kỳ ────────────────────────────────────────────
+  // Dùng reportTx (toàn bộ VALID, 5000) cho approver; myTx cho staff.
+  const baseTxForReport = isApproverView ? reportTx : myTx.filter(t => t.status === "VALID");
+  // Sắp xếp ASC để tính tồn đầu (running balance)
+  const sortedForReport = [...baseTxForReport].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+  function getPeriodRange(type: typeof reportPeriodType, offset: number) {
+    const now = new Date();
+    if (type === "month") {
+      const base = offset >= 0 ? addMonths(now, offset) : subMonths(now, -offset);
+      return {
+        start: startOfMonth(base),
+        end:   endOfMonth(base),
+        label: format(base, "'Tháng' MM/yyyy", { locale: vi }),
+      };
+    }
+    if (type === "quarter") {
+      const base = offset >= 0 ? addQuarters(now, offset) : subQuarters(now, -offset);
+      const q = Math.floor(base.getMonth() / 3) + 1;
+      return {
+        start: startOfQuarter(base),
+        end:   endOfQuarter(base),
+        label: `Quý ${q}/${format(base, "yyyy")}`,
+      };
+    }
+    const base = offset >= 0 ? addYears(now, offset) : subYears(now, -offset);
+    return {
+      start: startOfYear(base),
+      end:   endOfYear(base),
+      label: format(base, "'Năm' yyyy"),
+    };
+  }
+
+  const { start: rStart, end: rEnd, label: rLabel } = getPeriodRange(reportPeriodType, reportPeriodOffset);
+  const rStartIso = rStart.toISOString();
+  const rEndIso   = rEnd.toISOString();
+
+  const prePeriodTx  = sortedForReport.filter((t) => t.createdAt < rStartIso);
+  const periodTx     = sortedForReport.filter((t) => t.createdAt >= rStartIso && t.createdAt <= rEndIso);
+
+  const txNetBefore = prePeriodTx.reduce((s, t) => s + (t.direction === "CREDIT" ? t.amount : -t.amount), 0);
+  const openingAmount = openingBal?.amount ?? 0;
+  const tonDau      = openingAmount + txNetBefore;
+  const phatSinhThu = periodTx.filter((t) => t.direction === "CREDIT").reduce((s, t) => s + t.amount, 0);
+  const phatSinhChi = periodTx.filter((t) => t.direction === "DEBIT").reduce((s, t)  => s + t.amount, 0);
+  const tonCuoi     = tonDau + phatSinhThu - phatSinhChi;
+
+  async function handleSaveOpening() {
+    const num = parseFloat(openingInput.replace(/[^0-9.-]/g, ""));
+    if (isNaN(num)) return;
+    setSavingOpening(true);
+    try {
+      await saveOpeningBalance(num, currentUser!.id);
+      setEditingOpening(false);
+      toast.success("Đã lưu tồn đầu kỳ.");
+    } catch { toast.error("Lưu thất bại."); }
+    finally { setSavingOpening(false); }
+  }
+
+  // Revenue breakdown by category (%)
+  const revCatMap: Record<string, number> = {};
+  periodTx.filter((t) => t.direction === "CREDIT").forEach((t) => {
+    const key = t.category || (t.fundSource === "REVENUE" ? "Doanh thu dịch vụ" : "Khác");
+    revCatMap[key] = (revCatMap[key] ?? 0) + t.amount;
   });
+  const revBreakdown = Object.entries(revCatMap)
+    .sort(([, a], [, b]) => b - a)
+    .map(([name, value]) => ({ name, value, pct: phatSinhThu > 0 ? Math.round((value / phatSinhThu) * 100) : 0 }));
+
+  // Revenue breakdown by fundSource
+  const revSourceMap: Record<string, number> = {};
+  periodTx.filter((t) => t.direction === "CREDIT").forEach((t) => {
+    const key = t.fundSource === "REVENUE" ? "Doanh thu" : t.fundSource === "ADVANCE" ? "Hoàn tạm ứng" : "Hoàn tự ứng";
+    revSourceMap[key] = (revSourceMap[key] ?? 0) + t.amount;
+  });
+  const revSourceBreakdown = Object.entries(revSourceMap)
+    .sort(([, a], [, b]) => b - a)
+    .map(([name, value]) => ({ name, value, pct: phatSinhThu > 0 ? Math.round((value / phatSinhThu) * 100) : 0 }));
+
+  // Expense breakdown by category (%)
+  const expCatMap: Record<string, number> = {};
+  periodTx.filter((t) => t.direction === "DEBIT").forEach((t) => {
+    expCatMap[t.category || "Khác"] = (expCatMap[t.category || "Khác"] ?? 0) + t.amount;
+  });
+  const expBreakdown = Object.entries(expCatMap)
+    .sort(([, a], [, b]) => b - a)
+    .map(([name, value]) => ({ name, value, pct: phatSinhChi > 0 ? Math.round((value / phatSinhChi) * 100) : 0 }));
+
+  // Expense breakdown by fundSource
+  const expSourceMap: Record<string, number> = {};
+  periodTx.filter((t) => t.direction === "DEBIT").forEach((t) => {
+    const key = t.fundSource === "ADVANCE" ? "Từ tạm ứng" : t.fundSource === "OUT_OF_POCKET" ? "Tự ứng" : "Khác";
+    expSourceMap[key] = (expSourceMap[key] ?? 0) + t.amount;
+  });
+  const expSourceBreakdown = Object.entries(expSourceMap)
+    .sort(([, a], [, b]) => b - a)
+    .map(([name, value]) => ({ name, value, pct: phatSinhChi > 0 ? Math.round((value / phatSinhChi) * 100) : 0 }));
+
+  // ── Tra cứu tên nhiệm vụ từ allSummaries ──────────────────────────────────
+  const taskNameById: Record<string, string> = Object.fromEntries(
+    allSummaries.map((s) => [s.taskId, s.taskName ?? s.taskId])
+  );
+
+  // ── Bảng chi tiết giao dịch trong kỳ ────────────────────────────────────
+  const detailTx = periodTx
+    .filter((t) => detailFilter === "ALL" || (detailFilter === "CREDIT" ? t.direction === "CREDIT" : t.direction === "DEBIT"))
+    .filter((t) => {
+      if (!detailSearch.trim()) return true;
+      const q = detailSearch.toLowerCase();
+      return (
+        t.category.toLowerCase().includes(q) ||
+        t.description.toLowerCase().includes(q) ||
+        t.createdByName.toLowerCase().includes(q) ||
+        (t.taskName ?? taskNameById[t.taskId] ?? "").toLowerCase().includes(q)
+      );
+    })
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+  // ── Trend chart data — dynamic range ─────────────────────────────────────
+  const txForTrend = baseTxForReport;
+  const isYearlyTrend = trendRange === "3y";
+  const trendMonthCount = trendRange === "3m" ? 3 : trendRange === "12m" ? 12 : 6;
+  const cashFlowData = isYearlyTrend
+    ? Array.from({ length: 3 }, (_, i) => {
+        const yearDate = subYears(new Date(), 2 - i);
+        const label = format(yearDate, "yyyy");
+        const range = { start: startOfYear(yearDate), end: endOfYear(yearDate) };
+        const bucketTx = txForTrend.filter((t) => {
+          try { return isWithinInterval(parseISO(t.createdAt), range); } catch { return false; }
+        });
+        const chi = bucketTx.filter((t) => t.direction === "DEBIT").reduce((s, t) => s + t.amount, 0);
+        const thu = bucketTx.filter((t) => t.direction === "CREDIT").reduce((s, t) => s + t.amount, 0);
+        return { label, chi: Math.round(chi / 1000), thu: Math.round(thu / 1000) };
+      })
+    : Array.from({ length: trendMonthCount }, (_, i) => {
+        const monthDate = subMonths(new Date(), trendMonthCount - 1 - i);
+        const label = format(monthDate, "MM/yyyy", { locale: vi });
+        const range = { start: startOfMonth(monthDate), end: endOfMonth(monthDate) };
+        const bucketTx = txForTrend.filter((t) => {
+          try { return isWithinInterval(parseISO(t.createdAt), range); } catch { return false; }
+        });
+        const chi = bucketTx.filter((t) => t.direction === "DEBIT").reduce((s, t) => s + t.amount, 0);
+        const thu = bucketTx.filter((t) => t.direction === "CREDIT").reduce((s, t) => s + t.amount, 0);
+        return { label, chi: Math.round(chi / 1000), thu: Math.round(thu / 1000) };
+      });
 
   // ── Category pie data ─────────────────────────────────────────────────────
   const categoryMap: Record<string, number> = {};
@@ -343,7 +511,7 @@ export default function FinanceDashboardPage() {
       </div>
 
       {/* ── KPI Cards ── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         <KpiCard
           label="Tổng tạm ứng đang lưu hành"
           value={vnd(totalAdvanced)}
@@ -384,44 +552,295 @@ export default function FinanceDashboardPage() {
           iconColor={PALETTE.red}
           trend={expenseThisMonth > 0 ? "down" : "neutral"}
         />
+        <KpiCard
+          label="Chênh lệch thu - chi"
+          value={netCashFlowAll > 0 ? `+${vnd(netCashFlowAll)}` : vnd(netCashFlowAll)}
+          sub={netCashFlowAll > 0 ? "Lời" : netCashFlowAll < 0 ? "Lỗ" : "Hòa vốn"}
+          icon={netCashFlowAll >= 0 ? TrendingUp : TrendingDown}
+          iconBg={
+            netCashFlowAll > 0
+              ? "bg-green-50 dark:bg-green-900/30"
+              : netCashFlowAll < 0
+                ? "bg-red-50 dark:bg-red-900/30"
+                : "bg-slate-50 dark:bg-slate-800"
+          }
+          iconColor={netCashFlowAll > 0 ? PALETTE.green : netCashFlowAll < 0 ? PALETTE.red : PALETTE.slate}
+          trend={netCashFlowAll > 0 ? "up" : netCashFlowAll < 0 ? "down" : "neutral"}
+        />
       </div>
 
-      {/* ── Charts ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Dòng tiền 6 tháng */}
-        <div className="lg:col-span-2 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4">
-          <p className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-4">
-            Dòng tiền 6 tháng gần nhất <span className="text-[11px] font-normal text-slate-400">(đơn vị: nghìn đ)</span>
-          </p>
-          {cashFlowData.every((d) => d.chi === 0 && d.thu === 0) ? (
-            <div className="h-48 flex items-center justify-center text-sm text-slate-400">Chưa có dữ liệu giao dịch.</div>
-          ) : (
-            <ResponsiveContainer width="100%" height={200}>
-              <AreaChart data={cashFlowData} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="gradChi" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor={PALETTE.red} stopOpacity={0.2} />
-                    <stop offset="95%" stopColor={PALETTE.red} stopOpacity={0} />
-                  </linearGradient>
-                  <linearGradient id="gradThu" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor={PALETTE.green} stopOpacity={0.2} />
-                    <stop offset="95%" stopColor={PALETTE.green} stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                <XAxis dataKey="label" tick={{ fontSize: 10 }} />
-                <YAxis tick={{ fontSize: 10 }} />
-                <Tooltip content={<CustomTooltip />} />
-                <Area type="monotone" dataKey="chi" name="Chi" stroke={PALETTE.red} fill="url(#gradChi)" strokeWidth={2} />
-                <Area type="monotone" dataKey="thu" name="Thu" stroke={PALETTE.green} fill="url(#gradThu)" strokeWidth={2} />
-              </AreaChart>
-            </ResponsiveContainer>
-          )}
-          <div className="flex gap-4 mt-2">
-            {[
-              { color: PALETTE.red, label: "Chi tiêu" },
-              { color: PALETTE.green, label: "Thu về" },
-            ].map(({ color, label }) => (
+      {/* ── Báo cáo tài chính theo kỳ ── */}
+      <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4 space-y-5">
+        {/* Header + period picker */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <BarChart3 className="w-4 h-4 text-blue-600" />
+            <h3 className="text-sm font-semibold text-slate-800 dark:text-white">Báo cáo tài chính</h3>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Loại kỳ */}
+            <div className="flex text-xs rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
+              {(["month", "quarter", "year"] as const).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => { setReportPeriodType(t); setReportPeriodOffset(0); }}
+                  className={cn(
+                    "px-3 py-1.5 font-medium transition",
+                    reportPeriodType === t
+                      ? "bg-blue-600 text-white"
+                      : "text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
+                  )}
+                >
+                  {t === "month" ? "Tháng" : t === "quarter" ? "Quý" : "Năm"}
+                </button>
+              ))}
+            </div>
+            {/* Navigation */}
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setReportPeriodOffset((o) => o - 1)}
+                className="p-1 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition"
+              >
+                <ChevronLeft className="w-3.5 h-3.5 text-slate-600 dark:text-slate-300" />
+              </button>
+              <span className="min-w-28 text-center text-xs font-semibold text-slate-700 dark:text-slate-200 px-1">
+                {rLabel}
+              </span>
+              <button
+                onClick={() => setReportPeriodOffset((o) => Math.min(0, o + 1))}
+                disabled={reportPeriodOffset >= 0}
+                className="p-1 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-30 transition"
+              >
+                <ChevronRight className="w-3.5 h-3.5 text-slate-600 dark:text-slate-300" />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Sổ quỹ: 4 ô ── */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          {/* Tồn đầu kỳ — có thể nhập số lần đầu */}
+          <div className={cn("rounded-xl p-3 space-y-1", "bg-slate-50 dark:bg-slate-800")}>
+            <div className="flex items-center justify-between">
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">Tồn đầu kỳ</p>
+              {isApproverView && !editingOpening && (
+                <button
+                  onClick={() => { setOpeningInput((openingBal?.amount ?? 0).toString()); setEditingOpening(true); }}
+                  className="p-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-700 transition"
+                  title="Nhập số dư đầu kỳ"
+                >
+                  <Pencil className="w-3 h-3 text-slate-400" />
+                </button>
+              )}
+            </div>
+            {editingOpening ? (
+              <div className="space-y-1.5">
+                <input
+                  type="number"
+                  value={openingInput}
+                  onChange={(e) => setOpeningInput(e.target.value)}
+                  placeholder="0"
+                  className="w-full px-2 py-1 text-sm border border-blue-400 rounded-lg bg-white dark:bg-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  autoFocus
+                  onKeyDown={(e) => { if (e.key === "Enter") handleSaveOpening(); if (e.key === "Escape") setEditingOpening(false); }}
+                />
+                <div className="flex gap-1">
+                  <button
+                    onClick={handleSaveOpening}
+                    disabled={savingOpening}
+                    className="flex-1 flex items-center justify-center gap-1 py-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded text-[11px] font-semibold transition"
+                  >
+                    {savingOpening ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                    Lưu
+                  </button>
+                  <button
+                    onClick={() => setEditingOpening(false)}
+                    className="px-2 py-1 border border-slate-200 dark:border-slate-700 rounded text-[11px] text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700 transition"
+                  >
+                    Huỷ
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <p className={cn("text-base font-bold leading-tight", tonDau >= 0 ? "text-slate-700 dark:text-slate-200" : "text-red-500")}>
+                  {vnd(tonDau)}
+                </p>
+                <p className="text-[10px] text-slate-400">
+                  {openingBal ? `Tồn đầu: ${vnd(openingBal.amount)}` : "Chưa nhập tồn đầu"}
+                  {txNetBefore !== 0 && ` · PS trước kỳ: ${txNetBefore > 0 ? "+" : ""}${vnd(txNetBefore)}`}
+                </p>
+              </>
+            )}
+          </div>
+
+          {/* Phát sinh thu */}
+          <div className="rounded-xl p-3 space-y-0.5 bg-green-50 dark:bg-green-900/20">
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">Phát sinh thu</p>
+            <p className="text-base font-bold leading-tight text-green-600">+{vnd(phatSinhThu)}</p>
+            <p className="text-[10px] text-slate-400">{periodTx.filter((t) => t.direction === "CREDIT").length} giao dịch</p>
+          </div>
+
+          {/* Phát sinh chi */}
+          <div className="rounded-xl p-3 space-y-0.5 bg-red-50 dark:bg-red-900/20">
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">Phát sinh chi</p>
+            <p className="text-base font-bold leading-tight text-red-500">-{vnd(phatSinhChi)}</p>
+            <p className="text-[10px] text-slate-400">{periodTx.filter((t) => t.direction === "DEBIT").length} giao dịch</p>
+          </div>
+
+          {/* Tồn cuối kỳ */}
+          <div className={cn("rounded-xl p-3 space-y-0.5",
+            tonCuoi > 0 ? "bg-green-50 dark:bg-green-900/20" : tonCuoi < 0 ? "bg-red-50 dark:bg-red-900/20" : "bg-slate-50 dark:bg-slate-800")}>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">Tồn cuối kỳ</p>
+            <p className={cn("text-base font-bold leading-tight",
+              tonCuoi > 0 ? "text-green-600" : tonCuoi < 0 ? "text-red-500" : "text-slate-500")}>
+              {tonCuoi > 0 ? "+" : ""}{vnd(tonCuoi)}
+            </p>
+            <p className="text-[10px] text-slate-400">{tonCuoi > 0 ? "Lời" : tonCuoi < 0 ? "Lỗ" : "Hòa vốn"}</p>
+          </div>
+        </div>
+
+        {/* ── Phân tích nguồn thu & nguồn chi — luôn hiển thị ── */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* Nguồn thu */}
+          <div className="rounded-xl border border-slate-100 dark:border-slate-800 p-3 space-y-2">
+            <p className="text-xs font-semibold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+              <TrendingUp className="w-3.5 h-3.5 text-green-600" />
+              Phân tích nguồn thu
+              <span className="text-[11px] font-normal text-slate-400">({vnd(phatSinhThu)})</span>
+            </p>
+            {phatSinhThu === 0 ? (
+              <div className="h-24 flex items-center justify-center">
+                <p className="text-xs text-slate-400">Không có thu trong {rLabel.toLowerCase()}.</p>
+              </div>
+            ) : (
+              <div className="flex gap-3 items-start">
+                <div className="shrink-0" style={{ width: 110, height: 110 }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={revBreakdown} dataKey="value" cx="50%" cy="50%" outerRadius={48} paddingAngle={2} innerRadius={24}>
+                        {revBreakdown.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+                      </Pie>
+                      <Tooltip formatter={(v: number) => vnd(v)} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="flex-1 min-w-0 space-y-1.5 py-1">
+                  {revBreakdown.map(({ name, value, pct }, i) => (
+                    <div key={name} className="flex items-center gap-1.5 text-[11px]">
+                      <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
+                      <span className="text-slate-500 dark:text-slate-400 truncate flex-1" title={name}>{name}</span>
+                      <span className="font-bold text-slate-700 dark:text-white shrink-0">{pct}%</span>
+                      <span className="text-slate-400 shrink-0 text-[10px]">{Math.round(value/1000)}k</span>
+                    </div>
+                  ))}
+                  {revSourceBreakdown.length > 1 && (
+                    <div className="pt-1 border-t border-slate-100 dark:border-slate-800 space-y-1">
+                      {revSourceBreakdown.map(({ name, pct }, i) => (
+                        <div key={name} className="flex items-center gap-1.5 text-[10px] text-slate-400">
+                          <span className="w-1.5 h-1.5 rounded-full" style={{ background: PIE_COLORS[(revBreakdown.length + i) % PIE_COLORS.length] }} />
+                          {name}: <span className="font-semibold text-slate-500">{pct}%</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Nguồn chi */}
+          <div className="rounded-xl border border-slate-100 dark:border-slate-800 p-3 space-y-2">
+            <p className="text-xs font-semibold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+              <TrendingDown className="w-3.5 h-3.5 text-red-500" />
+              Phân tích nguồn chi
+              <span className="text-[11px] font-normal text-slate-400">({vnd(phatSinhChi)})</span>
+            </p>
+            {phatSinhChi === 0 ? (
+              <div className="h-24 flex items-center justify-center">
+                <p className="text-xs text-slate-400">Không có chi trong {rLabel.toLowerCase()}.</p>
+              </div>
+            ) : (
+              <div className="flex gap-3 items-start">
+                <div className="shrink-0" style={{ width: 110, height: 110 }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={expBreakdown} dataKey="value" cx="50%" cy="50%" outerRadius={48} paddingAngle={2} innerRadius={24}>
+                        {expBreakdown.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+                      </Pie>
+                      <Tooltip formatter={(v: number) => vnd(v)} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="flex-1 min-w-0 space-y-1.5 py-1">
+                  {expBreakdown.map(({ name, value, pct }, i) => (
+                    <div key={name} className="flex items-center gap-1.5 text-[11px]">
+                      <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
+                      <span className="text-slate-500 dark:text-slate-400 truncate flex-1" title={name}>{name}</span>
+                      <span className="font-bold text-slate-700 dark:text-white shrink-0">{pct}%</span>
+                      <span className="text-slate-400 shrink-0 text-[10px]">{Math.round(value/1000)}k</span>
+                    </div>
+                  ))}
+                  {expSourceBreakdown.length > 1 && (
+                    <div className="pt-1 border-t border-slate-100 dark:border-slate-800 space-y-1">
+                      {expSourceBreakdown.map(({ name, pct }, i) => (
+                        <div key={name} className="flex items-center gap-1.5 text-[10px] text-slate-400">
+                          <span className="w-1.5 h-1.5 rounded-full" style={{ background: PIE_COLORS[(expBreakdown.length + i) % PIE_COLORS.length] }} />
+                          {name}: <span className="font-semibold text-slate-500">{pct}%</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ── Xu hướng — tuỳ chỉnh khoảng thời gian ── */}
+        <div className="rounded-xl border border-slate-100 dark:border-slate-800 p-3">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+              Xu hướng thu chi
+              <span className="text-[11px] font-normal text-slate-400 ml-1">(nghìn đ)</span>
+            </p>
+            <div className="flex text-[11px] rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
+              {([["3m","3 tháng"],["6m","6 tháng"],["12m","12 tháng"],["3y","3 năm"]] as const).map(([k, lbl]) => (
+                <button
+                  key={k}
+                  onClick={() => setTrendRange(k)}
+                  className={cn(
+                    "px-2.5 py-1 font-medium transition",
+                    trendRange === k
+                      ? "bg-blue-600 text-white"
+                      : "text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800"
+                  )}
+                >{lbl}</button>
+              ))}
+            </div>
+          </div>
+          <ResponsiveContainer width="100%" height={160}>
+            <AreaChart data={cashFlowData} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
+              <defs>
+                <linearGradient id="gradChi" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor={PALETTE.red} stopOpacity={0.2} />
+                  <stop offset="95%" stopColor={PALETTE.red} stopOpacity={0} />
+                </linearGradient>
+                <linearGradient id="gradThu" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor={PALETTE.green} stopOpacity={0.2} />
+                  <stop offset="95%" stopColor={PALETTE.green} stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+              <XAxis dataKey="label" tick={{ fontSize: 10 }} />
+              <YAxis tick={{ fontSize: 10 }} />
+              <Tooltip content={<CustomTooltip />} />
+              <Area type="monotone" dataKey="chi" name="Chi" stroke={PALETTE.red} fill="url(#gradChi)" strokeWidth={2} />
+              <Area type="monotone" dataKey="thu" name="Thu" stroke={PALETTE.green} fill="url(#gradThu)" strokeWidth={2} />
+            </AreaChart>
+          </ResponsiveContainer>
+          <div className="flex gap-4 mt-1">
+            {[{ color: PALETTE.red, label: "Chi tiêu" }, { color: PALETTE.green, label: "Thu về" }].map(({ color, label }) => (
               <div key={label} className="flex items-center gap-1.5 text-[11px] text-slate-500">
                 <span className="w-3 h-3 rounded-sm" style={{ background: color }} />
                 {label}
@@ -430,36 +849,211 @@ export default function FinanceDashboardPage() {
           </div>
         </div>
 
-        {/* Phân loại chi tiêu */}
-        <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4">
-          <p className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-4">
-            Phân loại chi tiêu <span className="text-[11px] font-normal text-slate-400">(nghìn đ)</span>
-          </p>
-          {categoryData.length === 0 ? (
-            <div className="h-48 flex items-center justify-center text-sm text-slate-400">Chưa có dữ liệu.</div>
-          ) : (
-            <>
-              <ResponsiveContainer width="100%" height={150}>
-                <PieChart>
-                  <Pie data={categoryData} dataKey="value" cx="50%" cy="50%" outerRadius={65} paddingAngle={2}>
-                    {categoryData.map((_, i) => (
-                      <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip formatter={(v: number) => `${v.toLocaleString("vi-VN")} nghìn đ`} />
-                </PieChart>
-              </ResponsiveContainer>
-              <div className="space-y-1 mt-2">
-                {categoryData.map((d, i) => (
-                  <div key={d.name} className="flex items-center gap-1.5 text-[11px]">
-                    <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
-                    <span className="text-slate-500 dark:text-slate-400 truncate flex-1">{d.name}</span>
-                    <span className="font-medium text-slate-600 dark:text-slate-300">{d.value.toLocaleString("vi-VN")}k</span>
-                  </div>
+        {/* ── Bảng chi tiết giao dịch trong kỳ ── */}
+        <div className="rounded-xl border border-slate-100 dark:border-slate-800 overflow-hidden">
+          {/* Header + bộ lọc */}
+          <div className="px-4 py-3 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40">
+            <div className="flex items-center gap-2">
+              <FileText className="w-3.5 h-3.5 text-slate-500" />
+              <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+                Chi tiết phát sinh trong kỳ
+              </span>
+              <span className="text-[11px] px-1.5 py-0.5 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 font-medium">
+                {periodTx.length} giao dịch
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              {/* Tìm kiếm */}
+              <div className="relative">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400" />
+                <input
+                  type="text"
+                  value={detailSearch}
+                  onChange={(e) => setDetailSearch(e.target.value)}
+                  placeholder="Tìm danh mục, mô tả, người..."
+                  className="pl-7 pr-3 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-500 w-44"
+                />
+              </div>
+              {/* Filter Thu/Chi */}
+              <div className="flex text-[11px] rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
+                {([["ALL","Tất cả"], ["CREDIT","Thu"], ["DEBIT","Chi"]] as const).map(([k, lbl]) => (
+                  <button
+                    key={k}
+                    onClick={() => setDetailFilter(k)}
+                    className={cn(
+                      "px-2.5 py-1.5 font-medium transition",
+                      detailFilter === k
+                        ? k === "CREDIT" ? "bg-green-600 text-white"
+                          : k === "DEBIT" ? "bg-red-500 text-white"
+                          : "bg-slate-700 dark:bg-slate-200 text-white dark:text-slate-800"
+                        : "text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
+                    )}
+                  >{lbl}</button>
                 ))}
               </div>
-            </>
+            </div>
+          </div>
+
+          {/* Bảng */}
+          {detailTx.length === 0 ? (
+            <div className="py-8 text-center text-sm text-slate-400">
+              {periodTx.length === 0 ? `Không có giao dịch trong ${rLabel.toLowerCase()}.` : "Không có kết quả phù hợp."}
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="bg-slate-50 dark:bg-slate-800 text-left">
+                    <th className="px-3 py-2.5 font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap">Ngày</th>
+                    <th className="px-3 py-2.5 font-semibold text-slate-500 dark:text-slate-400">Tên nhiệm vụ</th>
+                    <th className="px-3 py-2.5 font-semibold text-slate-500 dark:text-slate-400">Người thực hiện</th>
+                    <th className="px-3 py-2.5 font-semibold text-slate-500 dark:text-slate-400">Danh mục</th>
+                    <th className="px-3 py-2.5 font-semibold text-slate-500 dark:text-slate-400">Nguồn quỹ</th>
+                    <th className="px-3 py-2.5 font-semibold text-slate-500 dark:text-slate-400 max-w-xs">Mô tả</th>
+                    <th className="px-3 py-2.5 font-semibold text-slate-500 dark:text-slate-400 text-right whitespace-nowrap">Số tiền</th>
+                    <th className="px-3 py-2.5 font-semibold text-slate-500 dark:text-slate-400 text-center">CT</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
+                  {detailTx.map((t) => {
+                    const isCredit = t.direction === "CREDIT";
+                    const taskName = t.taskName ?? taskNameById[t.taskId] ?? t.taskId;
+                    const fundLabel = t.fundSource === "ADVANCE" ? "Tạm ứng"
+                      : t.fundSource === "OUT_OF_POCKET" ? "Tự ứng" : "Doanh thu";
+                    const fundCls = t.fundSource === "ADVANCE"
+                      ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+                      : t.fundSource === "OUT_OF_POCKET"
+                        ? "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
+                        : "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400";
+                    return (
+                      <tr key={t.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition group">
+                        <td className="px-3 py-2.5 text-slate-400 whitespace-nowrap">
+                          {format(parseISO(t.createdAt), "dd/MM/yyyy HH:mm", { locale: vi })}
+                        </td>
+                        <td className="px-3 py-2.5 max-w-[160px]">
+                          <Link href={`/tasks/${t.taskId}`}
+                            className="text-blue-600 hover:underline dark:text-blue-400 line-clamp-1"
+                            title={taskName}>
+                            {taskName}
+                          </Link>
+                        </td>
+                        <td className="px-3 py-2.5 text-slate-500 dark:text-slate-400 whitespace-nowrap">{t.createdByName}</td>
+                        <td className="px-3 py-2.5 text-slate-600 dark:text-slate-300">{t.category}</td>
+                        <td className="px-3 py-2.5">
+                          <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full font-semibold", fundCls)}>{fundLabel}</span>
+                        </td>
+                        <td className="px-3 py-2.5 text-slate-500 dark:text-slate-400 max-w-xs">
+                          <span className="line-clamp-2" title={t.description}>{t.description || "—"}</span>
+                        </td>
+                        <td className={cn("px-3 py-2.5 text-right font-semibold whitespace-nowrap",
+                          isCredit ? "text-green-600" : "text-red-500")}>
+                          {isCredit ? "+" : "-"}{vnd(t.amount)}
+                        </td>
+                        <td className="px-3 py-2.5 text-center">
+                          {t.proofs?.length > 0 ? (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 font-semibold">
+                              {t.proofs.length}
+                            </span>
+                          ) : <span className="text-slate-300">—</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                {/* Dòng tổng cộng */}
+                <tfoot>
+                  <tr className="border-t-2 border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800">
+                    <td colSpan={6} className="px-3 py-2.5 text-xs font-semibold text-slate-600 dark:text-slate-300">
+                      Tổng ({detailTx.length} giao dịch)
+                    </td>
+                    <td className="px-3 py-2.5 text-right">
+                      {(() => {
+                        const thu = detailTx.filter(t => t.direction === "CREDIT").reduce((s, t) => s + t.amount, 0);
+                        const chi = detailTx.filter(t => t.direction === "DEBIT").reduce((s, t) => s + t.amount, 0);
+                        const net = thu - chi;
+                        return (
+                          <div className="space-y-0.5">
+                            {thu > 0 && <div className="text-[11px] font-semibold text-green-600">+{vnd(thu)}</div>}
+                            {chi > 0 && <div className="text-[11px] font-semibold text-red-500">-{vnd(chi)}</div>}
+                            <div className={cn("text-xs font-bold border-t border-slate-200 dark:border-slate-700 pt-0.5",
+                              net >= 0 ? "text-green-600" : "text-red-500")}>
+                              {net > 0 ? "+" : ""}{vnd(net)}
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </td>
+                    <td className="px-3 py-2.5" />
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
           )}
+
+          {/* Tồn đầu kỳ — chi tiết (collapsible) */}
+          {prePeriodTx.length > 0 || openingBal ? (
+            <div className="border-t border-slate-100 dark:border-slate-800">
+              <button
+                onClick={() => setShowPrePeriod((v) => !v)}
+                className="w-full flex items-center justify-between px-4 py-2.5 text-[11px] text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800/40 transition"
+              >
+                <span className="flex items-center gap-1.5">
+                  {showPrePeriod ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                  Chi tiết tồn đầu kỳ
+                  <span className="text-slate-400">
+                    ({openingBal ? `Tồn đầu: ${vnd(openingBal.amount)}` : "Không có tồn đầu"}
+                    {prePeriodTx.length > 0 ? ` + ${prePeriodTx.length} GD trước kỳ` : ""})
+                  </span>
+                </span>
+                <span className={cn("font-semibold", tonDau >= 0 ? "text-slate-700 dark:text-slate-200" : "text-red-500")}>
+                  = {vnd(tonDau)}
+                </span>
+              </button>
+              {showPrePeriod && (
+                <div className="overflow-x-auto border-t border-slate-100 dark:border-slate-800">
+                  {openingBal && (
+                    <div className="px-4 py-2 bg-blue-50/50 dark:bg-blue-900/10 flex items-center justify-between text-[11px]">
+                      <span className="text-blue-600 dark:text-blue-400 font-semibold">Tồn đầu kỳ gốc (nhập tay)</span>
+                      <span className="font-bold text-blue-700 dark:text-blue-300">+{vnd(openingBal.amount)}</span>
+                    </div>
+                  )}
+                  {prePeriodTx.length > 0 && (
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="bg-slate-50 dark:bg-slate-800 text-left">
+                          <th className="px-3 py-2 font-semibold text-slate-400">Ngày</th>
+                          <th className="px-3 py-2 font-semibold text-slate-400">Tên nhiệm vụ</th>
+                          <th className="px-3 py-2 font-semibold text-slate-400">Danh mục</th>
+                          <th className="px-3 py-2 font-semibold text-slate-400 text-right">Số tiền</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
+                        {[...prePeriodTx]
+                          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+                          .map((t) => (
+                            <tr key={t.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40">
+                              <td className="px-3 py-2 text-slate-400 whitespace-nowrap">
+                                {format(parseISO(t.createdAt), "dd/MM/yyyy", { locale: vi })}
+                              </td>
+                              <td className="px-3 py-2">
+                                <Link href={`/tasks/${t.taskId}`} className="text-blue-600 hover:underline dark:text-blue-400 line-clamp-1">
+                                  {t.taskName ?? taskNameById[t.taskId] ?? t.taskId}
+                                </Link>
+                              </td>
+                              <td className="px-3 py-2 text-slate-500">{t.category}</td>
+                              <td className={cn("px-3 py-2 text-right font-semibold whitespace-nowrap",
+                                t.direction === "CREDIT" ? "text-green-600" : "text-red-500")}>
+                                {t.direction === "CREDIT" ? "+" : "-"}{vnd(t.amount)}
+                              </td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -482,9 +1076,13 @@ export default function FinanceDashboardPage() {
         {/* Tab bar */}
         <div className="flex border-b border-slate-200 dark:border-slate-700 px-4 mt-3">
           {[
-            { key: "advances", label: `Tạm ứng`, count: advances.filter((a) => a.status === "PENDING").length, badge: "pending" },
-            { key: "reimbursements", label: `Hoàn ứng`, count: reimbursements.filter((r) => r.status === "SUBMITTED").length, badge: "pending" },
-            { key: "transactions", label: `Giao dịch (${transactions.length})`, count: 0, badge: "" },
+            { key: "advances", label: `Tạm ứng`, count: advances.filter((a) => a.status === "PENDING").length },
+            { key: "reimbursements", label: `Hoàn ứng`, count: reimbursements.filter((r) => r.status === "SUBMITTED").length },
+            { key: "transactions", label: `Giao dịch (${transactions.length})`, count: 0 },
+            ...(isApproverView && allSummaries.length > 0
+              ? [{ key: "tasks", label: `Theo nhiệm vụ (${allSummaries.length})`, count: 0 }]
+              : []
+            ),
           ].map((tab) => (
             <button
               key={tab.key}
@@ -871,6 +1469,81 @@ export default function FinanceDashboardPage() {
                     </div>
                   );
                 })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Tab: Theo nhiệm vụ ── */}
+        {activeTab === "tasks" && isApproverView && (
+          <div className="p-4 space-y-3">
+            {/* Tổng cộng */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 text-center text-xs">
+              {[
+                { label: "Tổng ngân sách",  value: vnd(orgBudgetTotal),   color: "text-slate-700 dark:text-slate-200" },
+                { label: "Tổng chi",         value: vnd(orgTotalExpense),  color: "text-red-600" },
+                { label: "Tổng thu",         value: vnd(orgTotalRevenue),  color: "text-green-600" },
+                { label: "Chênh lệch",       value: (orgNetCashFlow > 0 ? "+" : "") + vnd(orgNetCashFlow),
+                  color: orgNetCashFlow > 0 ? "text-green-600 font-bold" : orgNetCashFlow < 0 ? "text-red-500 font-bold" : "text-slate-500" },
+              ].map(({ label, value, color }) => (
+                <div key={label}>
+                  <p className="text-slate-400">{label}</p>
+                  <p className={cn("text-sm font-semibold", color)}>{value}</p>
+                </div>
+              ))}
+            </div>
+
+            {allSummaries.length === 0 ? (
+              <p className="text-center text-sm text-slate-400 py-8">Chưa có nhiệm vụ nào phát sinh tài chính.</p>
+            ) : (
+              <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800">
+                      <th className="text-left px-3 py-2.5 font-semibold text-slate-600 dark:text-slate-300">Nhiệm vụ</th>
+                      <th className="text-right px-3 py-2.5 font-semibold text-slate-600 dark:text-slate-300">Ngân sách</th>
+                      <th className="text-right px-3 py-2.5 font-semibold text-slate-600 dark:text-slate-300">Tạm ứng</th>
+                      <th className="text-right px-3 py-2.5 font-semibold text-slate-600 dark:text-slate-300">Chi</th>
+                      <th className="text-right px-3 py-2.5 font-semibold text-slate-600 dark:text-slate-300">Thu</th>
+                      <th className="text-right px-3 py-2.5 font-semibold text-slate-600 dark:text-slate-300">Chênh lệch</th>
+                      <th className="text-center px-3 py-2.5 font-semibold text-slate-600 dark:text-slate-300">Trạng thái</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {[...allSummaries].sort((a, b) => (b.totalExpense + b.totalRevenue) - (a.totalExpense + a.totalRevenue)).map((s) => {
+                      const net = s.netCashFlow;
+                      return (
+                        <tr key={s.taskId} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition group">
+                          <td className="px-3 py-2.5">
+                            <Link href={`/tasks/${s.taskId}`}
+                              className="font-medium text-slate-700 dark:text-slate-200 hover:text-blue-600 dark:hover:text-blue-400 transition line-clamp-1">
+                              {s.taskName ?? s.taskId}
+                            </Link>
+                          </td>
+                          <td className="px-3 py-2.5 text-right text-slate-500">{s.budget > 0 ? vnd(s.budget) : "—"}</td>
+                          <td className="px-3 py-2.5 text-right text-blue-600">{s.totalAdvanced > 0 ? vnd(s.totalAdvanced) : "—"}</td>
+                          <td className="px-3 py-2.5 text-right text-red-500">{s.totalExpense > 0 ? vnd(s.totalExpense) : "—"}</td>
+                          <td className="px-3 py-2.5 text-right text-green-600">{s.totalRevenue > 0 ? vnd(s.totalRevenue) : "—"}</td>
+                          <td className={cn("px-3 py-2.5 text-right font-semibold",
+                            net > 0 ? "text-green-600" : net < 0 ? "text-red-500" : "text-slate-400")}>
+                            {net !== 0 ? (net > 0 ? "+" : "") + vnd(net) : "—"}
+                          </td>
+                          <td className="px-3 py-2.5 text-center">
+                            <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full font-semibold",
+                              s.financialStatus === "SETTLED"
+                                ? "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"
+                                : s.financialStatus === "RECONCILING"
+                                  ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
+                                  : "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+                            )}>
+                              {s.financialStatus === "SETTLED" ? "Đã QT" : s.financialStatus === "RECONCILING" ? "Đang QT" : "Hoạt động"}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>

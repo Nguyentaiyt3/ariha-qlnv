@@ -20,7 +20,7 @@ import {
   useSortable,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Plus } from "lucide-react";
+import { Lock, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TaskCard } from "./TaskCard";
 import { updateTask, addAuditEvent, addNotification } from "@/lib/firebase/firestore";
@@ -42,6 +42,9 @@ const COLUMNS: Column[] = [
   { id: "done",        label: "Hoàn thành",     color: "border-t-green-500" },
 ];
 
+/** Roles được phép di chuyển bất kỳ nhiệm vụ nào (không cần là mainPerformer) */
+const OVERRIDE_ROLES = ["director", "hrAdmin"] as const;
+
 interface KanbanBoardProps {
   tasks: Task[];
   users: User[];
@@ -61,19 +64,29 @@ export function KanbanBoard({ tasks, users, onSelectTask, onCreateTask }: Kanban
 
   const activeTask = tasks.find((t) => t.id === activeTaskId);
 
+  /** Kiểm tra người dùng hiện tại có quyền kéo thả nhiệm vụ này không */
+  function canDragTask(task: Task): boolean {
+    if (!currentUser) return false;
+    // Admin override
+    if (OVERRIDE_ROLES.includes(currentUser.role as typeof OVERRIDE_ROLES[number])) return true;
+    // Chỉ người thực hiện chính
+    return currentUser.id === task.mainPerformerId;
+  }
+
   function getColumnTasks(colId: TaskStatus): Task[] {
     const sorted = (arr: Task[]) =>
       [...arr].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
     if (colId === "review") {
-      // "Đang xét duyệt" = tasks awaiting pre-approval (!approved) OR tasks submitted for completion review
       return sorted(tasks.filter((t) => !t.approved || t.status === "review"));
     }
-    // Other columns: only approved tasks in their specific status
     return sorted(tasks.filter((t) => t.approved && t.status === colId));
   }
 
   function handleDragStart(event: DragStartEvent) {
+    const task = tasks.find((t) => t.id === String(event.active.id));
+    // Không bắt đầu drag nếu không có quyền
+    if (!task || !canDragTask(task)) return;
     setActiveTaskId(String(event.active.id));
   }
 
@@ -85,12 +98,41 @@ export function KanbanBoard({ tasks, users, onSelectTask, onCreateTask }: Kanban
     const draggedTask = tasks.find((t) => t.id === active.id);
     if (!draggedTask) return;
 
-    // Unapproved tasks cannot be moved by dragging — manager must approve in task detail
+    // Chặn nếu không có quyền (double-check phía server)
+    if (!canDragTask(draggedTask)) {
+      toast.error("Chỉ người thực hiện chính mới có thể thay đổi trạng thái.");
+      return;
+    }
+
+    // Unapproved tasks không thể kéo — manager phải duyệt trong task detail
     if (!draggedTask.approved) return;
 
     const newStatus = over.id as TaskStatus;
     if (!COLUMNS.some((c) => c.id === newStatus)) return;
     if (draggedTask.status === newStatus) return;
+
+    // todo → in_progress: tất cả bước phải được phân công người thực hiện
+    if (draggedTask.status === "todo" && newStatus === "in_progress") {
+      const steps = draggedTask.steps ?? [];
+      const unassigned = steps.filter((s) => !s.assigneeId?.trim());
+      if (unassigned.length > 0) {
+        toast.error(`Còn ${unassigned.length} bước chưa được phân công người thực hiện.`);
+        return;
+      }
+    }
+
+    // in_progress → done: tiến độ phải đạt 100% VÀ tất cả bước phải có người thực hiện
+    if (draggedTask.status === "in_progress" && newStatus === "done") {
+      if ((draggedTask.progress ?? 0) < 100) {
+        toast.error("Tiến độ phải đạt 100% trước khi chuyển sang Hoàn thành.");
+        return;
+      }
+      const unassignedDone = (draggedTask.steps ?? []).filter((s) => !s.assigneeId?.trim());
+      if (unassignedDone.length > 0) {
+        toast.error(`Còn ${unassignedDone.length} bước chưa được phân công người thực hiện.`);
+        return;
+      }
+    }
 
     const oldStatus = draggedTask.status;
     storeUpdateTask(draggedTask.id, { status: newStatus });
@@ -110,10 +152,10 @@ export function KanbanBoard({ tasks, users, onSelectTask, onCreateTask }: Kanban
         });
 
         if (newStatus === "review") {
-          const approvers = (draggedTask.stakeholders ?? []).filter((s) => s.role === "approver").map((s) => s.userId);
-          const managers = [] as string[]; // notifications already handled in task detail
-          const targets = Array.from(new Set([...approvers, ...managers])).filter(Boolean);
-          await Promise.all(targets.map((uid) =>
+          const approvers = (draggedTask.stakeholders ?? [])
+            .filter((s) => s.role === "approver")
+            .map((s) => s.userId);
+          await Promise.all(approvers.map((uid) =>
             addNotification({
               userId: uid,
               type: "approval_request",
@@ -167,6 +209,7 @@ export function KanbanBoard({ tasks, users, onSelectTask, onCreateTask }: Kanban
             users={users}
             onSelectTask={onSelectTask}
             onCreateTask={onCreateTask}
+            canDragTask={canDragTask}
           />
         ))}
       </div>
@@ -188,9 +231,10 @@ interface ColumnProps {
   users: User[];
   onSelectTask: (task: Task) => void;
   onCreateTask?: (status?: TaskStatus) => void;
+  canDragTask: (task: Task) => boolean;
 }
 
-function KanbanColumn({ column, tasks, users, onSelectTask, onCreateTask }: ColumnProps) {
+function KanbanColumn({ column, tasks, users, onSelectTask, onCreateTask, canDragTask }: ColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id: column.id });
 
   return (
@@ -233,6 +277,7 @@ function KanbanColumn({ column, tasks, users, onSelectTask, onCreateTask }: Colu
               task={task}
               users={users}
               onClick={() => onSelectTask(task)}
+              canDrag={canDragTask(task)}
             />
           ))}
         </SortableContext>
@@ -247,8 +292,29 @@ function KanbanColumn({ column, tasks, users, onSelectTask, onCreateTask }: Colu
   );
 }
 
-function SortableTaskCard({ task, users, onClick }: { task: Task; users: User[]; onClick: () => void }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: task.id });
+function SortableTaskCard({
+  task,
+  users,
+  onClick,
+  canDrag,
+}: {
+  task: Task;
+  users: User[];
+  onClick: () => void;
+  canDrag: boolean;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: task.id,
+    // Disabled = không attach drag handlers, nhưng vẫn cần đăng ký để SortableContext hoạt động
+    disabled: !canDrag || !task.approved,
+  });
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -256,9 +322,25 @@ function SortableTaskCard({ task, users, onClick }: { task: Task; users: User[];
     opacity: isDragging ? 0.4 : 1,
   };
 
-  // Unapproved tasks sit in the virtual column and cannot be dragged
-  if (!task.approved) {
-    return <TaskCard task={task} users={users} onClick={onClick} />;
+  // Không được kéo: render plain card + hiển thị lock indicator
+  if (!canDrag || !task.approved) {
+    return (
+      <div className="relative group">
+        <TaskCard task={task} users={users} onClick={onClick} />
+        {/* Lock badge — chỉ hiện khi task đã approved nhưng user không có quyền kéo */}
+        {task.approved && !canDrag && (
+          <div
+            className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity"
+            title="Chỉ người thực hiện chính mới có thể thay đổi trạng thái"
+          >
+            <div className="flex items-center gap-1 px-1.5 py-0.5 bg-slate-100 dark:bg-slate-700 rounded text-[10px] text-slate-400 dark:text-slate-500">
+              <Lock className="w-2.5 h-2.5" />
+              <span>Chỉ đọc</span>
+            </div>
+          </div>
+        )}
+      </div>
+    );
   }
 
   return (

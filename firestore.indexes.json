@@ -53,6 +53,39 @@
         { "fieldPath": "status",    "order": "ASCENDING" },
         { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "workNodes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "rootTaskId", "order": "ASCENDING" },
+        { "fieldPath": "depth",      "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "workNodes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "prerequisites", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "status",        "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "workNodes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "ancestors", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "depth",     "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "workNodes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "assigneeId", "order": "ASCENDING" },
+        { "fieldPath": "status",     "order": "ASCENDING" },
+        { "fieldPath": "dueDate",    "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

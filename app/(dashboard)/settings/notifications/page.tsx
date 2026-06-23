@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Bell, Mail, Smartphone, Save, CheckCircle } from "lucide-react";
+import { Bell, Mail, Smartphone, Save, Clock } from "lucide-react";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { saveUser } from "@/lib/firebase/firestore";
 import type { EmailEventType } from "@/types";
@@ -12,6 +12,7 @@ interface NotifPrefs {
   inAppEnabled: boolean;
   digestFreq: "realtime" | "daily" | "weekly";
   disabledEventTypes: EmailEventType[];
+  retentionDays: number;
 }
 
 const EVENT_LABELS: { key: EmailEventType; label: string; description: string }[] = [
@@ -32,6 +33,7 @@ export default function NotificationSettingsPage() {
     inAppEnabled: true,
     digestFreq: "realtime",
     disabledEventTypes: [],
+    retentionDays: 30,
   });
   const [saving, setSaving] = useState(false);
 
@@ -42,6 +44,7 @@ export default function NotificationSettingsPage() {
         inAppEnabled: currentUser.notificationPrefs.inAppEnabled ?? true,
         digestFreq: currentUser.notificationPrefs.digestFreq ?? "realtime",
         disabledEventTypes: currentUser.notificationPrefs.disabledEventTypes ?? [],
+        retentionDays: currentUser.notificationPrefs.retentionDays ?? 30,
       });
     }
   }, [currentUser]);
@@ -178,6 +181,32 @@ export default function NotificationSettingsPage() {
               </div>
             );
           })}
+        </div>
+      </div>
+
+      {/* Retention / Auto-delete */}
+      <div className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-5 mb-6">
+        <h2 className="font-semibold text-[var(--foreground)] mb-1 flex items-center gap-2">
+          <Clock className="w-4 h-4 text-slate-500" />
+          Tự động xóa thông báo cũ
+        </h2>
+        <p className="text-xs text-[var(--muted-foreground)] mb-4">
+          Thông báo đã đọc sẽ tự xóa sau số ngày bạn chọn. Thông báo chưa đọc và mục cần xử lý sẽ không bị xóa tự động.
+        </p>
+        <div className="grid grid-cols-4 gap-2">
+          {([{ v: 7, label: "7 ngày" }, { v: 30, label: "30 ngày" }, { v: 90, label: "90 ngày" }, { v: 0, label: "Không xóa" }] as const).map(({ v, label }) => (
+            <button
+              key={v}
+              onClick={() => setPrefs((p) => ({ ...p, retentionDays: v }))}
+              className={`px-3 py-2.5 rounded-lg text-sm font-medium border transition-colors ${
+                prefs.retentionDays === v
+                  ? "bg-blue-600 text-white border-blue-600"
+                  : "bg-[var(--background)] text-[var(--muted-foreground)] border-[var(--border)] hover:border-blue-300"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
         </div>
       </div>
 

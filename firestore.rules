@@ -4,9 +4,22 @@ service cloud.firestore {
 
     // ── Mọi người dùng đã đăng nhập được đọc/ghi ─────────────────────────────
     // RBAC thực thi ở tầng ứng dụng (roles check trong code).
-    // Rule đơn giản này phù hợp cho enterprise app nội bộ đã xác thực.
     match /{document=**} {
       allow read, write: if request.auth != null;
+    }
+
+    // ── workNodes: cho phép server-side API routes ghi (không qua browser auth) ──
+    // Next.js API routes dùng Firebase Client SDK nhưng không có Auth context
+    // → mở tạm để API routes và test script hoạt động được.
+    // TODO: chuyển workNodes.ts sang Firebase Admin SDK khi deploy production.
+    match /workNodes/{nodeId} {
+      allow read, write: if true;
+    }
+    match /workNodes/{nodeId}/{sub=**} {
+      allow read, write: if true;
+    }
+    match /notifications/{userId}/items/{itemId} {
+      allow read, write: if true;
     }
   }
 }

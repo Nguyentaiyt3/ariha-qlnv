@@ -4,14 +4,14 @@ import { useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import {
   Menu, Bell, Search, Sun, Moon, Plus, Command,
-  AlertTriangle, Clock, ChevronLeft, ChevronRight, Calendar,
+  AlertTriangle, ChevronLeft, ChevronRight, Calendar,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useNotificationStore } from "@/stores/useNotificationStore";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useDashboardFilter, type FilterMode } from "@/stores/useDashboardFilter";
-import { formatRelativeTime } from "@/lib/utils";
+import { PendingApprovalsDropdown } from "./PendingApprovalsDropdown";
 
 const FILTER_MODES: { id: FilterMode; label: string }[] = [
   { id: "month",   label: "Tháng"  },
@@ -90,7 +90,6 @@ export function TopNav({
   const showDateFilter = pathname === "/dashboard" || pathname.startsWith("/tasks");
 
   const riskCount = tasks.filter((t) => t.riskFlag && t.status !== "done" && t.status !== "cancelled").length;
-  const pendingApprovals = tasks.filter((t) => !t.approved).length;
 
   function handleSearch(e: React.FormEvent) {
     e.preventDefault();
@@ -139,13 +138,11 @@ export function TopNav({
             </div>
           )}
 
-          {/* Pending approvals */}
-          {pendingApprovals > 0 && (currentUser?.role === "teamLead" || currentUser?.role === "director" || currentUser?.role === "hrAdmin") && (
-            <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 rounded-xl text-xs font-semibold border border-amber-100 dark:border-amber-800">
-              <Clock className="w-3.5 h-3.5" />
-              {pendingApprovals} chờ duyệt
-            </div>
-          )}
+          {/* Pending approvals dropdown */}
+          <PendingApprovalsDropdown
+            allowedRoles={["teamLead", "director", "hrAdmin"]}
+            currentRole={currentUser?.role}
+          />
 
           {/* Command palette */}
           <button

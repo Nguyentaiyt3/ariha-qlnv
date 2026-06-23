@@ -83,12 +83,17 @@ export default function TasksPage() {
       const today = new Date().toISOString().slice(0, 10);
       result = result.filter((t) => t.deadlineBase && t.deadlineBase < today && t.status !== "done" && t.status !== "cancelled");
     }
-    // Date-range filter (shared with dashboard)
-    const range = getRange();
-    if (range) {
-      const s = range.start.slice(0, 10);
-      const e = range.end.slice(0, 10);
-      result = result.filter((t) => !t.deadlineBase || (t.deadlineBase >= s && t.deadlineBase <= e));
+    // Date-range filter — bỏ qua khi có intent filter đang active
+    // (riskOnly / pendingReview / overdueOnly / assigneeId hiển thị toàn bộ, không giới hạn kỳ)
+    const hasIntentFilter =
+      filters.riskOnly || filters.pendingReview || filters.overdueOnly || !!filters.assigneeId;
+    if (!hasIntentFilter) {
+      const range = getRange();
+      if (range) {
+        const s = range.start.slice(0, 10);
+        const e = range.end.slice(0, 10);
+        result = result.filter((t) => !t.deadlineBase || (t.deadlineBase >= s && t.deadlineBase <= e));
+      }
     }
     return result;
   }, [tasks, filters, mode, year, month, quarter]);
@@ -248,11 +253,19 @@ export default function TasksPage() {
         {/* Approval chip — only visible to managers */}
         {canApprove && pendingApprovalCount > 0 && (
           <button
-            onClick={() => setFilters({ status: undefined, riskOnly: false })}
-            className="px-3 py-1.5 text-xs font-semibold bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-300 dark:border-yellow-700 text-yellow-700 dark:text-yellow-300 rounded-full hover:bg-yellow-100 transition flex items-center gap-1.5"
+            onClick={() => { resetFilters(); setFilters({ pendingReview: true }); }}
+            className={cn(
+              "px-3 py-1.5 text-xs font-semibold rounded-full border transition flex items-center gap-1.5",
+              filters.pendingReview
+                ? "bg-yellow-500 text-white border-yellow-500"
+                : "bg-yellow-50 dark:bg-yellow-900/20 border-yellow-300 dark:border-yellow-700 text-yellow-700 dark:text-yellow-300 hover:bg-yellow-100"
+            )}
           >
             Cần phê duyệt
-            <span className="bg-yellow-500 text-white rounded-full px-1.5 py-0.5 text-[9px] font-bold leading-none">
+            <span className={cn(
+              "rounded-full px-1.5 py-0.5 text-[9px] font-bold leading-none",
+              filters.pendingReview ? "bg-white text-yellow-600" : "bg-yellow-500 text-white"
+            )}>
               {pendingApprovalCount}
             </span>
           </button>

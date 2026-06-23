@@ -907,6 +907,7 @@ export function FinancialWidget({
     ?? transactions.filter((t) => t.fundSource === "REVENUE" && t.status === "VALID").reduce((s, t) => s + t.amount, 0);
   const totalExpense = summary?.totalExpense
     ?? transactions.filter((t) => t.direction === "DEBIT" && t.status === "VALID").reduce((s, t) => s + t.amount, 0);
+  const netCashFlow = totalRevenue - totalExpense;
 
   const utilizationPct = budget > 0
     ? Math.min(Math.round((totalExpense / budget) * 100), 100)
@@ -986,6 +987,23 @@ export function FinancialWidget({
           sub={totalExpense > 0 ? `Chi tiêu: ${vnd(totalExpense)}` : undefined}
           color="bg-emerald-50 dark:bg-emerald-900/30"
           icon={<TrendingUp className="w-3.5 h-3.5 text-emerald-600" />}
+        />
+        <SummaryCard
+          label="Chênh lệch"
+          value={netCashFlow > 0 ? `+${vnd(netCashFlow)}` : vnd(netCashFlow)}
+          sub={netCashFlow > 0 ? "Lời" : netCashFlow < 0 ? "Lỗ" : "Hòa vốn"}
+          color={
+            netCashFlow > 0
+              ? "bg-green-50 dark:bg-green-900/30"
+              : netCashFlow < 0
+                ? "bg-red-50 dark:bg-red-900/30"
+                : "bg-slate-100 dark:bg-slate-800"
+          }
+          icon={
+            netCashFlow >= 0
+              ? <TrendingUp className="w-3.5 h-3.5 text-green-600" />
+              : <TrendingDown className="w-3.5 h-3.5 text-red-500" />
+          }
         />
       </div>
 

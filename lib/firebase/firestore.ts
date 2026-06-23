@@ -27,6 +27,10 @@ import type {
   Announcement, AnnouncementComment, Channel, ChannelMessage,
 } from "@/types";
 import { generateId } from "@/lib/utils";
+import {
+  notifTaskCreated, notifTaskAssigned, notifApprovalRequest,
+  notifTaskCompleted, notifStatusChanged,
+} from "./notifications";
 
 // ─── Helpers ──────────────────────────────────────────────────
 
@@ -119,6 +123,33 @@ export async function createTask(task: Omit<Task, "id">): Promise<Task> {
   const id = generateId("t");
   const newTask: Task = { ...task, id };
   await setDoc(doc(db, "tasks", id), newTask);
+
+  // Thông báo cho người được phân công + các stakeholder liên quan
+  const stakeholderIds = (task.stakeholders ?? []).map((s) => s.userId);
+  const allRecipients = [...new Set([task.mainPerformerId, ...stakeholderIds].filter(Boolean) as string[])];
+  const creatorId = task.creatorId ?? "";
+
+  // Thông báo tạo nhiệm vụ (trừ người tạo)
+  const notifRecipients = allRecipients.filter((uid) => uid !== creatorId);
+  if (notifRecipients.length > 0) {
+    await notifTaskCreated({
+      recipientIds: notifRecipients,
+      taskId: id,
+      taskName: task.name,
+      creatorName: task.creatorId ?? "Hệ thống",
+    }).catch(() => {});
+  }
+
+  // Thông báo riêng cho mainPerformer nếu khác người tạo
+  if (task.mainPerformerId && task.mainPerformerId !== creatorId) {
+    await notifTaskAssigned({
+      recipientId: task.mainPerformerId,
+      taskId: id,
+      taskName: task.name,
+      assigner: task.creatorId ?? "Hệ thống",
+    }).catch(() => {});
+  }
+
   return newTask;
 }
 
@@ -126,12 +157,74 @@ function deepStrip<T>(obj: T): T {
   return JSON.parse(JSON.stringify(obj)) as T;
 }
 
-export async function updateTask(taskId: string, updates: Partial<Task>): Promise<void> {
+export async function updateTask(
+  taskId: string,
+  updates: Partial<Task>,
+  actor?: { id: string; name: string }
+): Promise<void> {
   const db = getDb();
+
+  // Đọc task hiện tại để so sánh status + lấy danh sách người liên quan
+  let prevStatus: string | undefined;
+  let taskName = taskId;
+  let stakeholderIds: string[] = [];
+  let mainPerformerId: string | undefined;
+  let creatorId: string | undefined;
+
+  if (updates.status && actor) {
+    const snap = await getDoc(doc(db, "tasks", taskId));
+    if (snap.exists()) {
+      const cur = snap.data() as Task;
+      prevStatus      = cur.status;
+      taskName        = cur.name;
+      mainPerformerId = cur.mainPerformerId;
+      creatorId       = cur.creatorId;
+      stakeholderIds  = (cur.stakeholders ?? []).map((s) => s.userId);
+    }
+  }
+
   await updateDoc(doc(db, "tasks", taskId), {
     ...deepStrip(stripUndefined(updates)),
     updatedAt: new Date().toISOString(),
   });
+
+  // Gửi thông báo khi status thay đổi
+  if (actor && updates.status && updates.status !== prevStatus) {
+    const allIds = [...new Set([mainPerformerId, creatorId, ...stakeholderIds].filter(Boolean) as string[])];
+    const recipients = allIds.filter((uid) => uid !== actor.id);
+
+    if (updates.status === "review") {
+      // Nộp xét duyệt → thông báo cho approvers + director/hrAdmin
+      const approverIds = stakeholderIds; // stakeholders includes approvers
+      if (approverIds.length > 0) {
+        await notifApprovalRequest({
+          recipientIds: approverIds.filter((uid) => uid !== actor.id),
+          taskId,
+          taskName,
+          submitterName: actor.name,
+        }).catch(() => {});
+      }
+    } else if (updates.status === "done") {
+      // Hoàn thành → thông báo creator + stakeholders
+      if (recipients.length > 0) {
+        await notifTaskCompleted({
+          recipientIds: recipients,
+          taskId,
+          taskName,
+          completerName: actor.name,
+        }).catch(() => {});
+      }
+    } else if (recipients.length > 0) {
+      // Các status thay đổi khác
+      await notifStatusChanged({
+        recipientIds: recipients,
+        taskId,
+        taskName,
+        newStatus: updates.status,
+        actorName: actor.name,
+      }).catch(() => {});
+    }
+  }
 }
 
 export async function deleteTask(taskId: string): Promise<void> {
@@ -261,6 +354,54 @@ export function subscribeNotifications(userId: string, callback: (notifs: Notifi
     (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Notification))),
     (err) => console.error("[subscribeNotifications]", err.code, err.message)
   );
+}
+
+export async function deleteNotification(userId: string, notifId: string): Promise<void> {
+  await deleteDoc(doc(getDb(), "notifications", userId, "items", notifId));
+}
+
+/** Xóa tất cả thông báo đã đọc (không xóa actionRequired chưa xử lý) */
+export async function deleteAllReadNotifications(userId: string): Promise<void> {
+  const db = getDb();
+  const snap = await getDocs(
+    query(collection(db, "notifications", userId, "items"), where("read", "==", true))
+  );
+  if (snap.empty) return;
+  const batch = writeBatch(db);
+  snap.docs.forEach((d) => batch.delete(d.ref));
+  await batch.commit();
+}
+
+/**
+ * Tự động xóa thông báo đã đọc cũ hơn `retentionDays` ngày.
+ * Không xóa thông báo có actionRequired=true (bất kể đã đọc hay chưa).
+ * Trả về số lượng đã xóa.
+ */
+export async function cleanupOldNotifications(
+  userId: string,
+  retentionDays: number
+): Promise<number> {
+  if (retentionDays <= 0) return 0;
+  const db = getDb();
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - retentionDays);
+  const cutoffISO = cutoff.toISOString();
+
+  const snap = await getDocs(
+    query(
+      collection(db, "notifications", userId, "items"),
+      where("read", "==", true),
+      where("createdAt", "<", cutoffISO),
+    )
+  );
+  // Không xóa actionRequired (có thể vẫn cần hành động dù đã đọc)
+  const toDelete = snap.docs.filter((d) => !d.data().actionRequired);
+  if (toDelete.length === 0) return 0;
+
+  const batch = writeBatch(db);
+  toDelete.forEach((d) => batch.delete(d.ref));
+  await batch.commit();
+  return toDelete.length;
 }
 
 // ─── EMAIL LOGS ───────────────────────────────────────────────

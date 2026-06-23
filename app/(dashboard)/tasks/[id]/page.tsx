@@ -3,10 +3,10 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
-  ArrowLeft, AlertTriangle, User, Calendar, Flag,
+  ArrowLeft, AlertTriangle, AlertCircle, User, Calendar, Flag,
   CheckSquare, MessageSquare, Users, Mail, Activity, BarChart3,
   CheckCheck, Loader2, Star, Send, ClipboardCheck, Pencil, Trash2, X as XIcon, Save,
-  Paperclip, Link2, FolderOpen, FileText, Download, Plus, DollarSign,
+  Paperclip, Link2, FolderOpen, FileText, Download, Plus, DollarSign, ShieldAlert,
 } from "lucide-react";
 import { cn, formatDate, formatDateTime, formatRelativeTime, statusLabel, priorityLabel, getInitials, avatarColor, isTaskVisible } from "@/lib/utils";
 import { useTaskStore } from "@/stores/useTaskStore";
@@ -18,7 +18,7 @@ import { StepsTab } from "@/components/tasks/StepsTab";
 import { TaskChat } from "@/components/tasks/TaskChat";
 import { FinancialWidget } from "@/components/tasks/FinancialWidget";
 import { UserAvatar } from "@/components/common/UserAvatar";
-import type { Task, User as UserType, EmailLog, AuditEvent, Evaluation, CompletionProposal, TaskResource } from "@/types";
+import type { Task, User as UserType, EmailLog, AuditEvent, Evaluation, CompletionProposal, TaskResource, ChangeRequest } from "@/types";
 import { generateId } from "@/lib/utils";
 import { toast } from "sonner";
 
@@ -230,9 +230,21 @@ export default function TaskDetailsPage() {
 
   // Edit / delete state
   const [isEditing, setIsEditing] = useState(false);
-  const [editForm, setEditForm] = useState({ name: "", description: "", priority: "", deadlineBase: "", department: "" });
+  const [editForm, setEditForm] = useState({ name: "", description: "", priority: "", deadlineBase: "", department: "", mainPerformerId: "" });
   const [savingEdit, setSavingEdit] = useState(false);
   const [deletingTask, setDeletingTask] = useState(false);
+
+  // Change request modal state
+  const [showChangeModal, setShowChangeModal] = useState(false);
+  const [changeReason, setChangeReason] = useState("");
+  const [pendingEdits, setPendingEdits] = useState<Partial<Task> | null>(null);
+  const [pendingChangedFields, setPendingChangedFields] = useState<ChangeRequest["changedFields"]>();
+  const [approvingChange, setApprovingChange] = useState(false);
+
+  // Issue escalation modal state
+  const [showIssueModal, setShowIssueModal] = useState(false);
+  const [issueDescription, setIssueDescription] = useState("");
+  const [submittingIssue, setSubmittingIssue] = useState(false);
 
   const refreshEmailLogs = useCallback(() => {
     getEmailLogs(id).then(setEmailLogs).catch(console.error);
@@ -276,22 +288,45 @@ export default function TaskDetailsPage() {
       priority: task.priority,
       deadlineBase: task.deadlineBase ? task.deadlineBase.slice(0, 10) : "",
       department: task.department ?? "",
+      mainPerformerId: task.mainPerformerId ?? "",
     });
     setIsEditing(true);
   }
 
   async function handleSaveEdit() {
     if (!task || !currentUser || !editForm.name.trim()) { toast.error("Tên nhiệm vụ không được để trống."); return; }
+
+    const updates: Partial<Task> = {
+      name: editForm.name.trim(),
+      description: editForm.description.trim() || undefined,
+      priority: editForm.priority as Task["priority"],
+      deadlineBase: editForm.deadlineBase || undefined,
+      department: editForm.department.trim() || undefined,
+      updatedAt: new Date().toISOString(),
+    };
+    if (editForm.mainPerformerId && editForm.mainPerformerId !== task.mainPerformerId) {
+      updates.mainPerformerId = editForm.mainPerformerId;
+    }
+
+    // Detect sensitive changes that require manager re-approval
+    const changedFields: ChangeRequest["changedFields"] = {};
+    if (editForm.deadlineBase !== (task.deadlineBase?.slice(0, 10) ?? "")) {
+      changedFields.deadlineBase = { before: task.deadlineBase ?? "", after: editForm.deadlineBase };
+    }
+    if (editForm.mainPerformerId && editForm.mainPerformerId !== task.mainPerformerId) {
+      changedFields.mainPerformerId = { before: task.mainPerformerId ?? "", after: editForm.mainPerformerId };
+    }
+
+    if (Object.keys(changedFields).length > 0 && task.approved) {
+      setPendingEdits(updates);
+      setPendingChangedFields(changedFields);
+      setChangeReason("");
+      setShowChangeModal(true);
+      return;
+    }
+
     setSavingEdit(true);
     try {
-      const updates: Partial<Task> = {
-        name: editForm.name.trim(),
-        description: editForm.description.trim() || undefined,
-        priority: editForm.priority as Task["priority"],
-        deadlineBase: editForm.deadlineBase || undefined,
-        department: editForm.department.trim() || undefined,
-        updatedAt: new Date().toISOString(),
-      };
       await updateTask(id, updates);
       await addAuditEvent(id, {
         taskId: id, action: "edited",
@@ -303,6 +338,127 @@ export default function TaskDetailsPage() {
       setIsEditing(false);
     } catch { toast.error("Cập nhật thất bại."); }
     finally { setSavingEdit(false); }
+  }
+
+  async function handleConfirmChangeRequest() {
+    if (!task || !currentUser || !pendingEdits || !changeReason.trim()) {
+      toast.error("Vui lòng nhập lý do thay đổi.");
+      return;
+    }
+    setSavingEdit(true);
+    try {
+      const crType: ChangeRequest["type"] =
+        pendingChangedFields?.deadlineBase && pendingChangedFields?.mainPerformerId
+          ? "deadline_change"
+          : pendingChangedFields?.deadlineBase
+          ? "deadline_change"
+          : "performer_change";
+      const changeReq: ChangeRequest = {
+        type: crType,
+        reason: changeReason.trim(),
+        requestedBy: currentUser.id,
+        requestedByName: currentUser.name,
+        requestedAt: new Date().toISOString(),
+        previousStatus: task.status,
+        status: "pending",
+        changedFields: pendingChangedFields,
+      };
+      await updateTask(id, { ...pendingEdits, status: "review", pendingChangeRequest: changeReq });
+      const managers = users.filter((u) => ["teamLead", "director", "hrAdmin"].includes(u.role) && u.id !== currentUser.id);
+      await Promise.all(managers.map((u) =>
+        addNotification({
+          userId: u.id, type: "approval_request",
+          title: "Yêu cầu thay đổi cần phê duyệt",
+          body: `${currentUser.name} yêu cầu thay đổi "${task.name}": ${changeReason.trim()}`,
+          link: `/tasks/${id}`, read: false, priority: "urgent",
+          createdAt: new Date().toISOString(), actionRequired: true,
+        })
+      ));
+      await addAuditEvent(id, {
+        taskId: id, action: "change_requested",
+        userId: currentUser.id, userName: currentUser.name,
+        note: changeReason.trim(), timestamp: new Date().toISOString(),
+      });
+      toast.success("Đã gửi yêu cầu thay đổi, chờ quản lý phê duyệt.");
+      setShowChangeModal(false);
+      setIsEditing(false);
+      setPendingEdits(null);
+      setPendingChangedFields(undefined);
+      setChangeReason("");
+    } catch { toast.error("Gửi yêu cầu thất bại."); }
+    finally { setSavingEdit(false); }
+  }
+
+  async function handleApproveChangeRequest(approved: boolean, comment?: string) {
+    if (!currentUser || !task?.pendingChangeRequest) return;
+    setApprovingChange(true);
+    const cr = task.pendingChangeRequest;
+    try {
+      const updates: Partial<Task> = { status: cr.previousStatus, pendingChangeRequest: null };
+      if (!approved && cr.changedFields) {
+        if (cr.changedFields.deadlineBase) updates.deadlineBase = cr.changedFields.deadlineBase.before;
+        if (cr.changedFields.mainPerformerId) updates.mainPerformerId = cr.changedFields.mainPerformerId.before;
+      }
+      await updateTask(id, updates);
+      if (cr.requestedBy !== currentUser.id) {
+        await addNotification({
+          userId: cr.requestedBy,
+          type: "approval_request",
+          title: approved ? "Thay đổi được phê duyệt" : "Thay đổi bị từ chối",
+          body: approved
+            ? `Yêu cầu thay đổi nhiệm vụ "${task.name}" đã được phê duyệt.`
+            : `Yêu cầu thay đổi nhiệm vụ "${task.name}" bị từ chối${comment ? `: ${comment}` : ""}.`,
+          link: `/tasks/${id}`, read: false, priority: "normal",
+          createdAt: new Date().toISOString(),
+        });
+      }
+      await addAuditEvent(id, {
+        taskId: id, action: approved ? "change_approved" : "change_rejected",
+        userId: currentUser.id, userName: currentUser.name,
+        note: comment, timestamp: new Date().toISOString(),
+      });
+      toast.success(approved ? "Đã phê duyệt thay đổi." : "Đã từ chối và hoàn tác thay đổi.");
+    } catch { toast.error("Thao tác thất bại."); }
+    finally { setApprovingChange(false); }
+  }
+
+  async function handleRaiseIssue() {
+    if (!task || !currentUser || !issueDescription.trim()) {
+      toast.error("Vui lòng mô tả vấn đề phát sinh.");
+      return;
+    }
+    setSubmittingIssue(true);
+    try {
+      const changeReq: ChangeRequest = {
+        type: "issue_raised",
+        reason: issueDescription.trim(),
+        requestedBy: currentUser.id,
+        requestedByName: currentUser.name,
+        requestedAt: new Date().toISOString(),
+        previousStatus: task.status,
+        status: "pending",
+      };
+      await updateTask(id, { status: "review", pendingChangeRequest: changeReq });
+      const managers = users.filter((u) => ["teamLead", "director", "hrAdmin"].includes(u.role) && u.id !== currentUser.id);
+      await Promise.all(managers.map((u) =>
+        addNotification({
+          userId: u.id, type: "approval_request",
+          title: "Vấn đề phát sinh cần xem xét",
+          body: `${currentUser.name} báo cáo vấn đề trong "${task.name}": ${issueDescription.trim()}`,
+          link: `/tasks/${id}`, read: false, priority: "urgent",
+          createdAt: new Date().toISOString(), actionRequired: true,
+        })
+      ));
+      await addAuditEvent(id, {
+        taskId: id, action: "issue_raised",
+        userId: currentUser.id, userName: currentUser.name,
+        note: issueDescription.trim(), timestamp: new Date().toISOString(),
+      });
+      toast.success("Đã báo cáo vấn đề, chờ quản lý xem xét.");
+      setShowIssueModal(false);
+      setIssueDescription("");
+    } catch { toast.error("Gửi báo cáo thất bại."); }
+    finally { setSubmittingIssue(false); }
   }
 
   async function handleDeleteTask() {
@@ -332,6 +488,10 @@ export default function TaskDetailsPage() {
 
   async function handleChangeStatus(status: Task["status"]) {
     if (!currentUser || !task) return;
+    if (!canChangeStatus) {
+      toast.error("Chỉ người thực hiện chính mới có thể thay đổi trạng thái.");
+      return;
+    }
     const old = task.status;
     try {
       await updateTask(id, { status, updatedAt: new Date().toISOString() });
@@ -516,13 +676,10 @@ export default function TaskDetailsPage() {
   const canApprove = !!(currentUser && hasPermission(currentUser.role, "task:approve"));
   const isMainPerformer = currentUser?.id === task.mainPerformerId;
   const canAssignSteps = task.approved && (isMainPerformer || canApprove);
-  // Staff cannot change status while task is pending approval
+  // Only mainPerformer (or director/hrAdmin override) can change status
   const canChangeStatus = !!(currentUser && (
-    canApprove ||
-    (task.approved && (
-      isMainPerformer ||
-      (task.stakeholders ?? []).some((s) => s.userId === currentUser.id)
-    ))
+    ["director", "hrAdmin"].includes(currentUser.role) ||
+    (task.approved && isMainPerformer)
   ));
   const canEdit = !!(currentUser && (
     canApprove ||
@@ -624,12 +781,20 @@ export default function TaskDetailsPage() {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-[10px] text-slate-400 mb-1">Hạn hoàn thành</label>
+                    <label className="block text-[10px] text-slate-400 mb-1 flex items-center gap-1">
+                      Hạn hoàn thành
+                      <ShieldAlert className="w-3 h-3 text-amber-500" title="Thay đổi cần phê duyệt" />
+                    </label>
                     <input
                       type="date"
                       value={editForm.deadlineBase}
                       onChange={(e) => setEditForm((f) => ({ ...f, deadlineBase: e.target.value }))}
-                      className="w-full px-2 py-1.5 text-sm border border-[var(--border)] rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className={cn(
+                        "w-full px-2 py-1.5 text-sm border rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500",
+                        editForm.deadlineBase !== (task.deadlineBase?.slice(0, 10) ?? "")
+                          ? "border-amber-400 ring-1 ring-amber-300"
+                          : "border-[var(--border)]"
+                      )}
                     />
                   </div>
                   <div>
@@ -642,6 +807,38 @@ export default function TaskDetailsPage() {
                     />
                   </div>
                 </div>
+                {/* Người thực hiện chính — sensitive field */}
+                <div>
+                  <label className="block text-[10px] text-slate-400 mb-1 flex items-center gap-1">
+                    Người thực hiện chính
+                    <ShieldAlert className="w-3 h-3 text-amber-500" title="Thay đổi cần phê duyệt" />
+                  </label>
+                  <select
+                    value={editForm.mainPerformerId}
+                    onChange={(e) => setEditForm((f) => ({ ...f, mainPerformerId: e.target.value }))}
+                    className={cn(
+                      "w-full px-2 py-1.5 text-sm border rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500",
+                      editForm.mainPerformerId !== task.mainPerformerId
+                        ? "border-amber-400 ring-1 ring-amber-300"
+                        : "border-[var(--border)]"
+                    )}
+                  >
+                    <option value="">— Chọn người thực hiện —</option>
+                    {users.filter((u) => u.isActive !== false).map((u) => (
+                      <option key={u.id} value={u.id}>{u.name} ({u.department ?? u.role})</option>
+                    ))}
+                  </select>
+                </div>
+                {/* Warning when sensitive fields changed */}
+                {task.approved && (
+                  (editForm.deadlineBase !== (task.deadlineBase?.slice(0, 10) ?? "") ||
+                   editForm.mainPerformerId !== task.mainPerformerId) && (
+                    <div className="flex items-start gap-2 p-2.5 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg text-xs text-amber-700 dark:text-amber-300">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                      <span>Thay đổi thời gian hoặc người thực hiện sẽ yêu cầu phê duyệt lại từ quản lý. Nhiệm vụ sẽ chuyển về trạng thái <strong>Chờ xét duyệt</strong>.</span>
+                    </div>
+                  )
+                )}
                 <div className="flex gap-2">
                   <button onClick={() => setIsEditing(false)}
                     className="flex items-center gap-1 px-3 py-1.5 border border-[var(--border)] text-sm rounded-xl hover:bg-[var(--muted)] transition">
@@ -666,12 +863,43 @@ export default function TaskDetailsPage() {
 
           {/* Actions */}
           <div className="flex items-center gap-2 shrink-0 flex-wrap">
-            {canApprove && !task.approved && (
+            {/* Initial approval */}
+            {canApprove && !task.approved && !task.pendingChangeRequest && (
               <button
                 onClick={handleApprove}
                 className="flex items-center gap-1.5 px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold rounded-xl transition"
               >
                 <CheckCheck className="w-4 h-4" /> Phê duyệt
+              </button>
+            )}
+            {/* Change request approval — visible to managers */}
+            {canApprove && task.pendingChangeRequest?.status === "pending" && (
+              <>
+                <button
+                  onClick={() => handleApproveChangeRequest(true)}
+                  disabled={approvingChange}
+                  className="flex items-center gap-1.5 px-3 py-2 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white text-sm font-semibold rounded-xl transition"
+                >
+                  {approvingChange ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCheck className="w-4 h-4" />}
+                  Duyệt thay đổi
+                </button>
+                <button
+                  onClick={() => handleApproveChangeRequest(false)}
+                  disabled={approvingChange}
+                  className="flex items-center gap-1.5 px-3 py-2 border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-60 text-sm font-medium rounded-xl transition"
+                >
+                  <XIcon className="w-4 h-4" /> Từ chối
+                </button>
+              </>
+            )}
+            {/* Issue escalation — visible to mainPerformer when task is active */}
+            {isMainPerformer && task.approved && !task.pendingChangeRequest && ["todo", "in_progress"].includes(task.status) && !isEditing && (
+              <button
+                onClick={() => setShowIssueModal(true)}
+                className="flex items-center gap-1.5 px-3 py-2 border border-orange-200 text-orange-600 hover:bg-orange-50 text-sm font-medium rounded-xl transition"
+                title="Báo cáo vấn đề phát sinh"
+              >
+                <AlertCircle className="w-4 h-4" /> Báo cáo vấn đề
               </button>
             )}
             {canEdit && !isEditing && (
@@ -743,6 +971,36 @@ export default function TaskDetailsPage() {
           ))}
         </div>
 
+        {/* Pending change request banner */}
+        {task.pendingChangeRequest?.status === "pending" && (
+          <div className="mt-4 p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl space-y-2">
+            <div className="flex items-center gap-2">
+              <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
+              <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">
+                {task.pendingChangeRequest.type === "deadline_change" && "Yêu cầu thay đổi thời hạn"}
+                {task.pendingChangeRequest.type === "performer_change" && "Yêu cầu thay đổi người thực hiện"}
+                {task.pendingChangeRequest.type === "issue_raised" && "Vấn đề phát sinh cần xem xét"}
+                {" — chờ phê duyệt"}
+              </p>
+            </div>
+            <p className="text-xs text-amber-700 dark:text-amber-400 ml-6">
+              <span className="font-medium">{task.pendingChangeRequest.requestedByName}</span>: "{task.pendingChangeRequest.reason}"
+            </p>
+            {task.pendingChangeRequest.changedFields?.deadlineBase && (
+              <p className="text-xs text-slate-600 dark:text-slate-400 ml-6">
+                Hạn: <span className="line-through text-red-500">{formatDate(task.pendingChangeRequest.changedFields.deadlineBase.before)}</span>
+                {" → "}<span className="text-green-600 font-medium">{formatDate(task.pendingChangeRequest.changedFields.deadlineBase.after)}</span>
+              </p>
+            )}
+            {task.pendingChangeRequest.changedFields?.mainPerformerId && (
+              <p className="text-xs text-slate-600 dark:text-slate-400 ml-6">
+                Người thực hiện: <span className="line-through text-red-500">{users.find(u => u.id === task.pendingChangeRequest?.changedFields?.mainPerformerId?.before)?.name ?? "—"}</span>
+                {" → "}<span className="text-green-600 font-medium">{users.find(u => u.id === task.pendingChangeRequest?.changedFields?.mainPerformerId?.after)?.name ?? "—"}</span>
+              </p>
+            )}
+            <p className="text-[10px] text-amber-500 ml-6">{formatRelativeTime(task.pendingChangeRequest.requestedAt)}</p>
+          </div>
+        )}
 
         {/* Completion proposal — main performer submits when task is done */}
         {task.status === "done" && (
@@ -1272,5 +1530,119 @@ export default function TaskDetailsPage() {
         </div>
       </div>
     </div>
+
+    {/* ─── Change Request Modal ─────────────────────────────────── */}
+    {showChangeModal && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+        <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center">
+              <ShieldAlert className="w-5 h-5 text-amber-600" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-slate-800 dark:text-white">Yêu cầu phê duyệt thay đổi</h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Nhiệm vụ sẽ chuyển về Chờ xét duyệt</p>
+            </div>
+          </div>
+
+          {/* Show what changed */}
+          <div className="bg-slate-50 dark:bg-slate-900 rounded-xl p-3 space-y-1.5 text-xs">
+            {pendingChangedFields?.deadlineBase && (
+              <p className="text-slate-600 dark:text-slate-400">
+                <span className="font-medium text-slate-700 dark:text-slate-200">Hạn hoàn thành: </span>
+                <span className="line-through text-red-500">{formatDate(pendingChangedFields.deadlineBase.before) || "—"}</span>
+                {" → "}
+                <span className="text-green-600 font-medium">{formatDate(pendingChangedFields.deadlineBase.after) || "—"}</span>
+              </p>
+            )}
+            {pendingChangedFields?.mainPerformerId && (
+              <p className="text-slate-600 dark:text-slate-400">
+                <span className="font-medium text-slate-700 dark:text-slate-200">Người thực hiện: </span>
+                <span className="line-through text-red-500">{users.find(u => u.id === pendingChangedFields.mainPerformerId?.before)?.name ?? "—"}</span>
+                {" → "}
+                <span className="text-green-600 font-medium">{users.find(u => u.id === pendingChangedFields.mainPerformerId?.after)?.name ?? "—"}</span>
+              </p>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-slate-700 dark:text-slate-200 mb-1.5">
+              Lý do thay đổi <span className="text-red-500">*</span>
+            </label>
+            <textarea
+              value={changeReason}
+              onChange={(e) => setChangeReason(e.target.value)}
+              placeholder="Mô tả lý do cần thay đổi thời gian hoặc người thực hiện..."
+              rows={3}
+              className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-amber-500 resize-none"
+            />
+          </div>
+
+          <div className="flex gap-2 justify-end">
+            <button
+              onClick={() => { setShowChangeModal(false); setChangeReason(""); }}
+              className="px-4 py-2 border border-[var(--border)] text-sm rounded-xl hover:bg-[var(--muted)] transition"
+            >
+              Huỷ
+            </button>
+            <button
+              onClick={handleConfirmChangeRequest}
+              disabled={savingEdit || !changeReason.trim()}
+              className="flex items-center gap-1.5 px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white text-sm font-semibold rounded-xl transition"
+            >
+              {savingEdit ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+              Gửi yêu cầu
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* ─── Issue Escalation Modal ───────────────────────────────── */}
+    {showIssueModal && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+        <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-orange-100 dark:bg-orange-900/30 flex items-center justify-center">
+              <AlertCircle className="w-5 h-5 text-orange-600" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-slate-800 dark:text-white">Báo cáo vấn đề phát sinh</h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Nhiệm vụ sẽ chuyển sang Chờ xét duyệt để quản lý xem xét</p>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-slate-700 dark:text-slate-200 mb-1.5">
+              Mô tả vấn đề <span className="text-red-500">*</span>
+            </label>
+            <textarea
+              value={issueDescription}
+              onChange={(e) => setIssueDescription(e.target.value)}
+              placeholder="Mô tả chi tiết vấn đề đang gặp phải, ảnh hưởng đến tiến độ hoặc chất lượng công việc..."
+              rows={4}
+              className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-orange-500 resize-none"
+            />
+          </div>
+
+          <div className="flex gap-2 justify-end">
+            <button
+              onClick={() => { setShowIssueModal(false); setIssueDescription(""); }}
+              className="px-4 py-2 border border-[var(--border)] text-sm rounded-xl hover:bg-[var(--muted)] transition"
+            >
+              Huỷ
+            </button>
+            <button
+              onClick={handleRaiseIssue}
+              disabled={submittingIssue || !issueDescription.trim()}
+              className="flex items-center gap-1.5 px-4 py-2 bg-orange-600 hover:bg-orange-700 disabled:opacity-60 text-white text-sm font-semibold rounded-xl transition"
+            >
+              {submittingIssue ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+              Gửi báo cáo
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
   );
 }
