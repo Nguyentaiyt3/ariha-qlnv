@@ -1,13 +1,14 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
-import { TrendingUp, Star, BarChart3, ChevronLeft, ChevronRight, Eye, ClipboardList, MessageSquare } from "lucide-react";
+import { TrendingUp, Star, BarChart3, ChevronLeft, Eye, ClipboardList, MessageSquare, User as UserIcon } from "lucide-react";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { getEvaluations, getAllEvaluations, getKPIFrameworks } from "@/lib/firebase/firestore";
 import { calcPerformanceScore, getRank } from "@/lib/performance-score";
 import type { Evaluation, KPIFramework as KPIFrameworkType, User } from "@/types";
 import PerformanceTrend from "@/components/performance/PerformanceTrend";
+import PersonalKPIDashboard from "@/components/performance/PersonalKPIDashboard";
 import EvaluationForm from "@/components/performance/EvaluationForm";
 import KPIFrameworkEditor from "@/components/performance/KPIFramework";
 import { getInitials, avatarColor, formatDate } from "@/lib/utils";
@@ -160,7 +161,7 @@ export default function PerformancePage() {
   const [allEvaluations, setAllEvaluations] = useState<Evaluation[]>([]);
   const [frameworks, setFrameworks] = useState<KPIFrameworkType[]>([]);
   const [selectedPeriod, setSelectedPeriod] = useState(PERIODS[Math.floor((new Date().getMonth()) / 3)]);
-  const [activeTab, setActiveTab] = useState<"overview" | "history" | "evaluate" | "kpi">("overview");
+  const [activeTab, setActiveTab] = useState<"personal" | "overview" | "history" | "evaluate" | "kpi">("personal");
   const [evaluateTarget, setEvaluateTarget] = useState<string>("");
   const [loading, setLoading] = useState(true);
 
@@ -260,11 +261,12 @@ export default function PerformancePage() {
     finally { setLoadingHistory(false); }
   }
 
-  const TABS: { id: "overview" | "history" | "evaluate" | "kpi"; label: string; hidden?: boolean }[] = [
-    { id: "overview", label: "Tổng quan" },
-    { id: "history", label: "Lịch sử đánh giá", hidden: !canManageKPI },
-    { id: "evaluate", label: "Đánh giá", hidden: !canManageKPI },
-    { id: "kpi", label: "Khung KPI", hidden: !canEditKPI },
+  const TABS: { id: "personal" | "overview" | "history" | "evaluate" | "kpi"; label: string; hidden?: boolean }[] = [
+    { id: "personal",  label: "KPI Cá nhân" },
+    { id: "overview",  label: "Tổng quan tổ chức", hidden: !canManageKPI },
+    { id: "history",   label: "Lịch sử đánh giá",  hidden: !canManageKPI },
+    { id: "evaluate",  label: "Đánh giá",            hidden: !canManageKPI },
+    { id: "kpi",       label: "Khung KPI",            hidden: !canEditKPI  },
   ];
 
   return (
@@ -303,6 +305,22 @@ export default function PerformancePage() {
           </button>
         ))}
       </div>
+
+      {/* ── Personal KPI tab ─────────────────────────────────── */}
+      {activeTab === "personal" && currentUser && (
+        <PersonalKPIDashboard
+          currentUser={currentUser}
+          tasks={tasks}
+          evaluations={evaluations}
+          framework={frameworks.find(
+            (f) => f.department === currentUser.department && f.year === CURRENT_YEAR,
+          )}
+          period={selectedPeriod}
+          trendData={trendData}
+          periodStart={periodToRange(selectedPeriod).start}
+          periodEnd={periodToRange(selectedPeriod).end}
+        />
+      )}
 
       {/* ── Overview tab ─────────────────────────────────────── */}
       {activeTab === "overview" && (
