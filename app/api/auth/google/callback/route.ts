@@ -71,6 +71,7 @@ export async function GET(req: NextRequest) {
 
     return response;
   } catch (err) {
+    console.error("[Google OAuth callback error]", err);
     const msg = err instanceof Error ? encodeURIComponent(err.message) : "google_error";
     return NextResponse.redirect(
       `${process.env.NEXT_PUBLIC_APP_URL}/login?error=${msg}`

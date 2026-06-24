@@ -16,6 +16,10 @@ export async function connectDB(): Promise<Connection> {
   try {
     const conn = await mongoose.connect(MONGODB_URI!, {
       bufferCommands: false,
+      tls: true,
+      tlsInsecure: true,
+      serverSelectionTimeoutMS: 10000,
+      connectTimeoutMS: 10000,
     });
 
     cachedConnection = conn.connection;
