@@ -46,6 +46,7 @@ import {
   rejectAdvanceSettlement,
   approveReimbursement,
   markReimbursementPaid,
+  rejectReimbursement,
 } from "@/lib/firebase/finance";
 import type { AdvanceRequest, ReimbursementRequest, FinancialTransaction, TaskFinancialSummary } from "@/types";
 import {
@@ -1562,13 +1563,7 @@ export default function FinanceDashboardPage() {
               // Hoàn ứng từ chối
               setLoadingId(rejectTarget.id);
               try {
-                const db = (await import("@/lib/firebase/config")).getDb();
-                const { updateDoc, doc } = await import("firebase/firestore");
-                await updateDoc(doc(db, "reimbursementRequests", rejectTarget.id), {
-                  status: "REJECTED",
-                  rejectedReason: reason,
-                  updatedAt: new Date().toISOString(),
-                });
+                await rejectReimbursement(rejectTarget.id, reason);
                 toast.success("Đã từ chối đơn hoàn ứng.");
               } catch (err) {
                 toast.error((err as Error).message);

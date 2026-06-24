@@ -14,7 +14,7 @@
  *   2. Có ít nhất 1 đơn tạm ứng APPROVED
  */
 import { NextRequest, NextResponse } from "next/server";
-import { reconcileAdvance } from "@/lib/firebase/finance";
+import { reconcileAdvance } from "@/lib/mongodb/firestore";
 
 export async function POST(
   req: NextRequest,

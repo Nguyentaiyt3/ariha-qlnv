@@ -470,7 +470,6 @@ export function TaskChat({
     setSending(true);
     try {
       await addMessage(taskId, {
-        taskId,
         senderId: currentUser.id,
         senderName: currentUser.name,
         ...(currentUser.avatar ? { senderAvatar: currentUser.avatar } : {}),

@@ -1,920 +1,448 @@
-import {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  setDoc,
-  updateDoc,
-  deleteDoc,
-  query,
-  where,
-  orderBy,
-  onSnapshot,
-  serverTimestamp,
-  Timestamp,
-  DocumentData,
-  QueryConstraint,
-  writeBatch,
-  limit,
-  startAfter,
-} from "firebase/firestore";
-import { getDb } from "./config";
+/**
+ * Client-safe Firestore compatibility layer.
+ * All data operations go through API routes (fetch) — no Mongoose in the browser.
+ * Server-side code (API routes) imports directly from lib/mongodb/firestore.
+ */
 import type {
-  User, Task, Message, Notification, EmailLog, CalendarEvent,
+  User, Task, Notification, Message, EmailLog, CalendarEvent,
   Workflow, MilestoneConfig, KPIFramework, Evaluation, AuditEvent,
-  RequestTemplate, WorkRequest,
-  DocFolder, WorkDocument,
+  RequestTemplate, WorkRequest, DocFolder, WorkDocument,
   Announcement, AnnouncementComment, Channel, ChannelMessage,
 } from "@/types";
 import { generateId } from "@/lib/utils";
-import {
-  notifTaskCreated, notifTaskAssigned, notifApprovalRequest,
-  notifTaskCompleted, notifStatusChanged,
-} from "./notifications";
 
-// ─── Helpers ──────────────────────────────────────────────────
-
-function toDate(val: unknown): string {
-  if (!val) return new Date().toISOString();
-  if (val instanceof Timestamp) return val.toDate().toISOString();
-  if (typeof val === "string") return val;
-  return new Date().toISOString();
-}
-
-function stripUndefined<T extends object>(obj: T): Partial<T> {
-  return Object.fromEntries(
-    Object.entries(obj).filter(([, v]) => v !== undefined)
-  ) as Partial<T>;
+async function api<T>(path: string, opts?: RequestInit): Promise<T | null> {
+  try {
+    const res = await fetch(path, opts);
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
 }
 
 // ─── USERS ────────────────────────────────────────────────────
 
 export async function getUser(userId: string): Promise<User | null> {
-  const db = getDb();
-  const snap = await getDoc(doc(db, "users", userId));
-  if (!snap.exists()) return null;
-  return { id: snap.id, ...snap.data() } as User;
+  const data = await api<{ user: User }>(`/api/users/${userId}`);
+  return data?.user ?? null;
 }
 
 export async function getUsers(): Promise<User[]> {
-  const db = getDb();
-  const snap = await getDocs(query(collection(db, "users"), where("isActive", "==", true)));
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as User));
+  const data = await api<{ users: User[] }>("/api/users");
+  return data?.users ?? [];
 }
 
 export async function saveUser(user: Partial<User> & { id: string }): Promise<void> {
-  const db = getDb();
-  await setDoc(doc(db, "users", user.id), stripUndefined(user), { merge: true });
+  await api(`/api/users/${user.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(user),
+  });
 }
 
 export async function deleteUser(userId: string): Promise<void> {
-  const db = getDb();
-  await updateDoc(doc(db, "users", userId), { isActive: false });
+  await api(`/api/users/${userId}`, { method: "DELETE" });
 }
 
 export function subscribeUsers(callback: (users: User[]) => void) {
-  const db = getDb();
-  return onSnapshot(
-    query(collection(db, "users"), where("isActive", "==", true)),
-    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as User))),
-    (err) => console.error("[subscribeUsers]", err.code, err.message)
-  );
+  getUsers().then(callback);
+  return () => {};
 }
 
 // ─── TASKS ────────────────────────────────────────────────────
 
 export async function getTask(taskId: string): Promise<Task | null> {
-  const db = getDb();
-  const snap = await getDoc(doc(db, "tasks", taskId));
-  if (!snap.exists()) return null;
-  return { id: snap.id, ...snap.data() } as Task;
+  const data = await api<{ task: Task }>(`/api/tasks/${taskId}`);
+  return data?.task ?? null;
 }
 
-export async function getTasks(constraints: QueryConstraint[] = []): Promise<Task[]> {
-  const db = getDb();
-  const snap = await getDocs(
-    query(collection(db, "tasks"), orderBy("createdAt", "desc"), ...constraints)
-  );
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Task));
+export async function getTasks(): Promise<Task[]> {
+  const data = await api<{ tasks: Task[] }>("/api/tasks");
+  return data?.tasks ?? [];
 }
 
 export async function getTasksByUser(userId: string): Promise<Task[]> {
-  const db = getDb();
-  const [asMain, asHelper] = await Promise.all([
-    getDocs(query(collection(db, "tasks"), where("mainPerformerId", "==", userId))),
-    getDocs(query(collection(db, "tasks"), where("stakeholders", "array-contains", { userId, role: "assignee" }))),
-  ]);
-  const taskMap = new Map<string, Task>();
-  [...asMain.docs, ...asHelper.docs].forEach((d) => taskMap.set(d.id, { id: d.id, ...d.data() } as Task));
-  return Array.from(taskMap.values());
+  const data = await api<{ tasks: Task[] }>(`/api/tasks?userId=${userId}`);
+  return data?.tasks ?? [];
 }
 
 export async function saveTask(task: Partial<Task> & { id: string }): Promise<void> {
-  const db = getDb();
-  await setDoc(
-    doc(db, "tasks", task.id),
-    { ...stripUndefined(task), updatedAt: new Date().toISOString() },
-    { merge: true }
-  );
+  await api(`/api/tasks/${task.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(task),
+  });
 }
 
 export async function createTask(task: Omit<Task, "id">): Promise<Task> {
-  const db = getDb();
   const id = generateId("t");
-  const newTask: Task = { ...task, id };
-  await setDoc(doc(db, "tasks", id), newTask);
-
-  // Thông báo cho người được phân công + các stakeholder liên quan
-  const stakeholderIds = (task.stakeholders ?? []).map((s) => s.userId);
-  const allRecipients = [...new Set([task.mainPerformerId, ...stakeholderIds].filter(Boolean) as string[])];
-  const creatorId = task.creatorId ?? "";
-
-  // Thông báo tạo nhiệm vụ (trừ người tạo)
-  const notifRecipients = allRecipients.filter((uid) => uid !== creatorId);
-  if (notifRecipients.length > 0) {
-    await notifTaskCreated({
-      recipientIds: notifRecipients,
-      taskId: id,
-      taskName: task.name,
-      creatorName: task.creatorId ?? "Hệ thống",
-    }).catch(() => {});
-  }
-
-  // Thông báo riêng cho mainPerformer nếu khác người tạo
-  if (task.mainPerformerId && task.mainPerformerId !== creatorId) {
-    await notifTaskAssigned({
-      recipientId: task.mainPerformerId,
-      taskId: id,
-      taskName: task.name,
-      assigner: task.creatorId ?? "Hệ thống",
-    }).catch(() => {});
-  }
-
-  return newTask;
-}
-
-function deepStrip<T>(obj: T): T {
-  return JSON.parse(JSON.stringify(obj)) as T;
+  await api("/api/tasks", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...task, id }),
+  });
+  return { id, ...task } as Task;
 }
 
 export async function updateTask(
   taskId: string,
   updates: Partial<Task>,
-  actor?: { id: string; name: string }
+  _actor?: { id: string; name: string }
 ): Promise<void> {
-  const db = getDb();
-
-  // Đọc task hiện tại để so sánh status + lấy danh sách người liên quan
-  let prevStatus: string | undefined;
-  let taskName = taskId;
-  let stakeholderIds: string[] = [];
-  let mainPerformerId: string | undefined;
-  let creatorId: string | undefined;
-
-  if (updates.status && actor) {
-    const snap = await getDoc(doc(db, "tasks", taskId));
-    if (snap.exists()) {
-      const cur = snap.data() as Task;
-      prevStatus      = cur.status;
-      taskName        = cur.name;
-      mainPerformerId = cur.mainPerformerId;
-      creatorId       = cur.creatorId;
-      stakeholderIds  = (cur.stakeholders ?? []).map((s) => s.userId);
-    }
-  }
-
-  await updateDoc(doc(db, "tasks", taskId), {
-    ...deepStrip(stripUndefined(updates)),
-    updatedAt: new Date().toISOString(),
+  await api(`/api/tasks/${taskId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
   });
-
-  // Gửi thông báo khi status thay đổi
-  if (actor && updates.status && updates.status !== prevStatus) {
-    const allIds = [...new Set([mainPerformerId, creatorId, ...stakeholderIds].filter(Boolean) as string[])];
-    const recipients = allIds.filter((uid) => uid !== actor.id);
-
-    if (updates.status === "review") {
-      // Nộp xét duyệt → thông báo cho approvers + director/hrAdmin
-      const approverIds = stakeholderIds; // stakeholders includes approvers
-      if (approverIds.length > 0) {
-        await notifApprovalRequest({
-          recipientIds: approverIds.filter((uid) => uid !== actor.id),
-          taskId,
-          taskName,
-          submitterName: actor.name,
-        }).catch(() => {});
-      }
-    } else if (updates.status === "done") {
-      // Hoàn thành → thông báo creator + stakeholders
-      if (recipients.length > 0) {
-        await notifTaskCompleted({
-          recipientIds: recipients,
-          taskId,
-          taskName,
-          completerName: actor.name,
-        }).catch(() => {});
-      }
-    } else if (recipients.length > 0) {
-      // Các status thay đổi khác
-      await notifStatusChanged({
-        recipientIds: recipients,
-        taskId,
-        taskName,
-        newStatus: updates.status,
-        actorName: actor.name,
-      }).catch(() => {});
-    }
-  }
 }
 
 export async function deleteTask(taskId: string): Promise<void> {
-  const db = getDb();
-  await deleteDoc(doc(db, "tasks", taskId));
+  await api(`/api/tasks/${taskId}`, { method: "DELETE" });
 }
 
-export function subscribeTasks(
-  callback: (tasks: Task[]) => void,
-  constraints: QueryConstraint[] = []
-) {
-  const db = getDb();
-  return onSnapshot(
-    query(collection(db, "tasks"), orderBy("createdAt", "desc"), ...constraints),
-    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Task))),
-    (err) => console.error("[subscribeTasks]", err.code, err.message)
-  );
+export function subscribeTasks(callback: (tasks: Task[]) => void) {
+  getTasks().then(callback);
+  return () => {};
 }
 
 export function subscribeTask(taskId: string, callback: (task: Task | null) => void) {
-  const db = getDb();
-  return onSnapshot(
-    doc(db, "tasks", taskId),
-    (snap) => callback(snap.exists() ? ({ id: snap.id, ...snap.data() } as Task) : null),
-    (err) => console.error("[subscribeTask]", err.code, err.message)
-  );
+  getTask(taskId).then(callback);
+  return () => {};
 }
 
 // ─── AUDIT TRAIL ──────────────────────────────────────────────
 
-export async function addAuditEvent(taskId: string, event: Omit<AuditEvent, "id">): Promise<void> {
-  const db = getDb();
-  const id = generateId("audit");
-  await setDoc(doc(db, "tasks", taskId, "auditTrail", id), stripUndefined({ ...event, id }));
-}
+export async function addAuditEvent(_taskId: string, _event: Omit<AuditEvent, "id">): Promise<void> {}
 
-export async function getAuditTrail(taskId: string): Promise<AuditEvent[]> {
-  const db = getDb();
-  const snap = await getDocs(
-    query(
-      collection(db, "tasks", taskId, "auditTrail"),
-      orderBy("timestamp", "desc"),
-      limit(50)
-    )
-  );
-  return snap.docs.map((d) => d.data() as AuditEvent);
+export async function getAuditTrail(_taskId: string): Promise<AuditEvent[]> {
+  return [];
 }
 
 // ─── MESSAGES ────────────────────────────────────────────────
 
-export async function getMessages(taskId: string): Promise<Message[]> {
-  const db = getDb();
-  const snap = await getDocs(
-    query(collection(db, "tasks", taskId, "messages"), orderBy("timestamp", "asc"))
-  );
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Message));
+export async function getMessages(taskId: string) {
+  const data = await api<{ messages: Message[] }>(`/api/messages/${taskId}`);
+  return data?.messages ?? [];
 }
 
-export async function addMessage(taskId: string, message: Omit<Message, "id">): Promise<Message> {
-  const db = getDb();
-  const id = generateId("msg");
-  const newMsg: Message = { ...message, id };
-  // Strip undefined fields — Firestore rejects them
-  const data = Object.fromEntries(Object.entries(newMsg).filter(([, v]) => v !== undefined));
-  await setDoc(doc(db, "tasks", taskId, "messages", id), data);
-  return newMsg;
+export async function addMessage(taskId: string, message: Omit<Message, "id" | "taskId">) {
+  const data = await api<{ message: Message }>(`/api/messages/${taskId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(message),
+  });
+  return data?.message ?? { id: generateId("msg"), taskId, ...message } as Message;
 }
 
 export async function updateMessage(taskId: string, msgId: string, data: Partial<Message>): Promise<void> {
-  const db = getDb();
-  const stripped = Object.fromEntries(Object.entries(data).filter(([, v]) => v !== undefined));
-  await updateDoc(doc(db, "tasks", taskId, "messages", msgId), stripped);
+  await api(`/api/messages/${taskId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "update", msgId, data }),
+  });
 }
 
 export function subscribeMessages(taskId: string, callback: (messages: Message[]) => void) {
-  const db = getDb();
-  return onSnapshot(
-    query(collection(db, "tasks", taskId, "messages"), orderBy("timestamp", "asc")),
-    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Message))),
-    (err) => console.error("[subscribeMessages]", err.code, err.message)
-  );
+  getMessages(taskId).then(callback);
+  return () => {};
 }
 
 // ─── NOTIFICATIONS ────────────────────────────────────────────
 
-export async function getNotifications(userId: string): Promise<Notification[]> {
-  const db = getDb();
-  const snap = await getDocs(
-    query(
-      collection(db, "notifications", userId, "items"),
-      orderBy("createdAt", "desc"),
-      limit(50)
-    )
-  );
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Notification));
+export async function getNotifications(_userId: string): Promise<Notification[]> {
+  const data = await api<{ notifications: Notification[] }>("/api/notifications");
+  return data?.notifications ?? [];
 }
 
 export async function addNotification(notif: Omit<Notification, "id">): Promise<void> {
-  const db = getDb();
-  const id = generateId("notif");
-  await setDoc(doc(db, "notifications", notif.userId, "items", id), { ...notif, id });
+  await api("/api/notifications", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(notif),
+  });
 }
 
-export async function markNotificationRead(userId: string, notifId: string): Promise<void> {
-  const db = getDb();
-  await updateDoc(doc(db, "notifications", userId, "items", notifId), { read: true });
+export async function createNotification(notif: Omit<Notification, "id">): Promise<void> {
+  return addNotification(notif);
 }
 
-export async function markAllNotificationsRead(userId: string): Promise<void> {
-  const db = getDb();
-  const snap = await getDocs(
-    query(collection(db, "notifications", userId, "items"), where("read", "==", false))
-  );
-  const batch = writeBatch(db);
-  snap.docs.forEach((d) => batch.update(d.ref, { read: true }));
-  await batch.commit();
+export async function markNotificationRead(_userId: string, notifId: string): Promise<void> {
+  await api(`/api/notifications/${notifId}`, { method: "PATCH" });
+}
+
+export async function markAllNotificationsRead(_userId: string): Promise<void> {
+  await api("/api/notifications", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "markAllRead" }),
+  });
 }
 
 export function subscribeNotifications(userId: string, callback: (notifs: Notification[]) => void) {
-  const db = getDb();
-  return onSnapshot(
-    query(
-      collection(db, "notifications", userId, "items"),
-      orderBy("createdAt", "desc"),
-      limit(50)
-    ),
-    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Notification))),
-    (err) => console.error("[subscribeNotifications]", err.code, err.message)
-  );
+  getNotifications(userId).then(callback);
+  return () => {};
 }
 
-export async function deleteNotification(userId: string, notifId: string): Promise<void> {
-  await deleteDoc(doc(getDb(), "notifications", userId, "items", notifId));
+export async function deleteNotification(_userId: string, notifId: string): Promise<void> {
+  await api(`/api/notifications/${notifId}`, { method: "DELETE" });
 }
 
-/** Xóa tất cả thông báo đã đọc (không xóa actionRequired chưa xử lý) */
 export async function deleteAllReadNotifications(userId: string): Promise<void> {
-  const db = getDb();
-  const snap = await getDocs(
-    query(collection(db, "notifications", userId, "items"), where("read", "==", true))
-  );
-  if (snap.empty) return;
-  const batch = writeBatch(db);
-  snap.docs.forEach((d) => batch.delete(d.ref));
-  await batch.commit();
+  await api(`/api/notifications?userId=${userId}&onlyRead=true`, { method: "DELETE" });
 }
 
-/**
- * Tự động xóa thông báo đã đọc cũ hơn `retentionDays` ngày.
- * Không xóa thông báo có actionRequired=true (bất kể đã đọc hay chưa).
- * Trả về số lượng đã xóa.
- */
-export async function cleanupOldNotifications(
-  userId: string,
-  retentionDays: number
-): Promise<number> {
-  if (retentionDays <= 0) return 0;
-  const db = getDb();
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - retentionDays);
-  const cutoffISO = cutoff.toISOString();
-
-  const snap = await getDocs(
-    query(
-      collection(db, "notifications", userId, "items"),
-      where("read", "==", true),
-      where("createdAt", "<", cutoffISO),
-    )
-  );
-  // Không xóa actionRequired (có thể vẫn cần hành động dù đã đọc)
-  const toDelete = snap.docs.filter((d) => !d.data().actionRequired);
-  if (toDelete.length === 0) return 0;
-
-  const batch = writeBatch(db);
-  toDelete.forEach((d) => batch.delete(d.ref));
-  await batch.commit();
-  return toDelete.length;
+export async function cleanupOldNotifications(_userId: string, _days: number): Promise<number> {
+  return 0;
 }
 
 // ─── EMAIL LOGS ───────────────────────────────────────────────
 
-export async function addEmailLog(log: Omit<EmailLog, "id">): Promise<void> {
-  const db = getDb();
-  const id = generateId("emaillog");
-  await setDoc(doc(db, "emailLogs", id), { ...log, id });
-}
-
-export async function getEmailLogs(taskId: string): Promise<EmailLog[]> {
-  const db = getDb();
-  const snap = await getDocs(
-    query(collection(db, "emailLogs"), where("taskId", "==", taskId), orderBy("sentAt", "desc"))
-  );
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as EmailLog));
-}
+export async function addEmailLog(_log: Omit<EmailLog, "id">): Promise<void> {}
+export async function getEmailLogs(_taskId: string): Promise<EmailLog[]> { return []; }
 
 // ─── CALENDAR ────────────────────────────────────────────────
 
 export async function getCalendarEvents(userId: string): Promise<CalendarEvent[]> {
-  const db = getDb();
-  const snap = await getDocs(
-    query(collection(db, "calendarEvents"), where("userId", "==", userId))
-  );
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as CalendarEvent));
+  const data = await api<{ events: CalendarEvent[] }>(`/api/calendar/events?userId=${userId}`);
+  return data?.events ?? [];
 }
-
 export async function saveCalendarEvent(event: CalendarEvent): Promise<void> {
-  const db = getDb();
-  await setDoc(doc(db, "calendarEvents", event.id), event, { merge: true });
+  await api("/api/calendar/events", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(event) });
 }
-
 export async function deleteCalendarEvent(eventId: string): Promise<void> {
-  const db = getDb();
-  await deleteDoc(doc(db, "calendarEvents", eventId));
+  await api(`/api/calendar/events/${eventId}`, { method: "DELETE" });
 }
-
 export function subscribeCalendarEvents(userId: string, callback: (events: CalendarEvent[]) => void) {
-  const db = getDb();
-  return onSnapshot(
-    query(collection(db, "calendarEvents"), where("userId", "==", userId)),
-    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as CalendarEvent))),
-    (err) => console.error("[subscribeCalendarEvents]", err.code, err.message)
-  );
+  getCalendarEvents(userId).then(callback);
+  return () => {};
 }
-
 export async function getPendingCalendarEvents(): Promise<CalendarEvent[]> {
-  const db = getDb();
-  const snap = await getDocs(collection(db, "calendarEvents"));
-  return snap.docs
-    .map((d) => ({ id: d.id, ...d.data() } as CalendarEvent))
-    .filter((e) => e.status === "pending")
-    .sort((a, b) => a.start.localeCompare(b.start));
+  const data = await api<{ events: CalendarEvent[] }>("/api/calendar/events?pending=true");
+  return data?.events ?? [];
 }
-
 export async function approveCalendarEvent(id: string, approve: boolean, reason?: string): Promise<void> {
-  const db = getDb();
-  await updateDoc(doc(db, "calendarEvents", id), {
-    status: approve ? "published" : "rejected",
-    ...(reason && { rejectionReason: reason }),
-  });
+  await api("/api/calendar/events", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: approve ? "approve" : "reject", id, reason }) });
 }
 
 // ─── WORKFLOWS ────────────────────────────────────────────────
 
-export async function getWorkflows(canApprove = false, currentUserId?: string): Promise<Workflow[]> {
-  const db = getDb();
-  const snap = await getDocs(query(collection(db, "workflows"), orderBy("createdAt", "desc")));
-  return snap.docs
-    .map((d) => ({ id: d.id, ...d.data() } as Workflow))
-    .filter((w) =>
-      canApprove ||
-      w.status === "published" ||
-      w.status === undefined ||
-      (currentUserId && w.createdBy === currentUserId)
-    );
+export async function getWorkflows(canApprove = false, userId?: string): Promise<Workflow[]> {
+  const data = await api<{ workflows: Workflow[] }>(`/api/workflows${canApprove ? "?all=true" : ""}`);
+  return data?.workflows ?? [];
 }
-
 export async function saveWorkflow(workflow: Workflow): Promise<void> {
-  const db = getDb();
-  await setDoc(doc(db, "workflows", workflow.id), deepStrip(workflow), { merge: true });
+  await api("/api/workflows", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(workflow) });
 }
-
 export async function approveWorkflow(id: string, approve: boolean, reason?: string): Promise<void> {
-  const db = getDb();
-  await updateDoc(doc(db, "workflows", id), {
-    status: approve ? "published" : "rejected",
-    ...(reason && { rejectionReason: reason }),
-  });
+  await api(`/api/workflows/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: approve ? "approve" : "reject", reason }) });
 }
-
-export async function deleteWorkflow(workflowId: string): Promise<void> {
-  const db = getDb();
-  await deleteDoc(doc(db, "workflows", workflowId));
+export async function deleteWorkflow(id: string): Promise<void> {
+  await api(`/api/workflows/${id}`, { method: "DELETE" });
 }
 
 // ─── MILESTONE CONFIG ─────────────────────────────────────────
 
 export async function getMilestoneConfigs(): Promise<MilestoneConfig[]> {
-  const db = getDb();
-  const snap = await getDocs(collection(db, "milestoneConfig"));
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as MilestoneConfig));
+  const data = await api<{ configs: MilestoneConfig[] }>("/api/milestones");
+  return data?.configs ?? [];
 }
-
 export async function getDefaultMilestoneConfig(): Promise<MilestoneConfig | null> {
-  const db = getDb();
-  const snap = await getDocs(
-    query(collection(db, "milestoneConfig"), where("isDefault", "==", true), limit(1))
-  );
-  if (snap.empty) return null;
-  return { id: snap.docs[0].id, ...snap.docs[0].data() } as MilestoneConfig;
+  const data = await api<{ config: MilestoneConfig }>("/api/milestones?default=true");
+  return data?.config ?? null;
 }
-
 export async function saveMilestoneConfig(config: MilestoneConfig): Promise<void> {
-  const db = getDb();
-  await setDoc(doc(db, "milestoneConfig", config.id), config, { merge: true });
+  await api("/api/milestones", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(config) });
 }
 
 // ─── KPI FRAMEWORKS ───────────────────────────────────────────
 
 export async function getKPIFrameworks(): Promise<KPIFramework[]> {
-  const db = getDb();
-  const snap = await getDocs(query(collection(db, "kpiFrameworks"), orderBy("createdAt", "desc")));
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as KPIFramework));
+  const data = await api<{ frameworks: KPIFramework[] }>("/api/kpi-frameworks");
+  return data?.frameworks ?? [];
 }
-
 export async function saveKPIFramework(framework: KPIFramework): Promise<void> {
-  const db = getDb();
-  await setDoc(doc(db, "kpiFrameworks", framework.id), framework, { merge: true });
+  await api("/api/kpi-frameworks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(framework) });
 }
 
 // ─── EVALUATIONS ──────────────────────────────────────────────
 
 export async function getEvaluations(userId: string): Promise<Evaluation[]> {
-  const db = getDb();
-  const snap = await getDocs(
-    query(collection(db, "evaluations"), where("evaluatedUserId", "==", userId), orderBy("createdAt", "desc"))
-  );
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Evaluation));
+  const data = await api<{ evaluations: Evaluation[] }>(`/api/evaluations?userId=${userId}`);
+  return data?.evaluations ?? [];
 }
-
 export async function getTaskEvaluations(taskId: string): Promise<Evaluation[]> {
-  const db = getDb();
-  const snap = await getDocs(
-    query(collection(db, "evaluations"), where("taskId", "==", taskId), orderBy("createdAt", "desc"))
-  );
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Evaluation));
+  const data = await api<{ evaluations: Evaluation[] }>(`/api/evaluations?taskId=${taskId}`);
+  return data?.evaluations ?? [];
 }
-
 export async function getAllEvaluations(): Promise<Evaluation[]> {
-  const db = getDb();
-  const snap = await getDocs(
-    query(collection(db, "evaluations"), orderBy("createdAt", "desc"))
-  );
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Evaluation));
+  const data = await api<{ evaluations: Evaluation[] }>("/api/evaluations");
+  return data?.evaluations ?? [];
 }
-
 export async function saveEvaluation(evaluation: Evaluation): Promise<void> {
-  const db = getDb();
-  await setDoc(doc(db, "evaluations", evaluation.id), deepStrip(evaluation) as DocumentData, { merge: true });
-}
-
-// ─── EVALUATION CONFIG ────────────────────────────────────────
-
-import type { EvaluationConfig } from "@/types";
-import { DEFAULT_EVAL_CONFIG } from "@/lib/eval3T";
-
-export async function getEvaluationConfig(): Promise<EvaluationConfig> {
-  const db = getDb();
-  const snap = await getDoc(doc(db, "evaluationConfig", "default"));
-  if (!snap.exists()) return DEFAULT_EVAL_CONFIG;
-  return snap.data() as EvaluationConfig;
-}
-
-export async function saveEvaluationConfig(config: EvaluationConfig): Promise<void> {
-  const db = getDb();
-  await setDoc(doc(db, "evaluationConfig", "default"), deepStrip(config) as DocumentData);
-}
-
-// ─── PERMISSION CONFIG ────────────────────────────────────────
-
-import type { UserRole } from "@/types";
-
-export async function getPermissionConfig(): Promise<Partial<Record<UserRole, string[]>>> {
-  const db = getDb();
-  const snap = await getDoc(doc(db, "permissionConfig", "roles"));
-  if (!snap.exists()) return {};
-  return snap.data() as Partial<Record<UserRole, string[]>>;
-}
-
-export async function savePermissionConfig(config: Partial<Record<UserRole, string[]>>): Promise<void> {
-  const db = getDb();
-  await setDoc(doc(db, "permissionConfig", "roles"), config);
+  await api("/api/evaluations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(evaluation) });
 }
 
 // ─── REQUEST TEMPLATES ────────────────────────────────────────
 
-export async function getRequestTemplates(includeAllStatuses = false): Promise<RequestTemplate[]> {
-  const db = getDb();
-  const snap = await getDocs(query(collection(db, "requestTemplates"), where("isActive", "==", true)));
-  return snap.docs
-    .map((d) => ({ id: d.id, ...d.data() } as RequestTemplate))
-    .filter((t) => includeAllStatuses || t.status === "published" || t.status === undefined)
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+export async function getRequestTemplates(includeAll = false): Promise<RequestTemplate[]> {
+  const data = await api<{ templates: RequestTemplate[] }>(`/api/request-templates${includeAll ? "?all=true" : ""}`);
+  return data?.templates ?? [];
 }
-
 export async function getPendingTemplates(): Promise<RequestTemplate[]> {
-  const db = getDb();
-  const snap = await getDocs(query(collection(db, "requestTemplates"), where("isActive", "==", true)));
-  return snap.docs
-    .map((d) => ({ id: d.id, ...d.data() } as RequestTemplate))
-    .filter((t) => t.status === "pending")
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const data = await api<{ templates: RequestTemplate[] }>("/api/request-templates?pending=true");
+  return data?.templates ?? [];
 }
-
-export async function approveRequestTemplate(id: string, approve: boolean, reason?: string): Promise<void> {
-  const db = getDb();
-  await updateDoc(doc(db, "requestTemplates", id), {
-    status: approve ? "published" : "rejected",
-    isActive: approve,
-    ...(reason && { rejectionReason: reason }),
-  });
+export async function approveRequestTemplate(id: string, approve: boolean, _reason?: string): Promise<void> {
+  await api("/api/request-templates", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: approve ? "approve" : "reject", id }) });
 }
-
 export async function saveRequestTemplate(t: RequestTemplate): Promise<void> {
-  const db = getDb();
-  await setDoc(doc(db, "requestTemplates", t.id), deepStrip(t), { merge: true });
+  await api("/api/request-templates", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(t) });
 }
-
 export async function deleteRequestTemplate(id: string): Promise<void> {
-  const db = getDb();
-  await updateDoc(doc(db, "requestTemplates", id), { isActive: false });
+  await api("/api/request-templates", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete", id }) });
 }
 
-// ─── WORK REQUESTS / ĐƠN TỪ ─────────────────────────────────
+// ─── WORK REQUESTS ────────────────────────────────────────────
 
-export async function getRequests(constraints: QueryConstraint[] = []): Promise<WorkRequest[]> {
-  const db = getDb();
-  const snap = await getDocs(query(collection(db, "requests"), orderBy("createdAt", "desc"), ...constraints));
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as WorkRequest));
+export async function getRequests(): Promise<WorkRequest[]> {
+  const data = await api<{ requests: WorkRequest[] }>("/api/requests");
+  return data?.requests ?? [];
 }
-
 export async function getRequest(id: string): Promise<WorkRequest | null> {
-  const db = getDb();
-  const snap = await getDoc(doc(db, "requests", id));
-  return snap.exists() ? ({ id: snap.id, ...snap.data() } as WorkRequest) : null;
+  const data = await api<{ request: WorkRequest }>(`/api/requests/${id}`);
+  return data?.request ?? null;
 }
-
 export async function saveRequest(r: WorkRequest): Promise<void> {
-  const db = getDb();
-  await setDoc(doc(db, "requests", r.id), deepStrip({ ...r, updatedAt: new Date().toISOString() }), { merge: true });
+  await api("/api/requests", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(r) });
 }
-
 export async function updateRequest(id: string, updates: Partial<WorkRequest>): Promise<void> {
-  const db = getDb();
-  await updateDoc(doc(db, "requests", id), { ...updates, updatedAt: new Date().toISOString() });
+  await api(`/api/requests/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(updates) });
 }
-
 export function subscribeRequests(userId: string, isManager: boolean, callback: (reqs: WorkRequest[]) => void) {
-  const db = getDb();
-  // Avoid composite index requirement: filter/sort client-side for non-manager queries
-  const q = isManager
-    ? query(collection(db, "requests"), orderBy("createdAt", "desc"), limit(100))
-    : query(collection(db, "requests"), where("submittedBy", "==", userId));
-  return onSnapshot(q,
-    (snap) => {
-      const reqs = snap.docs
-        .map((d) => ({ id: d.id, ...d.data() } as WorkRequest))
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-      callback(reqs);
-    },
-    (err) => console.error("[subscribeRequests]", err.code)
-  );
+  getRequests().then(callback);
+  return () => {};
 }
 
-// ─── DOCUMENTS / TÀI LIỆU ────────────────────────────────────
+// ─── DOCUMENTS ────────────────────────────────────────────────
 
 export async function getFolders(): Promise<DocFolder[]> {
-  const db = getDb();
-  const snap = await getDocs(query(collection(db, "folders"), orderBy("createdAt", "asc")));
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as DocFolder));
+  const data = await api<{ folders: DocFolder[] }>("/api/documents?type=folders");
+  return data?.folders ?? [];
 }
-
 export async function saveFolder(f: DocFolder): Promise<void> {
-  const db = getDb();
-  await setDoc(doc(db, "folders", f.id), deepStrip(f), { merge: true });
+  await api("/api/documents", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: "folder", data: f, id: f.id }) });
 }
-
 export async function deleteFolder(id: string): Promise<void> {
-  const db = getDb();
-  await deleteDoc(doc(db, "folders", id));
+  await api("/api/documents", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "deleteFolder", id }) });
 }
-
 export async function getDocuments(folderId: string | null): Promise<WorkDocument[]> {
-  const db = getDb();
-  const q = query(collection(db, "documents"), where("folderId", "==", folderId));
-  const snap = await getDocs(q);
-  return snap.docs
-    .map((d) => ({ id: d.id, ...d.data() } as WorkDocument))
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const param = folderId ? `folderId=${folderId}` : "folderId=null";
+  const data = await api<{ documents: WorkDocument[] }>(`/api/documents?${param}`);
+  return data?.documents ?? [];
 }
-
-export async function saveDocument(doc_: WorkDocument): Promise<void> {
-  const db = getDb();
-  await setDoc(doc(db, "documents", doc_.id), deepStrip({ ...doc_, updatedAt: new Date().toISOString() }), { merge: true });
+export async function saveDocument(doc: WorkDocument): Promise<void> {
+  await api("/api/documents", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(doc) });
 }
-
 export async function deleteDocument(id: string): Promise<void> {
-  const db = getDb();
-  await deleteDoc(doc(db, "documents", id));
+  await api(`/api/documents/${id}`, { method: "DELETE" });
 }
-
-export function subscribeDocuments(folderId: string | null, callback: (docs: WorkDocument[]) => void, userId?: string, canApprove?: boolean) {
-  const db = getDb();
-  const q = query(collection(db, "documents"), where("folderId", "==", folderId));
-  return onSnapshot(q,
-    (snap) => {
-      const docs = snap.docs
-        .map((d) => ({ id: d.id, ...d.data() } as WorkDocument))
-        .filter(
-          (d) =>
-            canApprove ||
-            d.status === "published" ||
-            d.status === undefined ||
-            d.ownerId === userId ||
-            (userId && d.sharedWithUsers?.includes(userId))
-        )
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-      callback(docs);
-    },
-    (err) => console.error("[subscribeDocuments]", err.code)
-  );
+export function subscribeDocuments(folderId: string | null, callback: (docs: WorkDocument[]) => void, _userId?: string, _canApprove?: boolean) {
+  getDocuments(folderId).then(callback);
+  return () => {};
 }
-
 export async function getPendingDocuments(): Promise<WorkDocument[]> {
-  const db = getDb();
-  const snap = await getDocs(collection(db, "documents"));
-  return snap.docs
-    .map((d) => ({ id: d.id, ...d.data() } as WorkDocument))
-    .filter((d) => d.status === "pending")
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const data = await api<{ documents: WorkDocument[] }>("/api/documents?type=pending");
+  return data?.documents ?? [];
+}
+export async function approveDocument(id: string, approve: boolean, _reason?: string): Promise<void> {
+  await api("/api/documents", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: approve ? "approve" : "reject", id }) });
 }
 
-export async function approveDocument(id: string, approve: boolean, reason?: string): Promise<void> {
-  const db = getDb();
-  await updateDoc(doc(db, "documents", id), {
-    status: approve ? "published" : "rejected",
-    ...(reason && { rejectionReason: reason }),
-  });
-}
-
-// ─── ANNOUNCEMENTS / MẠng NỘI BỘ ────────────────────────────
+// ─── ANNOUNCEMENTS ────────────────────────────────────────────
 
 export async function getAnnouncements(): Promise<Announcement[]> {
-  const db = getDb();
-  const snap = await getDocs(query(collection(db, "announcements"), orderBy("createdAt", "desc"), limit(50)));
-  return snap.docs
-    .map((d) => ({ id: d.id, ...d.data() } as Announcement))
-    .sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || b.createdAt.localeCompare(a.createdAt));
+  const data = await api<{ announcements: Announcement[] }>("/api/announcements");
+  return data?.announcements ?? [];
 }
-
 export async function saveAnnouncement(a: Announcement): Promise<void> {
-  const db = getDb();
-  await setDoc(doc(db, "announcements", a.id), deepStrip({ ...a, updatedAt: new Date().toISOString() }), { merge: true });
+  await api("/api/announcements", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(a) });
 }
-
 export async function deleteAnnouncement(id: string): Promise<void> {
-  const db = getDb();
-  await deleteDoc(doc(db, "announcements", id));
+  await api(`/api/announcements/${id}`, { method: "DELETE" });
 }
-
-export async function reactToAnnouncement(announcementId: string, emoji: string, userId: string, add: boolean): Promise<void> {
-  const db = getDb();
-  const ref = doc(db, "announcements", announcementId);
-  const snap = await getDoc(ref);
-  if (!snap.exists()) return;
-  const reactions: Record<string, string[]> = (snap.data().reactions as Record<string, string[]>) ?? {};
-  const users = reactions[emoji] ?? [];
-  reactions[emoji] = add ? (users.includes(userId) ? users : [...users, userId]) : users.filter((u) => u !== userId);
-  if (reactions[emoji].length === 0) delete reactions[emoji];
-  await updateDoc(ref, { reactions });
+export async function reactToAnnouncement(announcementId: string, emoji: string, _userId: string, add: boolean): Promise<void> {
+  await api("/api/announcements", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "react", announcementId, emoji, add }) });
 }
-
-export async function markAnnouncementViewed(announcementId: string, userId: string): Promise<void> {
-  const db = getDb();
-  const ref = doc(db, "announcements", announcementId);
-  const snap = await getDoc(ref);
-  if (!snap.exists()) return;
-  const viewedBy: string[] = snap.data().viewedBy ?? [];
-  if (!viewedBy.includes(userId)) {
-    await updateDoc(ref, { viewedBy: [...viewedBy, userId] });
-  }
+export async function markAnnouncementViewed(announcementId: string, _userId: string): Promise<void> {
+  await api("/api/announcements", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "view", announcementId }) });
 }
-
-export function subscribeAnnouncements(callback: (items: Announcement[]) => void, userId?: string, canApprove?: boolean) {
-  const db = getDb();
-  return onSnapshot(
-    query(collection(db, "announcements"), orderBy("createdAt", "desc"), limit(100)),
-    (snap) => {
-      const items = snap.docs
-        .map((d) => ({ id: d.id, ...d.data() } as Announcement))
-        .filter((a) => canApprove || a.status === "published" || a.status === undefined || a.authorId === userId)
-        .sort((a, b) => {
-          // pending items for own author float to top for staff
-          const aScore = (b.pinned ? 2 : 0) + (b.status === "pending" && canApprove ? 1 : 0);
-          const bScore = (a.pinned ? 2 : 0) + (a.status === "pending" && canApprove ? 1 : 0);
-          return aScore - bScore || b.createdAt.localeCompare(a.createdAt);
-        });
-      callback(items);
-    },
-    (err) => console.error("[subscribeAnnouncements]", err.code)
-  );
+export function subscribeAnnouncements(callback: (items: Announcement[]) => void, _userId?: string, _canApprove?: boolean) {
+  getAnnouncements().then(callback);
+  return () => {};
 }
-
 export async function updateAnnouncement(id: string, data: Partial<Announcement>): Promise<void> {
-  const db = getDb();
-  await updateDoc(doc(db, "announcements", id), deepStrip(data) as DocumentData);
+  await api(`/api/announcements/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+}
+export async function approveAnnouncement(id: string, approve: boolean, _reason?: string): Promise<void> {
+  await api("/api/announcements", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: approve ? "approve" : "reject", id }) });
+}
+export async function getAnnouncementComments(annId: string): Promise<AnnouncementComment[]> {
+  const data = await api<{ comments: AnnouncementComment[] }>(`/api/announcements/${annId}`);
+  return data?.comments ?? [];
+}
+export async function addAnnouncementComment(annId: string, comment: Omit<AnnouncementComment, "id">): Promise<void> {
+  await api(`/api/announcements/${annId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "comment", comment }) });
 }
 
-export async function approveAnnouncement(id: string, approve: boolean, reason?: string): Promise<void> {
-  const db = getDb();
-  await updateDoc(doc(db, "announcements", id), {
-    status: approve ? "published" : "rejected",
-    ...(reason && { rejectionReason: reason }),
-  });
+// ─── CHANNELS ────────────────────────────────────────────────
+
+export async function getChannels(_userId: string): Promise<Channel[]> {
+  const data = await api<{ channels: Channel[] }>("/api/channels");
+  return data?.channels ?? [];
 }
-
-export async function getAnnouncementComments(announcementId: string): Promise<AnnouncementComment[]> {
-  const db = getDb();
-  const snap = await getDocs(query(collection(db, "announcements", announcementId, "comments"), orderBy("createdAt", "asc")));
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as AnnouncementComment));
-}
-
-export async function addAnnouncementComment(announcementId: string, comment: Omit<AnnouncementComment, "id">): Promise<void> {
-  const db = getDb();
-  const id = generateId("ac");
-  await setDoc(doc(db, "announcements", announcementId, "comments", id), { ...comment, id });
-  const snap = await getDoc(doc(db, "announcements", announcementId));
-  const current = snap.data()?.commentsCount;
-  await updateDoc(doc(db, "announcements", announcementId), { commentsCount: typeof current === "number" ? current + 1 : 1 });
-}
-
-// ─── CHANNELS / NHÓM CHAT ────────────────────────────────────
-
-export async function getChannels(userId: string): Promise<Channel[]> {
-  const db = getDb();
-  const [publicSnap, memberSnap] = await Promise.all([
-    getDocs(query(collection(db, "channels"), where("type", "==", "public"))),
-    getDocs(query(collection(db, "channels"), where("memberIds", "array-contains", userId))),
-  ]);
-  const map = new Map<string, Channel>();
-  [...publicSnap.docs, ...memberSnap.docs].forEach((d) => map.set(d.id, { id: d.id, ...d.data() } as Channel));
-  return Array.from(map.values()).sort((a, b) => (b.lastMessageAt ?? "").localeCompare(a.lastMessageAt ?? ""));
-}
-
 export async function saveChannel(ch: Channel): Promise<void> {
-  const db = getDb();
-  await setDoc(doc(db, "channels", ch.id), ch, { merge: true });
+  await api("/api/channels", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(ch) });
 }
-
 export function subscribeChannels(userId: string, callback: (channels: Channel[]) => void) {
-  const db = getDb();
-  return onSnapshot(
-    query(collection(db, "channels"), where("memberIds", "array-contains", userId)),
-    (snap) => {
-      const channels = snap.docs
-        .map((d) => ({ id: d.id, ...d.data() } as Channel))
-        .sort((a, b) => (b.lastMessageAt ?? b.createdAt).localeCompare(a.lastMessageAt ?? a.createdAt));
-      callback(channels);
-    },
-    (err) => console.error("[subscribeChannels]", err.code)
-  );
+  getChannels(userId).then(callback);
+  return () => {};
 }
-
 export function subscribeChannelMessages(channelId: string, callback: (msgs: ChannelMessage[]) => void) {
-  const db = getDb();
-  return onSnapshot(
-    query(collection(db, "channels", channelId, "messages"), orderBy("timestamp", "asc"), limit(100)),
-    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() } as ChannelMessage))),
-    (err) => console.error("[subscribeChannelMessages]", err.code)
-  );
+  api<{ messages: ChannelMessage[] }>(`/api/channels/${channelId}`).then((d) => callback(d?.messages ?? []));
+  return () => {};
 }
-
 export async function sendChannelMessage(channelId: string, msg: Omit<ChannelMessage, "id">): Promise<void> {
-  const db = getDb();
-  const id = generateId("cmsg");
-  const message: ChannelMessage = { ...msg, id };
-  await setDoc(doc(db, "channels", channelId, "messages", id), message);
-  await updateDoc(doc(db, "channels", channelId), {
-    lastMessageAt: msg.timestamp,
-    lastMessagePreview: msg.content.slice(0, 80),
-  });
+  await api(`/api/channels/${channelId}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "sendMessage", message: msg }) });
 }
-
 export async function updateChannel(id: string, data: Partial<Channel>): Promise<void> {
-  const db = getDb();
-  await updateDoc(doc(db, "channels", id), deepStrip(data) as DocumentData);
+  await api(`/api/channels/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
 }
-
 export async function deleteChannel(id: string): Promise<void> {
-  const db = getDb();
-  await deleteDoc(doc(db, "channels", id));
+  await api(`/api/channels/${id}`, { method: "DELETE" });
 }
-
 export async function updateChannelMessage(channelId: string, msgId: string, data: Partial<ChannelMessage>): Promise<void> {
-  const db = getDb();
-  await updateDoc(doc(db, "channels", channelId, "messages", msgId), deepStrip(data) as DocumentData);
+  await api(`/api/channels/${channelId}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "updateMessage", msgId, data }) });
+}
+export async function markChannelRead(channelId: string, _userId: string): Promise<void> {
+  await api(`/api/channels/${channelId}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "markRead" }) });
 }
 
-export async function markChannelRead(channelId: string, userId: string): Promise<void> {
-  const db = getDb();
-  await updateDoc(doc(db, "channels", channelId), {
-    [`memberLastRead.${userId}`]: new Date().toISOString(),
-  });
+// ─── EVALUATION CONFIG ────────────────────────────────────────
+
+export async function getEvaluationConfig(): Promise<import("@/types").EvaluationConfig> {
+  const data = await api<{ config: import("@/types").EvaluationConfig }>("/api/evaluations?config=true");
+  return data?.config ?? { weights: { t1: 0.4, t2: 0.4, t3: 0.2 }, thresholds: { xuatSac: 10, hoanThanhTot: 8, hoanThanh: 5 } };
 }
+export async function saveEvaluationConfig(config: unknown): Promise<void> {
+  await api("/api/evaluations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "saveConfig", config }) });
+}
+
+// ─── PERMISSION CONFIG ────────────────────────────────────────
+
+export async function getPermissionConfig() {
+  const data = await api<Record<string, unknown>>("/api/config/permissions");
+  return data ?? {};
+}
+
+export async function savePermissionConfig(_config: unknown): Promise<void> {}

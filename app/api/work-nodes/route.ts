@@ -1,52 +1,43 @@
-/**
- * POST /api/work-nodes  — Tạo WorkNode mới
- * GET  /api/work-nodes?rootTaskId=xxx  — Lấy danh sách node theo task
- */
 import { NextRequest, NextResponse } from "next/server";
-import { createWorkNode, getNodesByTask } from "@/lib/firebase/workNodes";
-import type { CreateNodePayload } from "@/lib/firebase/workNodes";
+import { verifyToken } from "@/lib/mongodb/auth";
+import { getWorkNodesByTask, saveWorkNode } from "@/lib/mongodb/firestore";
+import { generateId } from "@/lib/utils";
+
+async function auth(req: NextRequest) {
+  const token = req.cookies.get("auth-token")?.value;
+  return token ? verifyToken(token) : null;
+}
 
 export async function GET(req: NextRequest) {
-  try {
-    const rootTaskId = req.nextUrl.searchParams.get("rootTaskId");
-    if (!rootTaskId) {
-      return NextResponse.json({ error: "rootTaskId là bắt buộc" }, { status: 400 });
-    }
-    const nodes = await getNodesByTask(rootTaskId);
-    return NextResponse.json({ nodes });
-  } catch (err) {
-    return NextResponse.json({ error: (err as Error).message }, { status: 500 });
-  }
+  if (!await auth(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const taskId = req.nextUrl.searchParams.get("taskId") || req.nextUrl.searchParams.get("rootTaskId");
+  if (!taskId) return NextResponse.json({ error: "taskId là bắt buộc" }, { status: 400 });
+  const nodes = await getWorkNodesByTask(taskId);
+  return NextResponse.json({ nodes });
 }
 
 export async function POST(req: NextRequest) {
-  try {
-    const body = await req.json() as CreateNodePayload;
-
-    // Validate bắt buộc
-    const required: (keyof CreateNodePayload)[] = [
-      "rootTaskId", "name", "assigneeId", "assigneeName",
-      "dueDate", "createdBy", "createdByName",
-    ];
-    const missing = required.filter((k) => !body[k]);
-    if (missing.length) {
-      return NextResponse.json(
-        { error: `Thiếu trường bắt buộc: ${missing.join(", ")}` },
-        { status: 400 }
-      );
-    }
-
-    // Validate dueDate hợp lệ
-    if (isNaN(Date.parse(body.dueDate))) {
-      return NextResponse.json({ error: "dueDate không hợp lệ" }, { status: 400 });
-    }
-    if (body.startDate && isNaN(Date.parse(body.startDate))) {
-      return NextResponse.json({ error: "startDate không hợp lệ" }, { status: 400 });
-    }
-
-    const node = await createWorkNode(body);
-    return NextResponse.json({ node, message: "Tạo node thành công." }, { status: 201 });
-  } catch (err) {
-    return NextResponse.json({ error: (err as Error).message }, { status: 500 });
-  }
+  const user = await auth(req);
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const body = await req.json();
+  const id = body.id || generateId("node");
+  const now = new Date().toISOString();
+  await saveWorkNode({
+    ...body,
+    id,
+    status: body.status || "pending",
+    progress: body.progress ?? 0,
+    ancestors: body.ancestors ?? [],
+    depth: body.depth ?? 1,
+    checklist: body.checklist ?? [],
+    outputAttachments: body.outputAttachments ?? [],
+    inputResources: body.inputResources ?? [],
+    prerequisites: body.prerequisites ?? [],
+    prerequisiteMode: body.prerequisiteMode ?? "ALL",
+    approverIds: body.approverIds ?? [],
+    createdAt: now,
+    updatedAt: now,
+    createdBy: body.createdBy || user.userId,
+  });
+  return NextResponse.json({ success: true, id }, { status: 201 });
 }

@@ -3,23 +3,28 @@
 import { useEffect } from "react";
 import { Toaster } from "sonner";
 import { useAuthStore } from "@/stores/useAuthStore";
-import { onAuthChange } from "@/lib/firebase/auth";
-import { getUser } from "@/lib/firebase/firestore";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const { setCurrentUser, setLoading } = useAuthStore();
 
   useEffect(() => {
-    const unsubscribe = onAuthChange(async (firebaseUser) => {
-      if (firebaseUser) {
-        const user = await getUser(firebaseUser.uid);
-        setCurrentUser(user);
-      } else {
-        setCurrentUser(null);
+    setLoading(true);
+
+    const checkAuth = async () => {
+      try {
+        const res = await fetch("/api/auth/me");
+        if (res.ok) {
+          const { user } = await res.json();
+          if (user) setCurrentUser(user);
+        }
+      } catch (error) {
+        console.error("Auth check failed:", error);
+      } finally {
         setLoading(false);
       }
-    });
-    return unsubscribe;
+    };
+
+    checkAuth();
   }, [setCurrentUser, setLoading]);
 
   return (
