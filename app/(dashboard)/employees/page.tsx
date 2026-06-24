@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Users, Search, Edit2, UserCheck, UserX, Save, X, Clock } from "lucide-react";
+import { Users, Search, Edit2, UserCheck, UserX, Save, X, Clock, KeyRound } from "lucide-react";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { hasPermission } from "@/lib/rbac/permissions";
@@ -16,6 +16,9 @@ const ROLE_COLORS: Record<UserRole, string> = {
   teamLead: "bg-violet-100 text-violet-700",
   director: "bg-amber-100 text-amber-700",
   hrAdmin:  "bg-red-100 text-red-700",
+  financeViewer:     "bg-emerald-100 text-emerald-700",
+  financeAuditor:    "bg-teal-100 text-teal-700",
+  financeSupervisor: "bg-cyan-100 text-cyan-700",
 };
 
 function Avatar({ user, size = "md" }: { user: User; size?: "sm" | "md" | "lg" }) {
@@ -118,6 +121,31 @@ export default function EmployeesPage() {
     }
   };
 
+  const handleResetPassword = async (user: User) => {
+    if (!window.confirm(`Reset mật khẩu cho ${user.name}?\nHệ thống sẽ tạo mật khẩu tạm và bắt họ đổi ở lần đăng nhập tiếp theo.`)) return;
+    const tempPassword = "Ariha@" + Math.random().toString(36).slice(-6);
+    setSavingId(user.id);
+    try {
+      const res = await fetch(`/api/users/${user.id}/reset-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tempPassword }),
+      });
+      if (!res.ok) {
+        const d = await res.json();
+        throw new Error(d.error || "Reset thất bại");
+      }
+      toast.success(`Mật khẩu tạm của ${user.name}: ${tempPassword}`, {
+        duration: 60000,
+        description: "Gửi cho nhân viên. Họ sẽ bị buộc đổi mật khẩu khi đăng nhập.",
+      });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Reset thất bại");
+    } finally {
+      setSavingId(null);
+    }
+  };
+
   const isEditing = (user: User) => editState?.userId === user.id;
 
   return (
@@ -166,7 +194,7 @@ export default function EmployeesPage() {
                   className="text-xs border border-amber-300 dark:border-amber-700 rounded-lg px-2 py-1 bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-500 cursor-pointer"
                 >
                   <option value="guest">Phân quyền...</option>
-                  {(["staff", "teamLead", "director", "hrAdmin"] as UserRole[]).map((r) => (
+                  {(["staff", "teamLead", "director", "hrAdmin", "financeViewer", "financeAuditor", "financeSupervisor"] as UserRole[]).map((r) => (
                     <option key={r} value={r}>{roleLabel(r)}</option>
                   ))}
                 </select>
@@ -251,7 +279,7 @@ export default function EmployeesPage() {
                         onChange={(e) => setEditState({ ...editState!, role: e.target.value as UserRole })}
                         className="px-2 py-1 text-xs border border-blue-400 rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none"
                       >
-                        {(["guest", "staff", "teamLead", "director", "hrAdmin"] as UserRole[]).map((r) => (
+                        {(["guest", "staff", "teamLead", "director", "hrAdmin", "financeViewer", "financeAuditor", "financeSupervisor"] as UserRole[]).map((r) => (
                           <option key={r} value={r}>{roleLabel(r)}</option>
                         ))}
                       </select>
@@ -301,6 +329,16 @@ export default function EmployeesPage() {
                             >
                               <Edit2 className="w-3.5 h-3.5" />
                             </button>
+                            {canManage && (
+                              <button
+                                onClick={() => handleResetPassword(user)}
+                                disabled={savingId === user.id}
+                                className="p-1.5 text-[var(--muted-foreground)] hover:text-amber-600 rounded-lg hover:bg-amber-50 transition-colors disabled:opacity-40"
+                                title="Reset mật khẩu"
+                              >
+                                <KeyRound className="w-3.5 h-3.5" />
+                              </button>
+                            )}
                             <button
                               onClick={() => handleToggleActive(user)}
                               disabled={savingId === user.id || user.id === currentUser?.id}

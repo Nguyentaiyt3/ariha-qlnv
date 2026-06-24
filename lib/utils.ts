@@ -107,6 +107,9 @@ export function roleLabel(role: string) {
     teamLead: "Trưởng nhóm",
     director: "Giám đốc",
     hrAdmin: "HR/Admin",
+    financeViewer: "Theo dõi tài chính",
+    financeAuditor: "Kiểm tra tài chính",
+    financeSupervisor: "Giám sát tài chính",
   };
   return labels[role] ?? role;
 }

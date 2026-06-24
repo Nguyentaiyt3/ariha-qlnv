@@ -138,6 +138,46 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "finance:manage",
   ],
   hrAdmin: ["*"],
+
+  // ── Vai trò chuyên trách tài chính ──
+  // Theo dõi: chỉ xem toàn bộ tài chính + phân tích, không sửa/duyệt
+  financeViewer: [
+    "task:read",
+    "calendar:read",
+    "notification:read",
+    "profile:edit",
+    "finance:read",
+    "analytics:read",
+    "report:read",
+  ],
+  // Kiểm tra: xem + đối soát/đánh dấu kiểm tra + xuất báo cáo, không duyệt chi
+  financeAuditor: [
+    "task:read",
+    "calendar:read",
+    "notification:read",
+    "profile:edit",
+    "finance:read",
+    "finance:audit",
+    "analytics:read",
+    "report:read",
+    "report:export",
+  ],
+  // Giám sát: xem + kiểm tra + duyệt giao dịch + quản lý tài chính
+  financeSupervisor: [
+    "task:read",
+    "calendar:read",
+    "notification:read",
+    "notification:manage",
+    "profile:edit",
+    "finance:read",
+    "finance:audit",
+    "finance:approve",
+    "finance:manage",
+    "analytics:read",
+    "report:read",
+    "report:export",
+    "approval:level2",
+  ],
 };
 
 // ─── Runtime overrides (loaded from Firestore at startup) ─────
@@ -219,6 +259,7 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
     id: "finance", label: "Tài chính",
     permissions: [
       { id: "finance:read",    label: "Xem tài chính" },
+      { id: "finance:audit",   label: "Kiểm tra / đối soát" },
       { id: "finance:approve", label: "Duyệt giao dịch" },
       { id: "finance:manage",  label: "Quản lý tài chính" },
     ],
@@ -362,6 +403,23 @@ export const DEFAULT_DASHBOARD_LAYOUTS: Record<UserRole, DefaultWidgetLayout[]> 
     { type: "workload_heatmap",   x: 2, y: 2, w: 2, h: 2 },
     { type: "kpi_week",           x: 0, y: 4, w: 2, h: 1 },
     { type: "team_leaderboard",   x: 2, y: 4, w: 2, h: 2 },
+  ],
+  financeViewer: [
+    { type: "financial_overview", x: 0, y: 0, w: 2, h: 2 },
+    { type: "analytics_summary",  x: 2, y: 0, w: 2, h: 2 },
+    { type: "calendar_mini",      x: 0, y: 2, w: 2, h: 1 },
+  ],
+  financeAuditor: [
+    { type: "financial_overview", x: 0, y: 0, w: 2, h: 2 },
+    { type: "analytics_summary",  x: 2, y: 0, w: 2, h: 2 },
+    { type: "deadline_alert",     x: 0, y: 2, w: 1, h: 2 },
+    { type: "calendar_mini",      x: 1, y: 2, w: 3, h: 1 },
+  ],
+  financeSupervisor: [
+    { type: "analytics_summary",  x: 0, y: 0, w: 3, h: 2 },
+    { type: "financial_overview", x: 3, y: 0, w: 1, h: 2 },
+    { type: "deadline_alert",     x: 0, y: 2, w: 1, h: 2 },
+    { type: "calendar_mini",      x: 1, y: 2, w: 3, h: 2 },
   ],
 };
 

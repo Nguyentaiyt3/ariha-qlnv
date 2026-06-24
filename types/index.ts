@@ -4,7 +4,15 @@
 
 // ─── USERS & AUTH ────────────────────────────────────────────
 
-export type UserRole = "guest" | "staff" | "teamLead" | "director" | "hrAdmin";
+export type UserRole =
+  | "guest"
+  | "staff"
+  | "teamLead"
+  | "director"
+  | "hrAdmin"
+  | "financeViewer"      // Theo dõi tài chính — chỉ xem
+  | "financeAuditor"     // Kiểm tra tài chính — xem + đối soát/ghi chú
+  | "financeSupervisor"; // Giám sát tài chính — xem + duyệt + quản lý
 
 export interface BankAccount {
   bankId: string;         // Mã BIN ngân hàng (VD: "970436" = VCB)
@@ -26,6 +34,15 @@ export interface User {
   joinDate?: string;
   exitDate?: string;
   bio?: string;
+  // ── Hồ sơ học vấn & khoa học ──
+  educationLevel?: string;   // Trình độ (Đại học, Thạc sĩ, Tiến sĩ...)
+  major?: string;            // Chuyên ngành
+  academicTitle?: string;    // Học hàm / học vị (GS, PGS, TS, ThS...)
+  scientificProfile?: string;// Lý lịch khoa học (công trình, bài báo, đề tài...)
+  workHistory?: string;      // Quá trình công tác
+  // ── Bảo mật mật khẩu ──
+  mustChangePassword?: boolean; // Bắt buộc đổi mật khẩu ở lần đăng nhập tiếp theo
+  passwordUpdatedAt?: string;   // Lần đổi mật khẩu gần nhất
   createdAt: string;
   bankAccount?: BankAccount;
   dashboardProfiles?: DashboardProfile[];
