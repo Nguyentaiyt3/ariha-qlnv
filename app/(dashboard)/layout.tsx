@@ -8,12 +8,21 @@ import { NotificationPanel } from "@/components/layout/NotificationPanel";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useNotificationStore } from "@/stores/useNotificationStore";
-import { subscribeTasks, subscribeUsers, subscribeNotifications, getPermissionConfig } from "@/lib/firebase/firestore";
 import { applyPermissionOverrides } from "@/lib/rbac/permissions";
 import { isTaskVisible } from "@/lib/utils";
 import CommandPalette from "@/components/common/CommandPalette";
 import { CreateTaskModal } from "@/components/tasks/CreateTaskModal";
 import type { Task, User } from "@/types";
+
+async function fetchData<T>(url: string): Promise<T | null> {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -34,32 +43,51 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     }
   }, [currentUser, isLoading, router]);
 
-  // Realtime subscriptions
-  useEffect(() => {
+  // Load data via API routes (no direct MongoDB imports in client)
+  const loadData = useCallback(async () => {
     if (!currentUser) return;
 
-    const unsubTasks = subscribeTasks((allTasks: Task[]) => {
-      // Deduplicate by ID (guards against Strict Mode double-fire or optimistic+server overlap)
+    const [tasksRes, usersRes, notifsRes] = await Promise.all([
+      fetchData<{ tasks: Task[] }>("/api/tasks"),
+      fetchData<{ users: User[] }>("/api/users"),
+      fetchData<{ notifications: Notification[] }>("/api/notifications"),
+    ]);
+
+    if (tasksRes?.tasks) {
       const seen = new Set<string>();
-      const deduped = allTasks.filter((t) => { if (seen.has(t.id)) return false; seen.add(t.id); return true; });
+      const deduped = tasksRes.tasks.filter((t) => {
+        if (seen.has(t.id)) return false;
+        seen.add(t.id);
+        return true;
+      });
       const visible = deduped.filter((t) => isTaskVisible(t, currentUser.id, currentUser.role));
       setTasks(visible);
-    });
-    const unsubUsers = subscribeUsers((users: User[]) => setUsers(users));
-    const unsubNotifs = subscribeNotifications(currentUser.id, (notifs) => setNotifications(notifs));
+    }
 
-    return () => {
-      unsubTasks();
-      unsubUsers();
-      unsubNotifs();
-    };
+    if (usersRes?.users) {
+      setUsers(usersRes.users);
+    }
+
+    if (notifsRes?.notifications) {
+      setNotifications(notifsRes.notifications as unknown as import("@/types").Notification[]);
+    }
   }, [currentUser, setTasks, setUsers, setNotifications]);
 
-  // Load permission overrides from Firestore once on mount
   useEffect(() => {
-    getPermissionConfig().then((overrides) => {
-      if (Object.keys(overrides).length > 0) applyPermissionOverrides(overrides);
-    }).catch(console.error);
+    loadData();
+
+    // Poll every 30s for updates (replaces Firestore real-time subscriptions)
+    const interval = setInterval(loadData, 30_000);
+    return () => clearInterval(interval);
+  }, [loadData]);
+
+  // Load permission overrides
+  useEffect(() => {
+    fetchData<Record<string, unknown>>("/api/config/permissions").then((overrides) => {
+      if (overrides && Object.keys(overrides).length > 0) {
+        applyPermissionOverrides(overrides as Parameters<typeof applyPermissionOverrides>[0]);
+      }
+    });
   }, []);
 
   // Dark mode
@@ -117,16 +145,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </main>
       </div>
 
-      {/* Notification slide-over panel */}
       <NotificationPanel />
 
-      {/* Command Palette */}
       <CommandPalette
         open={commandPaletteOpen}
         onClose={() => setCommandPaletteOpen(false)}
       />
 
-      {/* Create task modal */}
       {createTaskOpen && (
         <CreateTaskModal onClose={() => setCreateTaskOpen(false)} />
       )}

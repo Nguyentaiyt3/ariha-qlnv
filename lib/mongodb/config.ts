@@ -14,7 +14,7 @@ export async function connectDB(): Promise<Connection> {
   }
 
   try {
-    const conn = await mongoose.connect(MONGODB_URI, {
+    const conn = await mongoose.connect(MONGODB_URI!, {
       bufferCommands: false,
     });
 

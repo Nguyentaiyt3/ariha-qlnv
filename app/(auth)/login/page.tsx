@@ -94,7 +94,7 @@ export default function LoginPage() {
     if (password !== confirmPwd) { toast.error("Mật khẩu xác nhận không khớp."); return; }
     setLoading(true);
     try {
-      const user = await createUserAccount(email, password, name.trim(), "guest");
+      const user = await createUserAccount(email, password, name.trim());
       setCurrentUser(user);
       toast.success("Đăng ký thành công! Tài khoản của bạn đang chờ Admin phân quyền.");
       router.push("/dashboard");

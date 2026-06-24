@@ -10,12 +10,13 @@ export function Providers({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     setLoading(true);
 
-    // Check if user is already logged in (JWT token in cookie)
     const checkAuth = async () => {
       try {
-        // Token is automatically sent via cookies in HTTP requests
-        // For now, we just set loading to false
-        // The auth check will happen when user accesses protected pages
+        const res = await fetch("/api/auth/me");
+        if (res.ok) {
+          const { user } = await res.json();
+          if (user) setCurrentUser(user);
+        }
       } catch (error) {
         console.error("Auth check failed:", error);
       } finally {

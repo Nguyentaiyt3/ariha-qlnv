@@ -48,10 +48,10 @@ export async function loginWithEmail(email: string, password: string): Promise<{
     throw new Error("Tài khoản đã bị vô hiệu hóa. Vui lòng liên hệ Admin.");
   }
 
-  const token = createToken(user._id);
+  const token = createToken(String(user._id));
   const { password: _, ...userWithoutPassword } = user.toObject();
   return {
-    user: { id: user._id, ...userWithoutPassword } as User,
+    user: { id: String(user._id), ...userWithoutPassword } as User,
     token,
   };
 }
@@ -82,10 +82,10 @@ export async function loginWithGoogle(googleUser: {
     await user.save();
   }
 
-  const token = createToken(user._id);
+  const token = createToken(String(user._id));
   const { password: _, ...userWithoutPassword } = user.toObject();
   return {
-    user: { id: user._id, ...userWithoutPassword } as User,
+    user: { id: String(user._id), ...userWithoutPassword } as User,
     token,
   };
 }
@@ -120,10 +120,10 @@ export async function createUserAccount(
 
   await newUser.save();
 
-  const token = createToken(newUser._id);
+  const token = createToken(String(newUser._id));
   const { password: _, ...userWithoutPassword } = newUser.toObject();
   return {
-    user: { id: newUser._id, ...userWithoutPassword } as User,
+    user: { id: String(newUser._id), ...userWithoutPassword } as User,
     token,
   };
 }
@@ -133,10 +133,10 @@ export async function getUser(userId: string): Promise<User | null> {
   const user = await UserModel.findById(userId);
   if (!user) return null;
   const { password: _, ...userWithoutPassword } = user.toObject();
-  return { id: user._id, ...userWithoutPassword } as User;
+  return { id: String(user._id), ...userWithoutPassword } as User;
 }
 
-export async function saveUser(user: Partial<User> & { id: string }): Promise<void> {
+export async function saveUser(user: Partial<User> & { id: string; password?: string }): Promise<void> {
   await connectDB();
   const { id, password, ...updateData } = user;
   await UserModel.findByIdAndUpdate(id, { ...updateData, updatedAt: new Date().toISOString() });

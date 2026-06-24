@@ -872,7 +872,7 @@ export function FinancialWidget({
           uploadedBy: currentUser.id,
           uploadedAt: new Date().toISOString(),
         };
-        await addProofToTransaction(task.id, uploadingTxId, proof);
+        await addProofToTransaction(task.id, uploadingTxId, proof as unknown as Record<string, unknown>);
       }
       toast.success("Đã bổ sung chứng từ.");
     } catch {

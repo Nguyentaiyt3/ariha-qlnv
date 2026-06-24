@@ -1,8 +1,8 @@
-﻿// Firebase->MongoDB config adapter
-export * from "../mongodb/config";
-
-// MongoDB connection
-export async function getDb() {
-  const { connectDB } = await import("../mongodb/config");
-  return connectDB();
+/**
+ * Client-safe config stub.
+ * Server-side code imports directly from lib/mongodb/config.
+ * getDb() là placeholder — không dùng trực tiếp trên client.
+ */
+export async function getDb(): Promise<never> {
+  throw new Error("getDb() không dùng được phía client. Dùng fetch() API thay thế.");
 }

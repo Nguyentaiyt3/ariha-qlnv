@@ -4,8 +4,6 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Building2, Loader2, ShieldCheck } from "lucide-react";
 import { createUserAccount } from "@/lib/firebase/auth";
-import { getDb } from "@/lib/firebase/config";
-import { collection, getDocs, limit, query } from "firebase/firestore";
 
 export default function SetupPage() {
   const router = useRouter();
@@ -20,11 +18,13 @@ export default function SetupPage() {
   useEffect(() => {
     async function check() {
       try {
-        const db = getDb();
-        const snap = await getDocs(query(collection(db, "users"), limit(1)));
-        if (!snap.empty) setAlreadySetup(true);
+        const res = await fetch("/api/setup");
+        if (res.ok) {
+          const data = await res.json();
+          if (data.hasUsers) setAlreadySetup(true);
+        }
       } catch {
-        // ignore — allow setup if can't reach Firestore yet
+        // ignore — allow setup if can't reach server yet
       } finally {
         setChecking(false);
       }

@@ -3,27 +3,23 @@ import type { Notification } from "@/types";
 
 export interface INotification extends Omit<Notification, "id">, Document {}
 
-const notificationSchema = new Schema<INotification>(
+const notificationSchema = new Schema(
   {
     _id: { type: String, required: true },
-    userId: { type: String, required: true },
+    userId: { type: String, required: true, index: true },
     type: { type: String, required: true },
-    title: String,
-    message: String,
-    actionRequired: { type: Boolean, default: false },
-    read: { type: Boolean, default: false },
-    taskId: String,
+    title: { type: String, required: true },
+    body: { type: String, default: "" },
     link: String,
-    createdAt: { type: String, required: true },
+    read: { type: Boolean, default: false, index: true },
+    priority: { type: String, enum: ["low", "normal", "urgent"], default: "normal" },
+    taskId: String,
+    actionRequired: { type: Boolean, default: false },
+    createdAt: { type: String, required: true, index: true },
   },
   { _id: false }
 );
 
-notificationSchema.index({ userId: 1, createdAt: -1 });
-notificationSchema.index({ read: 1 });
-
-export const NotificationModel = mongoose.model<INotification>(
-  "Notification",
-  notificationSchema,
-  "notifications"
-);
+export const NotificationModel =
+  (mongoose.models.Notification as mongoose.Model<INotification>) ||
+  mongoose.model<INotification>("Notification", notificationSchema, "notifications");

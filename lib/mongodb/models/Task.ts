@@ -3,7 +3,8 @@ import type { Task } from "@/types";
 
 export interface ITask extends Omit<Task, "id">, Document {}
 
-const taskSchema = new Schema<ITask>(
+// strict: false lets Mongoose store all Task fields without defining each nested type
+const taskSchema = new Schema(
   {
     _id: { type: String, required: true },
     name: { type: String, required: true },
@@ -11,41 +12,50 @@ const taskSchema = new Schema<ITask>(
     status: {
       type: String,
       required: true,
-      enum: ["pending", "in_progress", "review", "done", "canceled"],
+      index: true,
+      enum: ["todo", "in_progress", "review", "done", "cancelled"],
     },
-    priority: { type: String, enum: ["low", "medium", "high", "urgent"], default: "medium" },
-    mainPerformerId: { type: String, required: true },
-    creatorId: String,
-    stakeholders: [
-      {
-        userId: String,
-        role: String,
-        _id: false,
-      },
-    ],
-    startDate: String,
-    deadline: String,
+    phase: { type: String, enum: ["prepare", "execute", "finalize"] },
+    priority: { type: String, index: true, enum: ["low", "medium", "high", "urgent"], default: "medium" },
+    deadlineBase: String,
+    deadlinePrepare: String,
+    deadlineExecute: String,
+    deadlineFinalize: String,
+    creatorId: { type: String, index: true },
+    mainPerformerId: { type: String, required: true, index: true },
+    // Complex nested — stored as-is
+    stakeholders: { type: Schema.Types.Mixed, default: [] },
+    dependencies: { type: [String], default: [] },
+    workflowId: String,
+    workflowName: String,
+    steps: { type: Schema.Types.Mixed, default: [] },
+    subtasks: { type: Schema.Types.Mixed, default: [] },
+    kpi: Schema.Types.Mixed,
+    progress: { type: Number, default: 0 },
+    riskFlag: { type: Boolean, default: false },
+    timeLogs: { type: Schema.Types.Mixed, default: [] },
+    approved: { type: Boolean, default: false },
+    approvedBy: String,
+    approvedAt: String,
+    evaluation: String,
+    evaluationRating: Number,
+    totalAmount: Number,
+    totalIncome: Number,
+    totalExpense: Number,
+    completionProposal: Schema.Types.Mixed,
+    pendingChangeRequest: Schema.Types.Mixed,
+    resources: { type: Schema.Types.Mixed, default: [] },
+    googleCalendarEventId: String,
+    department: String,
+    tags: { type: [String], default: [] },
+    projectId: String,
+    createdAt: { type: String, required: true, index: true },
+    updatedAt: String,
     completedAt: String,
-    milestone: String,
-    riskFlags: [String],
-    evaluations: [
-      {
-        evaluatorId: String,
-        score: Number,
-        timestamp: String,
-        _id: false,
-      },
-    ],
-    createdAt: { type: String, required: true },
-    updatedAt: { type: String },
   },
   { _id: false }
 );
 
-taskSchema.index({ mainPerformerId: 1 });
-taskSchema.index({ creatorId: 1 });
-taskSchema.index({ status: 1 });
-taskSchema.index({ createdAt: -1 });
-taskSchema.index({ "stakeholders.userId": 1 });
-
-export const TaskModel = mongoose.model<ITask>("Task", taskSchema, "tasks");
+export const TaskModel =
+  (mongoose.models.Task as mongoose.Model<ITask>) ||
+  mongoose.model<ITask>("Task", taskSchema, "tasks");
