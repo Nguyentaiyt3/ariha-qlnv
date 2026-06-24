@@ -14,7 +14,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   const now = new Date().toISOString();
 
   const actions: Record<string, Record<string, unknown>> = {
-    approve: { status: "APPROVED", approvedBy: user.userId, approvedAt: now },
+    approve: { status: "APPROVED", approvedBy: body.approvedBy ?? user.userId, approvedByName: body.approvedByName, approvedAt: now },
     markPaid: { status: "PAID", paidAt: now },
     reject: { status: "REJECTED", rejectedReason: body.reason },
     submit: { status: "SUBMITTED", submittedAt: now },

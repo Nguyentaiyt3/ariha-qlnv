@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createUserAccount } from "@/lib/mongodb/auth";
+import { connectDB } from "@/lib/mongodb/config";
+import { UserModel } from "@/lib/mongodb/models";
 import type { UserRole } from "@/types";
 
 export async function POST(req: NextRequest) {
   try {
-    const { email, password, name, department } = await req.json();
+    const { email, password, name, role: requestedRole, department } = await req.json();
 
     if (!email || !password || !name) {
       return NextResponse.json(
@@ -20,11 +22,16 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // First user ever → allow requested role (setup flow); otherwise always guest
+    await connectDB();
+    const existingCount = await UserModel.countDocuments().limit(1);
+    const role: UserRole = existingCount === 0 && requestedRole ? requestedRole as UserRole : "guest";
+
     const { user, token } = await createUserAccount(
       email,
       password,
       name,
-      "guest" as UserRole,
+      role,
       department
     );
 
