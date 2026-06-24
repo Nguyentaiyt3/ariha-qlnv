@@ -360,10 +360,15 @@ export async function saveEvaluation(evaluation: Evaluation): Promise<void> {
 
 // ─── EVALUATION CONFIG ────────────────────────────────────────
 
-export async function getEvaluationConfig(): Promise<EvaluationConfig | {}> {
+const DEFAULT_EVAL_CONFIG: EvaluationConfig = {
+  weights: { t1: 0.30, t2: 0.50, t3: 0.20 },
+  thresholds: { xuatSac: 10, hoanThanhTot: 8, hoanThanh: 5 },
+};
+
+export async function getEvaluationConfig(): Promise<EvaluationConfig> {
   await connectDB();
   const config = await EvaluationConfigModel.findById("singleton").lean();
-  if (!config) return {};
+  if (!config) return DEFAULT_EVAL_CONFIG;
   return config as unknown as EvaluationConfig;
 }
 
