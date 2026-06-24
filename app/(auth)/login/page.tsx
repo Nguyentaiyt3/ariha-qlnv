@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Eye, EyeOff, Lock, Mail, Loader2, Building2, User, UserPlus, LogIn } from "lucide-react";
@@ -47,6 +47,13 @@ export default function LoginPage() {
   const router = useRouter();
   const { setCurrentUser } = useAuthStore();
   const [mode, setMode] = useState<Mode>("login");
+
+  // Show error from Google OAuth redirect
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const err = params.get("error");
+    if (err) toast.error(`Lỗi đăng nhập Google: ${decodeURIComponent(err)}`);
+  }, []);
 
   // Shared fields
   const [email, setEmail] = useState("");
