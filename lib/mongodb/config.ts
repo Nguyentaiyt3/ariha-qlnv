@@ -17,7 +17,8 @@ export async function connectDB(): Promise<Connection> {
     const conn = await mongoose.connect(MONGODB_URI!, {
       bufferCommands: false,
       tls: true,
-      tlsInsecure: true,
+      tlsAllowInvalidCertificates: true,
+      tlsAllowInvalidHostnames: true,
       serverSelectionTimeoutMS: 10000,
       connectTimeoutMS: 10000,
     });
