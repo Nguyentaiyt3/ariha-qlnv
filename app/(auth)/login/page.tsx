@@ -35,8 +35,8 @@ async function createUserAccount(
   return (await res.json()).user;
 }
 
-async function loginWithGoogle() {
-  throw new Error("Google login sẽ được cập nhật sau khi cấu hình OAuth");
+function loginWithGoogle() {
+  window.location.href = "/api/auth/google";
 }
 import { useAuthStore } from "@/stores/useAuthStore";
 import { cn } from "@/lib/utils";
@@ -105,8 +105,8 @@ export default function LoginPage() {
     }
   }
 
-  async function handleGoogleLogin() {
-    toast.info("Google login đang được cập nhật. Vui lòng sử dụng email/mật khẩu.");
+  function handleGoogleLogin() {
+    loginWithGoogle();
   }
 
   const isRegister = mode === "register";
