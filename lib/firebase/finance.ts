@@ -217,27 +217,30 @@ export async function rejectReimbursement(id: string, reason: string): Promise<v
 }
 
 export async function createAdvanceRequest(data: Partial<AdvanceRequest>): Promise<AdvanceRequest | null> {
-  return api<AdvanceRequest>("/api/finance/advance-requests", {
+  const res = await api<{ request: AdvanceRequest }>("/api/finance/advance-requests", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
+  return res?.request ?? null;
 }
 
 export async function createReimbursementRequest(data: Partial<ReimbursementRequest>): Promise<ReimbursementRequest | null> {
-  return api<ReimbursementRequest>("/api/finance/reimbursement-requests", {
+  const res = await api<{ request: ReimbursementRequest }>("/api/finance/reimbursement-requests", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
+  return res?.request ?? null;
 }
 
 export async function createTransaction(data: Partial<FinancialTransaction>): Promise<FinancialTransaction | null> {
-  return api<FinancialTransaction>("/api/finance/transactions", {
+  const res = await api<{ transaction: FinancialTransaction }>("/api/finance/transactions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
+  return res?.transaction ?? null;
 }
 
 export async function addProofToTransaction(

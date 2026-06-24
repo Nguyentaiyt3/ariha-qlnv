@@ -10,7 +10,9 @@ async function auth(req: NextRequest) {
 export async function GET(req: NextRequest) {
   if (!await auth(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const taskId = req.nextUrl.searchParams.get("taskId") ?? undefined;
-  const transactions = await getAllFinancialTransactions(taskId);
+  const limit = parseInt(req.nextUrl.searchParams.get("limit") ?? "0") || undefined;
+  let transactions = await getAllFinancialTransactions(taskId);
+  if (limit) transactions = transactions.slice(0, limit);
   return NextResponse.json({ transactions });
 }
 
