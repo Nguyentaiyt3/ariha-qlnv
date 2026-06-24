@@ -4,7 +4,40 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Eye, EyeOff, Lock, Mail, Loader2, Building2, User, UserPlus, LogIn } from "lucide-react";
-import { loginWithEmail, loginWithGoogle, createUserAccount } from "@/lib/firebase/auth";
+// MongoDB auth via API routes
+async function loginWithEmail(email: string, password: string) {
+  const res = await fetch("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!res.ok) {
+    const data = await res.json();
+    throw new Error(data.error || "Đăng nhập thất bại");
+  }
+  return (await res.json()).user;
+}
+
+async function createUserAccount(
+  email: string,
+  password: string,
+  name: string
+) {
+  const res = await fetch("/api/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password, name }),
+  });
+  if (!res.ok) {
+    const data = await res.json();
+    throw new Error(data.error || "Đăng ký thất bại");
+  }
+  return (await res.json()).user;
+}
+
+async function loginWithGoogle() {
+  throw new Error("Google login sẽ được cập nhật sau khi cấu hình OAuth");
+}
 import { useAuthStore } from "@/stores/useAuthStore";
 import { cn } from "@/lib/utils";
 
@@ -73,21 +106,7 @@ export default function LoginPage() {
   }
 
   async function handleGoogleLogin() {
-    setGoogleLoading(true);
-    try {
-      const user = await loginWithGoogle();
-      setCurrentUser(user);
-      if (user.role === "guest") {
-        toast.success(`Chào mừng, ${user.name}! Tài khoản của bạn đang chờ Admin phân quyền.`);
-      } else {
-        toast.success(`Chào mừng, ${user.name}!`);
-      }
-      router.push("/dashboard");
-    } catch {
-      toast.error("Đăng nhập Google thất bại. Vui lòng thử lại.");
-    } finally {
-      setGoogleLoading(false);
-    }
+    toast.info("Google login đang được cập nhật. Vui lòng sử dụng email/mật khẩu.");
   }
 
   const isRegister = mode === "register";

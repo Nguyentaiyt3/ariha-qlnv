@@ -37,7 +37,18 @@ next-env.d.ts
 .firebase/
 firebase-debug.log
 
+# MongoDB
+mongo_data/
+*.log.gz
+
+# Backup files
+*.backup
+*.bak
+(BK)*
+
 # Editor
 .vscode/
 .idea/
 .env.local
+
+.vercel

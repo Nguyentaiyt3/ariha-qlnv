@@ -15,7 +15,6 @@ import type { User, UserRole } from "@/types";
 import { generateId } from "@/lib/utils";
 
 const googleProvider = new GoogleAuthProvider();
-googleProvider.addScope("https://www.googleapis.com/auth/calendar");
 
 function authErrorMessage(err: unknown): string {
   if (!(err instanceof FirebaseError)) return "Thao tác thất bại. Vui lòng thử lại.";

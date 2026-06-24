@@ -17,6 +17,14 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID!,
 };
 
+if (typeof window !== "undefined") {
+  console.log("[Firebase] Config check:", {
+    apiKey: firebaseConfig.apiKey ? firebaseConfig.apiKey.substring(0, 8) + "..." : "UNDEFINED",
+    projectId: firebaseConfig.projectId || "UNDEFINED",
+    authDomain: firebaseConfig.authDomain || "UNDEFINED",
+  });
+}
+
 let app: FirebaseApp;
 let db: Firestore;
 let auth: Auth;
