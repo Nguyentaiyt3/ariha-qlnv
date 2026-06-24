@@ -3,23 +3,27 @@
 import { useEffect } from "react";
 import { Toaster } from "sonner";
 import { useAuthStore } from "@/stores/useAuthStore";
-import { onAuthChange } from "@/lib/firebase/auth";
-import { getUser } from "@/lib/firebase/firestore";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const { setCurrentUser, setLoading } = useAuthStore();
 
   useEffect(() => {
-    const unsubscribe = onAuthChange(async (firebaseUser) => {
-      if (firebaseUser) {
-        const user = await getUser(firebaseUser.uid);
-        setCurrentUser(user);
-      } else {
-        setCurrentUser(null);
+    setLoading(true);
+
+    // Check if user is already logged in (JWT token in cookie)
+    const checkAuth = async () => {
+      try {
+        // Token is automatically sent via cookies in HTTP requests
+        // For now, we just set loading to false
+        // The auth check will happen when user accesses protected pages
+      } catch (error) {
+        console.error("Auth check failed:", error);
+      } finally {
         setLoading(false);
       }
-    });
-    return unsubscribe;
+    };
+
+    checkAuth();
   }, [setCurrentUser, setLoading]);
 
   return (
