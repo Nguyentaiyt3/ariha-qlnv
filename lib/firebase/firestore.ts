@@ -432,7 +432,9 @@ export async function markChannelRead(channelId: string, _userId: string): Promi
 
 export async function getEvaluationConfig(): Promise<import("@/types").EvaluationConfig> {
   const data = await api<{ config: import("@/types").EvaluationConfig }>("/api/evaluations?config=true");
-  return data?.config ?? { weights: { t1: 0.4, t2: 0.4, t3: 0.2 }, thresholds: { xuatSac: 10, hoanThanhTot: 8, hoanThanh: 5 } };
+  const cfg = data?.config;
+  if (!cfg?.weights) return { weights: { t1: 0.4, t2: 0.4, t3: 0.2 }, thresholds: { xuatSac: 10, hoanThanhTot: 8, hoanThanh: 5 } };
+  return cfg;
 }
 export async function saveEvaluationConfig(config: unknown): Promise<void> {
   await api("/api/evaluations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "saveConfig", config }) });
