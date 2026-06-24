@@ -12,6 +12,7 @@ export async function GET(req: NextRequest) {
   const taskId = req.nextUrl.searchParams.get("taskId") ?? undefined;
   const limit = parseInt(req.nextUrl.searchParams.get("limit") ?? "0") || undefined;
   let transactions = await getAllFinancialTransactions(taskId);
+  transactions = transactions.sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
   if (limit) transactions = transactions.slice(0, limit);
   return NextResponse.json({ transactions });
 }
