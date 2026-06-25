@@ -70,6 +70,12 @@ export async function getTasks(): Promise<Task[]> {
   return tasks.map((t: any) => ({ id: t._id as string, ...t }) as Task);
 }
 
+export async function getTasksByPlan(planId: string): Promise<Task[]> {
+  await connectDB();
+  const tasks = await TaskModel.find({ planId }).sort({ createdAt: -1 }).lean();
+  return tasks.map((t: any) => ({ id: t._id as string, ...t }) as Task);
+}
+
 export async function getTasksByUser(userId: string): Promise<Task[]> {
   await connectDB();
   const tasks = await TaskModel.find({
@@ -84,12 +90,13 @@ export async function saveTask(task: Partial<Task> & { id: string }): Promise<vo
   await TaskModel.findByIdAndUpdate(id, { ...updateData, updatedAt: now() });
 }
 
-export async function createTask(task: Omit<Task, "id">): Promise<Task> {
+export async function createTask(task: Omit<Task, "id"> & { id?: string }): Promise<Task> {
   await connectDB();
-  const id = generateId("t");
-  const doc = new TaskModel({ _id: id, ...task, createdAt: task.createdAt || now(), updatedAt: now() });
+  const { id: incomingId, ...taskData } = task as any;
+  const id: string = incomingId || generateId("t");
+  const doc = new TaskModel({ _id: id, ...taskData, createdAt: taskData.createdAt || now(), updatedAt: now() });
   await doc.save();
-  return { id, ...task } as Task;
+  return { id, ...taskData } as Task;
 }
 
 export async function updateTask(

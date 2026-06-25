@@ -1,16 +1,17 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { X, Plus, Loader2, Calendar, User, Flag, Building2, GitBranch, Paperclip, Camera, Link2, FileText, Trash2 } from "lucide-react";
+import { X, Plus, Loader2, Calendar, User, Flag, Building2, GitBranch, Paperclip, Camera, Link2, FileText, Trash2, ClipboardList, ChevronDown, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 import { cn, generateId } from "@/lib/utils";
-import { createTask, getDefaultMilestoneConfig, getWorkflows } from "@/lib/firebase/firestore";
+import { nodesToTaskSteps, linearStepsToTaskSteps, topoSortNodeIds } from "@/lib/workflow-engine";
+import { createTask, getWorkflows } from "@/lib/firebase/firestore";
 import { uploadFile } from "@/lib/firebase/storage";
-import { calcPhaseDeadlines, DEFAULT_MILESTONE_CONFIG } from "@/lib/deadline-calc";
+import { calcPhaseDeadlines } from "@/lib/deadline-calc";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { hasPermission } from "@/lib/rbac/permissions";
-import type { Task, TaskPriority, TaskStatus, StakeholderRole, Workflow, TaskResource } from "@/types";
+import type { Task, TaskPriority, TaskStatus, StakeholderRole, TaskResource, UnitPlan, PlanItem, Workflow } from "@/types";
 
 // Pending attachment — file held in memory until submit; links stored directly
 type PendingFile = {
@@ -39,14 +40,39 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
   const { currentUser } = useAuthStore();
   const { users } = useTaskStore();
   const [loading, setLoading] = useState(false);
+
+  // Kế hoạch đơn vị
+  const [availablePlans, setAvailablePlans] = useState<UnitPlan[]>([]);
+  const [selectedPlanId, setSelectedPlanId] = useState<string>("");
+  const [selectedParentItemId, setSelectedParentItemId] = useState<string>("");
+
+  // Quy trình mẫu
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string>("");
 
   useEffect(() => {
+    fetch("/api/unit-plans")
+      .then((r) => r.json())
+      .then((data) => setAvailablePlans(data.plans ?? []))
+      .catch(console.error);
     getWorkflows().then(setWorkflows).catch(console.error);
   }, []);
 
   const selectedWorkflow = workflows.find((w) => w.id === selectedWorkflowId) ?? null;
+
+  // Quy trình mẫu dạng đồ thị (có sơ đồ node) → ưu tiên dùng nodes/edges.
+  const hasGraph = !!selectedWorkflow?.nodes?.length;
+  // Node theo thứ tự phụ thuộc, để hiển thị + gán người.
+  const orderedNodes = hasGraph
+    ? topoSortNodeIds(selectedWorkflow!.nodes!, selectedWorkflow!.edges ?? [])
+        .map((id) => selectedWorkflow!.nodes!.find((n) => n.id === id)!)
+        .filter(Boolean)
+    : [];
+
+  // Người được gán cho từng node lúc tạo task (template để trống theo vai trò).
+  const [nodeAssignees, setNodeAssignees] = useState<Record<string, string>>({});
+  // Reset gán người khi đổi quy trình.
+  useEffect(() => { setNodeAssignees({}); }, [selectedWorkflowId]);
 
   // Form state
   const [name, setName] = useState("");
@@ -105,21 +131,32 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
         }
       }
 
-      // Get milestone config for 3-phase deadlines
-      let milestoneConfig = await getDefaultMilestoneConfig();
-      const configData = milestoneConfig ?? DEFAULT_MILESTONE_CONFIG;
+      // 3-phase deadlines: prepare = base - 3 ngày, finalize = base + 30 ngày
       const phases = calcPhaseDeadlines(
         new Date(deadlineBase).toISOString(),
-        { daysBeforeForPrepare: configData.daysBeforeForPrepare, daysAfterForFinalize: configData.daysAfterForFinalize }
+        { daysBeforeForPrepare: 3, daysAfterForFinalize: 30 }
       );
 
       const canAutoApprove = hasPermission(currentUser.role, "task:approve");
 
-      // Build stakeholders list (ensure assignee is in the list)
-      const allStakeholders = [
-        { userId: mainPerformerId, role: "assignee" as StakeholderRole },
-        ...stakeholders.filter((s) => s.userId !== mainPerformerId),
+      // Build stakeholders list (ensure assignee + người phụ trách node đều có mặt)
+      const nodeAssigneeIds = Object.values(nodeAssignees).filter(Boolean);
+      const seen = new Set<string>([mainPerformerId]);
+      const allStakeholders: { userId: string; role: StakeholderRole }[] = [
+        { userId: mainPerformerId, role: "assignee" },
       ];
+      for (const s of stakeholders) {
+        if (s.userId !== mainPerformerId && !seen.has(s.userId)) {
+          seen.add(s.userId);
+          allStakeholders.push(s);
+        }
+      }
+      for (const uid of nodeAssigneeIds) {
+        if (!seen.has(uid)) {
+          seen.add(uid);
+          allStakeholders.push({ userId: uid, role: "assignee" });
+        }
+      }
 
       const newTask: Omit<Task, "id"> = {
         name: name.trim(),
@@ -137,20 +174,16 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
         dependencies: [],
         workflowId: selectedWorkflow?.id,
         workflowName: selectedWorkflow?.name,
-        steps: selectedWorkflow
-          ? selectedWorkflow.steps.map((ws) => ({
-              id: generateId("step"),
-              name: ws.name,
-              assigneeId: "",
-              status: "pending" as const,
-              progress: 0,
-              kpiTarget: 0,
-              kpiCurrent: 0,
-              kpiUnit: "điểm",
-              proofs: [],
-              durationDays: ws.durationDays,
-            }))
-          : [],
+        // Quy trình có sơ đồ → copy đầy đủ đồ thị (node + phụ thuộc + người gán).
+        // Chỉ có danh sách phẳng → tạo chuỗi tuyến tính tương thích ngược.
+        steps: !selectedWorkflow
+          ? []
+          : hasGraph
+          ? nodesToTaskSteps(selectedWorkflow.nodes!, selectedWorkflow.edges ?? [], {
+              assigneeByNode: nodeAssignees,
+              defaultKpiUnit: kpiUnit,
+            })
+          : linearStepsToTaskSteps(selectedWorkflow.steps, { defaultKpiUnit: kpiUnit }),
         subtasks: [],
         kpi: { type: "custom", target: kpiTarget, current: 0, unit: kpiUnit },
         progress: 0,
@@ -160,6 +193,8 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
         department: department.trim(),
         tags: tags.split(",").map((t) => t.trim()).filter(Boolean),
         resources: uploadedResources.length > 0 ? uploadedResources : undefined,
+        planId: selectedPlanId || undefined,
+        planItemParentId: (selectedPlanId && selectedParentItemId) ? selectedParentItemId : undefined,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -278,45 +313,154 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
               />
             </div>
 
-            {/* Workflow selector */}
+            {/* Kế hoạch / Quy trình */}
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                <GitBranch className="inline w-4 h-4 mr-1" />
-                Quy trình
+                <ClipboardList className="inline w-4 h-4 mr-1 text-indigo-500" />
+                Kế hoạch / Quy trình
               </label>
               <select
-                value={selectedWorkflowId}
-                onChange={(e) => setSelectedWorkflowId(e.target.value)}
-                className="w-full px-3 py-2.5 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-slate-800 dark:text-white"
+                value={selectedPlanId}
+                onChange={(e) => {
+                  const planId = e.target.value;
+                  setSelectedPlanId(planId);
+                  setSelectedParentItemId("");
+                  const plan = availablePlans.find((p) => p.id === planId);
+                  if (plan) { setKpiTarget(plan.target); setKpiUnit(plan.unit); }
+                }}
+                className="w-full px-3 py-2.5 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:bg-slate-800 dark:text-white"
               >
-                <option value="">-- Không dùng quy trình --</option>
-                {workflows.map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.name}{w.department ? ` (${w.department})` : ""}
-                  </option>
+                <option value="">-- Không thuộc kế hoạch nào --</option>
+                {availablePlans.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name} ({p.year})</option>
                 ))}
               </select>
-              {selectedWorkflow && selectedWorkflow.steps.length > 0 && (
-                <div className="mt-2 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl">
-                  <p className="text-xs font-medium text-blue-700 dark:text-blue-300 mb-1.5">
-                    Quy trình gồm {selectedWorkflow.steps.length} bước:
-                  </p>
-                  <ol className="space-y-1">
-                    {selectedWorkflow.steps.map((s, i) => (
-                      <li key={s.id} className="flex items-center gap-2 text-xs text-blue-600 dark:text-blue-400">
-                        <span className="w-4 h-4 shrink-0 bg-blue-200 dark:bg-blue-800 rounded-full flex items-center justify-center text-[10px] font-bold">
-                          {i + 1}
-                        </span>
-                        {s.name}
-                        {s.durationDays && (
-                          <span className="text-blue-400">({s.durationDays}d)</span>
-                        )}
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-              )}
+
+              {/* Chọn cấp cha/con/cháu trong kế hoạch */}
+              {selectedPlanId && (() => {
+                const plan = availablePlans.find((p) => p.id === selectedPlanId);
+                if (!plan || plan.items.length === 0) return (
+                  <p className="mt-1.5 text-[10px] text-slate-400">Kế hoạch chưa có mục nào. Nhiệm vụ sẽ ở cấp 1.</p>
+                );
+                const buildTree = (items: PlanItem[], parentId: string | null, depth: number): { item: PlanItem; depth: number }[] =>
+                  items
+                    .filter((i) => i.parentId === parentId)
+                    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+                    .flatMap((item) => [{ item, depth }, ...buildTree(items, item.id, depth + 1)]);
+                const flatItems = buildTree(plan.items, null, 0);
+                return (
+                  <div className="mt-2">
+                    <select
+                      value={selectedParentItemId}
+                      onChange={(e) => setSelectedParentItemId(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:bg-slate-800 dark:text-white"
+                    >
+                      <option value="">— Cấp 1 (nhiệm vụ cha) —</option>
+                      {flatItems.map(({ item, depth }) => (
+                        <option key={item.id} value={item.id}>
+                          {"　".repeat(depth)}{depth > 0 ? "└ " : ""}{item.name}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      Chọn cấp cha để nhiệm vụ này trở thành con/cháu trong kế hoạch.
+                    </p>
+                  </div>
+                );
+              })()}
             </div>
+
+            {/* Quy trình mẫu */}
+            {workflows.length > 0 && (
+              <div>
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">
+                  <GitBranch className="inline w-4 h-4 mr-1 text-blue-500" />
+                  Quy trình mẫu
+                </label>
+                <select
+                  value={selectedWorkflowId}
+                  onChange={(e) => setSelectedWorkflowId(e.target.value)}
+                  className="w-full px-3 py-2.5 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-slate-800 dark:text-white"
+                >
+                  <option value="">-- Không áp dụng quy trình mẫu --</option>
+                  {workflows.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.name}{w.department ? ` (${w.department})` : ""}
+                    </option>
+                  ))}
+                </select>
+                {/* Quy trình có sơ đồ → hiển thị chuỗi node + gán người phụ trách từng bước */}
+                {selectedWorkflow && hasGraph && (
+                  <div className="mt-2 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl">
+                    <p className="text-xs font-medium text-blue-700 dark:text-blue-300 mb-2">
+                      {orderedNodes.length} bước theo quy trình — gán người phụ trách (đầu ra bước trước là đầu vào bước sau):
+                    </p>
+                    <ol className="space-y-2">
+                      {orderedNodes.map((n, i) => {
+                        const deps = (selectedWorkflow.edges ?? [])
+                          .filter((e) => e.target === n.id)
+                          .map((e) => orderedNodes.find((x) => x.id === e.source)?.name)
+                          .filter(Boolean);
+                        // Lọc theo vai trò yêu cầu nếu node có khai báo.
+                        const candidates = activeUsers.filter(
+                          (u) => !n.roleRequired || u.role === n.roleRequired
+                        );
+                        return (
+                          <li key={n.id} className="bg-white dark:bg-slate-800 rounded-lg p-2 border border-blue-100 dark:border-blue-900/40">
+                            <div className="flex items-center gap-2 text-xs text-blue-700 dark:text-blue-300 font-medium">
+                              <span className="w-4 h-4 shrink-0 bg-blue-200 dark:bg-blue-800 rounded-full flex items-center justify-center text-[10px] font-bold">
+                                {i + 1}
+                              </span>
+                              <span className="truncate">{n.name}</span>
+                              {n.roleRequired && (
+                                <span className="text-[10px] px-1.5 py-0.5 bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-300 rounded-full shrink-0">
+                                  {n.roleRequired}
+                                </span>
+                              )}
+                            </div>
+                            {deps.length > 0 && (
+                              <p className="text-[10px] text-slate-400 mt-0.5 ml-6">
+                                Đầu vào từ: {deps.join(", ")}
+                              </p>
+                            )}
+                            <select
+                              value={nodeAssignees[n.id] ?? ""}
+                              onChange={(e) => setNodeAssignees((m) => ({ ...m, [n.id]: e.target.value }))}
+                              className="mt-1.5 ml-6 w-[calc(100%-1.5rem)] px-2 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            >
+                              <option value="">— Chưa gán (phân công sau) —</option>
+                              {candidates.map((u) => (
+                                <option key={u.id} value={u.id}>{u.name}{u.department ? ` — ${u.department}` : ""}</option>
+                              ))}
+                            </select>
+                          </li>
+                        );
+                      })}
+                    </ol>
+                  </div>
+                )}
+
+                {/* Quy trình chỉ có danh sách phẳng (chưa vẽ sơ đồ) */}
+                {selectedWorkflow && !hasGraph && selectedWorkflow.steps.length > 0 && (
+                  <div className="mt-2 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl">
+                    <p className="text-xs font-medium text-blue-700 dark:text-blue-300 mb-1.5">
+                      {selectedWorkflow.steps.length} bước sẽ được tạo tự động (chuỗi tuần tự):
+                    </p>
+                    <ol className="space-y-1">
+                      {selectedWorkflow.steps.map((s, i) => (
+                        <li key={s.id} className="flex items-center gap-2 text-xs text-blue-600 dark:text-blue-400">
+                          <span className="w-4 h-4 shrink-0 bg-blue-200 dark:bg-blue-800 rounded-full flex items-center justify-center text-[10px] font-bold">
+                            {i + 1}
+                          </span>
+                          {s.name}
+                          {s.durationDays && <span className="text-blue-400">({s.durationDays}d)</span>}
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* 2-column grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -370,7 +514,7 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
                   className="w-full px-3 py-2.5 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-slate-800 dark:text-white"
                 />
                 <p className="text-[10px] text-slate-400 mt-1">
-                  Deadline 3 giai đoạn sẽ tự động tính từ cấu hình mốc quy trình.
+                  Kết thúc chuẩn bị = trước 3 ngày · Kết thúc nhiệm vụ = sau 30 ngày
                 </p>
               </div>
 
@@ -441,6 +585,7 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
                   className="px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-slate-800 dark:text-white"
                 >
                   <option value="collaborator">Hỗ trợ</option>
+                  <option value="supervisor">Giám sát</option>
                   <option value="watcher">Theo dõi</option>
                   <option value="approver">Phê duyệt</option>
                 </select>

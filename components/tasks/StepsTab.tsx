@@ -7,6 +7,10 @@ import {
   Mail, Send, CreditCard, Check, QrCode, DollarSign,
 } from "lucide-react";
 import { cn, generateId, formatDate, priorityLabel } from "@/lib/utils";
+import {
+  computeInputState, computeOutputState, computeStepEval3T, STEP_EVAL_LABEL,
+} from "@/lib/workflow-engine";
+import { canAssignTo } from "@/lib/rbac/permissions";
 import { uploadFile } from "@/lib/firebase/storage";
 import { UserAvatar } from "@/components/common/UserAvatar";
 import type { Task, TaskStep, StepSubTask, User, TaskPriority, Proof, AdvanceRequest, FinancialProof } from "@/types";
@@ -117,6 +121,8 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
 
   const steps = task.steps ?? [];
   const activeUsers = users.filter((u) => u.isActive);
+  // Chỉ được giao cho người cùng cấp trở xuống (không giao cấp trên).
+  const assignableUsers = activeUsers.filter((u) => canAssignTo(currentUser.role, u.role));
 
   // ── Helpers ──────────────────────────────────────────────────
 
@@ -652,6 +658,9 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
             {isOpen && (
               <div className="p-4 space-y-4 bg-slate-50 dark:bg-slate-900/60">
 
+                {/* Đầu vào / Đầu ra / Đánh giá 3T — chuỗi quy trình liền mạch */}
+                <StepFlowBanner step={step} allSteps={steps} />
+
                 {/* Assign / change main assignee */}
                 {task.approved && canAssignSteps && (
                   <Section label="Người thực hiện chính">
@@ -666,7 +675,7 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
                     </div>
                     {isAssigning && (
                       <div className="flex flex-wrap gap-2 mt-2">
-                        {activeUsers.map((u) => (
+                        {assignableUsers.map((u) => (
                           <button
                             key={u.id}
                             onClick={() => handleAssignStep(step.id, u.id)}
@@ -754,7 +763,7 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
                           className="col-span-2 px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
                         >
                           <option value="">Chọn người hỗ trợ...</option>
-                          {activeUsers.filter((u) => u.id !== step.assigneeId).map((u) => (
+                          {assignableUsers.filter((u) => u.id !== step.assigneeId).map((u) => (
                             <option key={u.id} value={u.id}>{u.name}{u.department ? ` — ${u.department}` : ""}</option>
                           ))}
                         </select>
@@ -1316,6 +1325,72 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
 }
 
 // ── Shared sub-components ─────────────────────────────────────
+
+// Đầu vào / Đầu ra / Đánh giá 3T — tự động suy ra từ chuỗi quy trình (DAG).
+function StepFlowBanner({ step, allSteps }: { step: TaskStep; allSteps: TaskStep[] }) {
+  const input = computeInputState(step, allSteps);
+  const output = computeOutputState(step);
+  const eval3T = computeStepEval3T(step);
+
+  const hasDeps = (step.dependsOn?.length ?? 0) > 0;
+  const evalCls: Record<string, string> = {
+    tot: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
+    trung_binh: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
+    te: "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400",
+  };
+
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+      {/* Đầu vào */}
+      <div className={cn(
+        "rounded-xl p-2.5 border text-xs",
+        !hasDeps
+          ? "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
+          : input.ready
+          ? "border-green-200 dark:border-green-900 bg-green-50/60 dark:bg-green-900/10"
+          : "border-amber-200 dark:border-amber-800 bg-amber-50/60 dark:bg-amber-900/10",
+      )}>
+        <p className="text-[10px] uppercase tracking-wide font-bold text-slate-400 mb-0.5">Đầu vào</p>
+        {!hasDeps ? (
+          <p className="text-slate-500 dark:text-slate-400">Không phụ thuộc — sẵn sàng</p>
+        ) : input.ready ? (
+          <p className="text-green-700 dark:text-green-400 font-medium">
+            Sẵn sàng ({input.doneCount}/{input.totalCount} bước trước xong)
+          </p>
+        ) : (
+          <p className="text-amber-700 dark:text-amber-400 font-medium">
+            Chờ: {input.pendingNames.join(", ")}
+          </p>
+        )}
+      </div>
+
+      {/* Đầu ra */}
+      <div className={cn(
+        "rounded-xl p-2.5 border text-xs",
+        output.delivered
+          ? "border-green-200 dark:border-green-900 bg-green-50/60 dark:bg-green-900/10"
+          : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800",
+      )}>
+        <p className="text-[10px] uppercase tracking-wide font-bold text-slate-400 mb-0.5">Đầu ra</p>
+        <p className={cn("font-medium", output.delivered ? "text-green-700 dark:text-green-400" : "text-slate-600 dark:text-slate-300")}>
+          {output.text}
+        </p>
+      </div>
+
+      {/* Đánh giá 3T tự động */}
+      <div className="rounded-xl p-2.5 border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs">
+        <p className="text-[10px] uppercase tracking-wide font-bold text-slate-400 mb-0.5">Đánh giá 3T (auto)</p>
+        {eval3T ? (
+          <span className={cn("inline-block px-2 py-0.5 rounded-full font-semibold", evalCls[eval3T])}>
+            {STEP_EVAL_LABEL[eval3T]}
+          </span>
+        ) : (
+          <p className="text-slate-400">Đang thực hiện — chưa kết luận</p>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function Section({ label, action, children }: { label: string; action?: React.ReactNode; children: React.ReactNode }) {
   return (

@@ -206,6 +206,25 @@ export function getRolePermissions(role: UserRole): string[] {
   return (_permOverrides?.[role] ?? DEFAULT_ROLE_PERMISSIONS[role]) ?? [];
 }
 
+// ─── Cấp bậc vai trò (để giới hạn giao việc) ──────────────────
+// Quy tắc: chỉ giao cho người CÙNG CẤP hoặc THẤP HƠN, không giao cho cấp trên.
+
+export const ROLE_RANK: Record<UserRole, number> = {
+  guest: 0,
+  staff: 1,
+  financeViewer: 1,
+  financeAuditor: 1,
+  teamLead: 2,
+  financeSupervisor: 2,
+  director: 3,
+  hrAdmin: 4,
+};
+
+/** Người giao (actor) chỉ được giao cho người có cấp ≤ cấp của mình. */
+export function canAssignTo(actorRole: UserRole, targetRole: UserRole): boolean {
+  return (ROLE_RANK[targetRole] ?? 0) <= (ROLE_RANK[actorRole] ?? 0);
+}
+
 // ─── Permission groups for management UI ─────────────────────
 
 export interface PermissionDef {

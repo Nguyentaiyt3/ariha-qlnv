@@ -1098,8 +1098,8 @@ export default function TaskDetailsPage() {
           </div>
         </div>
 
-        {/* Compact 3T grade — shown when task is done and score has been computed */}
-        {task.status === "done" && task.completionProposal?.score3T && (() => {
+        {/* Compact 3T grade — kết quả đánh giá: chỉ quản lý mới xem được */}
+        {task.status === "done" && canApprove && task.completionProposal?.score3T && (() => {
           const s = task.completionProposal.score3T!;
           const gradeColors: Record<string, string> = {
             xuatSac:        "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300 border-amber-200 dark:border-amber-800",
@@ -1174,11 +1174,13 @@ export default function TaskDetailsPage() {
                     <ClipboardCheck className="w-4 h-4 text-green-600" />
                     Đề xuất kết thúc nhiệm vụ
                   </p>
-                  {/* 3T preview — computed against today */}
-                  <div>
-                    <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-2">Đánh giá 3T (dự kiến)</p>
-                    <Eval3TCards taskData={task} referenceDate={new Date().toISOString()} evals={taskEvaluations} />
-                  </div>
+                  {/* 3T preview — kết quả đánh giá chỉ quản lý xem được */}
+                  {canApprove && (
+                    <div>
+                      <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-2">Đánh giá 3T (dự kiến)</p>
+                      <Eval3TCards taskData={task} referenceDate={new Date().toISOString()} evals={taskEvaluations} />
+                    </div>
+                  )}
                   <textarea
                     value={proposalSummary}
                     onChange={(e) => setProposalSummary(e.target.value)}
@@ -1219,16 +1221,24 @@ export default function TaskDetailsPage() {
                   <p className="text-[10px] text-slate-400 mt-1">{formatDateTime(task.completionProposal.submittedAt)}</p>
                 </div>
 
-                {/* 3T evaluation — T1 & T3 auto-computed, T2 from manager rating */}
-                <div>
-                  <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-2">Đánh giá 3T</p>
-                  <Eval3TCards
-                    taskData={task}
-                    referenceDate={task.completionProposal.submittedAt}
-                    evals={taskEvaluations}
-                    savedScore={task.completionProposal.score3T}
-                  />
-                </div>
+                {/* 3T evaluation — kết quả đánh giá: chỉ quản lý mới xem được */}
+                {canApprove ? (
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-2">Đánh giá 3T</p>
+                    <Eval3TCards
+                      taskData={task}
+                      referenceDate={task.completionProposal.submittedAt}
+                      evals={taskEvaluations}
+                      savedScore={task.completionProposal.score3T}
+                    />
+                  </div>
+                ) : (
+                  <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl border border-slate-100 dark:border-slate-800">
+                    <p className="text-xs text-slate-400">
+                      Kết quả đánh giá 3T do quản lý xem và quyết định. Bạn sẽ được thông báo khi có kết quả.
+                    </p>
+                  </div>
+                )}
 
                 {task.completionProposal.status !== "pending" && (
                   <div className="p-3 bg-slate-50 dark:bg-slate-900 rounded-xl space-y-1">
@@ -1382,6 +1392,7 @@ export default function TaskDetailsPage() {
               {[
                 { role: "assignee", label: "Người thực hiện", color: "blue" },
                 { role: "collaborator", label: "Hỗ trợ", color: "purple" },
+                { role: "supervisor", label: "Giám sát", color: "amber" },
                 { role: "watcher", label: "Theo dõi", color: "slate" },
                 { role: "approver", label: "Phê duyệt", color: "green" },
               ].map(({ role, label, color }) => {

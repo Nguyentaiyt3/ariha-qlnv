@@ -120,6 +120,7 @@ export function stakeholderRoleLabel(role: string) {
     collaborator: "Hỗ trợ",
     watcher: "Theo dõi",
     approver: "Phê duyệt",
+    supervisor: "Giám sát",
   };
   return labels[role] ?? role;
 }

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyToken } from "@/lib/mongodb/auth";
-import { getTasks, createTask, updateTask } from "@/lib/mongodb/firestore";
+import { getTasks, getTasksByPlan, createTask, updateTask } from "@/lib/mongodb/firestore";
 
 async function getAuthUser(req: NextRequest) {
   const token = req.cookies.get("auth-token")?.value;
@@ -13,7 +13,8 @@ export async function GET(req: NextRequest) {
   if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   try {
-    const tasks = await getTasks();
+    const planId = req.nextUrl.searchParams.get("planId");
+    const tasks = planId ? await getTasksByPlan(planId) : await getTasks();
     return NextResponse.json({ tasks });
   } catch (error) {
     console.error("[API /tasks GET]", error);

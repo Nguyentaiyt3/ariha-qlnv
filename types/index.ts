@@ -117,7 +117,7 @@ export interface Project {
 export type TaskStatus = "todo" | "in_progress" | "review" | "done" | "cancelled";
 export type TaskPhase = "prepare" | "execute" | "finalize";
 export type TaskPriority = "low" | "medium" | "high" | "urgent";
-export type StakeholderRole = "assignee" | "collaborator" | "watcher" | "approver";
+export type StakeholderRole = "assignee" | "collaborator" | "watcher" | "approver" | "supervisor";
 
 export interface Stakeholder {
   userId: string;
@@ -218,6 +218,23 @@ export interface TaskStep {
   deadline?: string;
   completedAt?: string;
   subTasks?: StepSubTask[];
+
+  // ── DAG / quy trình liền mạch ──
+  /** id các bước tiền nhiệm (đầu vào của bước này). Suy từ edges của quy trình mẫu. */
+  dependsOn?: string[];
+  /** Vai trò gợi ý cho bước (từ template) — dùng khi gán người lúc tạo task. */
+  roleRequired?: UserRole;
+  /** Phòng ban gợi ý cho bước (từ template). */
+  department?: string;
+  /** Toạ độ node trên sơ đồ — giữ để hiển thị lại đúng vị trí. */
+  position?: { x: number; y: number };
+  /** Mô tả đầu ra kỳ vọng (từ template). */
+  expectedOutput?: string;
+  /** Tóm tắt đầu ra thực tế (người phụ trách nhập / auto suy ra). */
+  outputSummary?: string;
+  /** Đánh giá 3T của riêng bước (auto suy ra hoặc người duyệt chỉnh). */
+  eval3T?: "tot" | "trung_binh" | "te";
+  evalNote?: string;
 }
 
 export interface Proof {
@@ -320,6 +337,10 @@ export interface Task {
   // Google Calendar
   googleCalendarEventId?: string;
 
+  // Kế hoạch đơn vị — nhiệm vụ thuộc kế hoạch
+  planId?: string;              // ID của UnitPlan chứa nhiệm vụ này
+  planItemParentId?: string;    // ID của PlanItem cha (undefined = cấp 1 trong kế hoạch)
+
   // Meta
   department?: string;
   tags?: string[];
@@ -382,6 +403,19 @@ export interface WorkflowNode {
   department?: string;
   status: "todo" | "in_progress" | "done" | "blocked";
   position: { x: number; y: number };
+  locked?: boolean;
+  /** Vai trò yêu cầu cho node (template tái sử dụng — gán người cụ thể lúc tạo task). */
+  roleRequired?: UserRole;
+  assigneeId?: string;
+  assigneeName?: string;
+  deadline?: string;
+  kpiTarget?: number;
+  kpiUnit?: string;
+  output?: string;
+  progress?: number;
+  eval3T?: "tot" | "trung_binh" | "te";
+  evalNote?: string;
+  proofs?: { id: string; name: string; mimeType: string; dataUrl: string }[];
 }
 
 export interface WorkflowEdge {

@@ -4,8 +4,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import {
   ClipboardList, Plus, ChevronDown, ChevronRight, Trash2,
   Loader2, CheckCircle2, Circle, Clock, Pencil, X,
-  Target, Calendar, User, FolderPlus, Link2, ExternalLink,
-  Unlink, Search, Save,
+  Target, Calendar, User, FolderPlus, ExternalLink, Save,
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -48,87 +47,11 @@ async function apiFetch<T>(url: string, opts?: RequestInit): Promise<T> {
   return data as T;
 }
 
-// ─── Task Picker ────────────────────────────────────────────────
-
-interface TaskPickerProps {
-  allTasks: Task[];
-  currentTaskId?: string;
-  onSelect: (taskId: string | null) => void;
-  onClose: () => void;
-}
-
-function TaskPicker({ allTasks, currentTaskId, onSelect, onClose }: TaskPickerProps) {
-  const [search, setSearch] = useState("");
-
-  const filtered = allTasks
-    .filter(t => t.name.toLowerCase().includes(search.toLowerCase()))
-    .slice(0, 12);
-
-  return (
-    <div className="absolute z-50 top-full left-0 mt-1 w-72 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded-xl shadow-xl overflow-hidden">
-      <div className="p-2 border-b border-slate-100 dark:border-slate-700">
-        <div className="flex items-center gap-2 px-2 py-1 bg-slate-50 dark:bg-slate-700 rounded-lg">
-          <Search className="w-3.5 h-3.5 text-slate-400" />
-          <input
-            autoFocus
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Tìm nhiệm vụ..."
-            className="flex-1 text-xs bg-transparent outline-none text-slate-700 dark:text-slate-200"
-          />
-        </div>
-      </div>
-      <div className="max-h-52 overflow-y-auto">
-        {currentTaskId && (
-          <button
-            onClick={() => { onSelect(null); onClose(); }}
-            className="flex items-center gap-2 w-full px-3 py-2 text-xs text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition"
-          >
-            <Unlink className="w-3.5 h-3.5" />
-            Bỏ liên kết nhiệm vụ
-          </button>
-        )}
-        {filtered.length === 0 ? (
-          <p className="px-3 py-4 text-xs text-slate-400 text-center">Không tìm thấy</p>
-        ) : (
-          filtered.map(t => {
-            const meta = TASK_STATUS_META[t.status];
-            return (
-              <button
-                key={t.id}
-                onClick={() => { onSelect(t.id); onClose(); }}
-                className={cn(
-                  "flex items-start gap-2 w-full px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-slate-700/50 transition",
-                  currentTaskId === t.id && "bg-blue-50 dark:bg-blue-900/20"
-                )}
-              >
-                <span className={cn("shrink-0 mt-0.5 text-[10px] px-1.5 py-0.5 rounded font-medium", meta.cls)}>
-                  {meta.label}
-                </span>
-                <span className="text-xs text-slate-700 dark:text-slate-200 line-clamp-2">{t.name}</span>
-              </button>
-            );
-          })
-        )}
-      </div>
-      <div className="p-2 border-t border-slate-100 dark:border-slate-700">
-        <button
-          onClick={onClose}
-          className="w-full text-xs text-slate-400 hover:text-slate-600 py-1"
-        >
-          Đóng
-        </button>
-      </div>
-    </div>
-  );
-}
-
 // ─── Item Row ────────────────────────────────────────────────────
 
 interface ItemRowProps {
   item: PlanItem;
   allItems: PlanItem[];
-  allTasks: Task[];
   depth: number;
   canManage: boolean;
   expanded: Set<string>;
@@ -137,21 +60,18 @@ interface ItemRowProps {
   onAddChild: (parentId: string) => void;
   onDelete: (id: string) => void;
   onRename: (id: string, name: string) => void;
-  onLinkTask: (id: string, taskId: string | null) => void;
 }
 
 function ItemRow({
-  item, allItems, allTasks, depth, canManage, expanded,
-  onToggleExpand, onStatusCycle, onAddChild, onDelete, onRename, onLinkTask,
+  item, allItems, depth, canManage, expanded,
+  onToggleExpand, onStatusCycle, onAddChild, onDelete, onRename,
 }: ItemRowProps) {
   const children = allItems.filter(i => i.parentId === item.id);
   const isExpanded = expanded.has(item.id);
   const meta = PLAN_STATUS_META[item.status];
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(item.name);
-  const [showTaskPicker, setShowTaskPicker] = useState(false);
 
-  const linkedTask = item.taskId ? allTasks.find(t => t.id === item.taskId) : undefined;
   const doneChildren = children.filter(c => c.status === "done").length;
 
   function commitRename() {
@@ -198,37 +118,15 @@ function ItemRow({
               className="w-full text-sm bg-white dark:bg-slate-800 border border-blue-400 rounded px-2 py-0.5 outline-none"
             />
           ) : (
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <span
-                className={cn(
-                  "text-sm",
-                  item.status === "done" && "line-through text-slate-400"
-                )}
-                onDoubleClick={() => canManage && setEditing(true)}
-              >
-                {item.name}
-              </span>
-
-              {/* Linked task badge */}
-              {linkedTask && (
-                <div className="flex items-center gap-1">
-                  <span className={cn(
-                    "text-[10px] px-1.5 py-0.5 rounded font-medium",
-                    TASK_STATUS_META[linkedTask.status].cls
-                  )}>
-                    {TASK_STATUS_META[linkedTask.status].label}
-                  </span>
-                  <Link
-                    href={`/tasks/${linkedTask.id}`}
-                    className="text-[10px] text-blue-500 hover:underline max-w-[100px] truncate"
-                    title={linkedTask.name}
-                    onClick={e => e.stopPropagation()}
-                  >
-                    {linkedTask.name}
-                  </Link>
-                </div>
+            <span
+              className={cn(
+                "text-sm",
+                item.status === "done" && "line-through text-slate-400"
               )}
-            </div>
+              onDoubleClick={() => canManage && setEditing(true)}
+            >
+              {item.name}
+            </span>
           )}
         </div>
 
@@ -239,7 +137,7 @@ function ItemRow({
 
         {/* Actions (hover) */}
         {canManage && !editing && (
-          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 relative">
+          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
             <button
               onClick={() => setEditing(true)}
               className="p-1 text-slate-400 hover:text-blue-500 rounded"
@@ -248,21 +146,9 @@ function ItemRow({
               <Pencil className="w-3 h-3" />
             </button>
             <button
-              onClick={() => setShowTaskPicker(v => !v)}
-              className={cn(
-                "p-1 rounded",
-                item.taskId
-                  ? "text-blue-500 hover:text-blue-700"
-                  : "text-slate-400 hover:text-blue-500"
-              )}
-              title={item.taskId ? "Đổi liên kết nhiệm vụ" : "Liên kết với nhiệm vụ"}
-            >
-              <Link2 className="w-3 h-3" />
-            </button>
-            <button
               onClick={() => onAddChild(item.id)}
               className="p-1 text-slate-400 hover:text-green-500 rounded"
-              title="Thêm nhiệm vụ con"
+              title="Thêm mục con"
             >
               <Plus className="w-3 h-3" />
             </button>
@@ -273,15 +159,6 @@ function ItemRow({
             >
               <Trash2 className="w-3 h-3" />
             </button>
-
-            {showTaskPicker && (
-              <TaskPicker
-                allTasks={allTasks}
-                currentTaskId={item.taskId}
-                onSelect={taskId => onLinkTask(item.id, taskId)}
-                onClose={() => setShowTaskPicker(false)}
-              />
-            )}
           </div>
         )}
       </div>
@@ -294,7 +171,6 @@ function ItemRow({
             key={child.id}
             item={child}
             allItems={allItems}
-            allTasks={allTasks}
             depth={depth + 1}
             canManage={canManage}
             expanded={expanded}
@@ -303,7 +179,6 @@ function ItemRow({
             onAddChild={onAddChild}
             onDelete={onDelete}
             onRename={onRename}
-            onLinkTask={onLinkTask}
           />
         ))}
     </div>
@@ -539,15 +414,6 @@ function PlanDetail({ plan, allTasks, canManage, onUpdated, onDeleted }: PlanDet
     scheduleItemsSave(newItems);
   }
 
-  function linkTask(itemId: string, taskId: string | null) {
-    const newItems = items.map(i =>
-      i.id === itemId ? { ...i, taskId: taskId ?? undefined } : i
-    );
-    setItems(newItems);
-    scheduleItemsSave(newItems);
-    toast.success(taskId ? "Đã liên kết nhiệm vụ" : "Đã bỏ liên kết");
-  }
-
   async function handleEditPlan(data: PlanFormData) {
     setEditSaving(true);
     try {
@@ -581,8 +447,9 @@ function PlanDetail({ plan, allTasks, canManage, onUpdated, onDeleted }: PlanDet
   const doneTop = topItems.filter(i => i.status === "done").length;
   const progressPct = plan.target > 0 ? Math.min(100, Math.round((doneTop / plan.target) * 100)) : 0;
 
-  // Thống kê liên kết task
-  const linkedCount = items.filter(i => i.taskId).length;
+  // Tasks thuộc kế hoạch này (từ hệ thống nhiệm vụ)
+  const planTasks = allTasks.filter(t => t.planId === plan.id);
+  const [showTasks, setShowTasks] = useState(planTasks.length > 0);
 
   return (
     <div className="flex flex-col h-full">
@@ -607,12 +474,6 @@ function PlanDetail({ plan, allTasks, canManage, onUpdated, onDeleted }: PlanDet
                 <span className="flex items-center gap-1">
                   <User className="w-4 h-4" />
                   {plan.department}
-                </span>
-              )}
-              {linkedCount > 0 && (
-                <span className="flex items-center gap-1 text-blue-500">
-                  <Link2 className="w-4 h-4" />
-                  {linkedCount} liên kết
                 </span>
               )}
             </div>
@@ -690,7 +551,6 @@ function PlanDetail({ plan, allTasks, canManage, onUpdated, onDeleted }: PlanDet
                   key={item.id}
                   item={item}
                   allItems={items}
-                  allTasks={allTasks}
                   depth={0}
                   canManage={canManage}
                   expanded={expanded}
@@ -699,9 +559,55 @@ function PlanDetail({ plan, allTasks, canManage, onUpdated, onDeleted }: PlanDet
                   onAddChild={addItem}
                   onDelete={deleteItem}
                   onRename={renameItem}
-                  onLinkTask={linkTask}
                 />
               ))}
+            </div>
+          )}
+
+          {/* Tasks from task system linked to this plan */}
+          {planTasks.length > 0 && (
+            <div className="mt-5 border-t border-slate-200 dark:border-slate-700 pt-4">
+              <button
+                onClick={() => setShowTasks(v => !v)}
+                className="flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3 w-full"
+              >
+                {showTasks ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                Nhiệm vụ hệ thống ({planTasks.length})
+                <span className="text-xs font-normal text-slate-400">đã gắn từ trang Nhiệm vụ</span>
+              </button>
+
+              {showTasks && (
+                <div className="space-y-1">
+                  {planTasks.map(task => {
+                    const parentItem = task.planItemParentId
+                      ? items.find(i => i.id === task.planItemParentId)
+                      : undefined;
+                    const meta = TASK_STATUS_META[task.status];
+                    return (
+                      <div key={task.id} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white dark:bg-slate-800/50 border border-slate-100 dark:border-slate-700">
+                        <span className={cn("shrink-0 text-[10px] px-1.5 py-0.5 rounded font-medium", meta.cls)}>
+                          {meta.label}
+                        </span>
+                        <div className="flex-1 min-w-0">
+                          <Link
+                            href={`/tasks/${task.id}`}
+                            className="text-sm text-slate-700 dark:text-slate-200 hover:text-blue-600 dark:hover:text-blue-400 hover:underline truncate block"
+                            title={task.name}
+                          >
+                            {task.name}
+                          </Link>
+                          {parentItem && (
+                            <p className="text-[10px] text-slate-400 mt-0.5 truncate">
+                              Thuộc: {parentItem.name}
+                            </p>
+                          )}
+                        </div>
+                        <ExternalLink className="w-3.5 h-3.5 text-slate-300 shrink-0" />
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -898,8 +804,6 @@ export default function UnitPlansPage() {
               const done = topItems.filter(i => i.status === "done").length;
               const pct = plan.target > 0 ? Math.min(100, Math.round((done / plan.target) * 100)) : 0;
               const isSelected = plan.id === selectedId;
-              const linked = (plan.items ?? []).filter(i => i.taskId).length;
-
               return (
                 <button
                   key={plan.id}
@@ -923,14 +827,7 @@ export default function UnitPlansPage() {
                   </div>
                   <div className="mt-2">
                     <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 mb-1">
-                      <span className="flex items-center gap-1.5">
-                        {done}/{plan.target} {plan.unit}
-                        {linked > 0 && (
-                          <span className="flex items-center gap-0.5 text-blue-400">
-                            <Link2 className="w-3 h-3" />{linked}
-                          </span>
-                        )}
-                      </span>
+                      <span>{done}/{plan.target} {plan.unit}</span>
                       <span className={cn(pct >= 100 ? "text-green-600" : pct >= 50 ? "text-blue-500" : "")}>
                         {pct}%
                       </span>

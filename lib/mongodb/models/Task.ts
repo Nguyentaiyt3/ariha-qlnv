@@ -49,6 +49,8 @@ const taskSchema = new Schema(
     department: String,
     tags: { type: [String], default: [] },
     projectId: String,
+    planId: { type: String, index: true },
+    planItemParentId: String,
     createdAt: { type: String, required: true, index: true },
     updatedAt: String,
     completedAt: String,
