@@ -74,6 +74,7 @@ export interface PlanItem {
   deadline?: string;
   note?: string;
   order?: number;
+  taskId?: string;           // tuỳ chọn: liên kết với Task đã tạo
 }
 
 /** Kế hoạch thực hiện một chỉ tiêu chung của đơn vị (VD: Hội thảo — 4 cái/năm). */

@@ -1,16 +1,18 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import {
   ClipboardList, Plus, ChevronDown, ChevronRight, Trash2,
-  Loader2, CheckCircle2, Circle, Clock, Pencil, X, Check,
-  Target, Calendar, User, MoreHorizontal, FolderPlus,
+  Loader2, CheckCircle2, Circle, Clock, Pencil, X,
+  Target, Calendar, User, FolderPlus, Link2, ExternalLink,
+  Unlink, Search, Save,
 } from "lucide-react";
+import Link from "next/link";
 import { toast } from "sonner";
 import { cn, generateId } from "@/lib/utils";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { hasPermission } from "@/lib/rbac/permissions";
-import type { UnitPlan, PlanItem, PlanItemStatus } from "@/types";
+import type { UnitPlan, PlanItem, PlanItemStatus, Task, TaskStatus } from "@/types";
 
 // ─── Helpers ────────────────────────────────────────────────────
 
@@ -20,26 +22,24 @@ const STATUS_CYCLE: Record<PlanItemStatus, PlanItemStatus> = {
   done: "todo",
 };
 
-const STATUS_META: Record<PlanItemStatus, { label: string; icon: React.ReactNode; cls: string }> = {
-  todo:  { label: "Chưa bắt đầu", icon: <Circle className="w-4 h-4" />,        cls: "text-slate-400" },
+const PLAN_STATUS_META: Record<PlanItemStatus, { label: string; icon: React.ReactNode; cls: string }> = {
+  todo:  { label: "Chưa bắt đầu",  icon: <Circle className="w-4 h-4" />,       cls: "text-slate-400" },
   doing: { label: "Đang thực hiện", icon: <Clock className="w-4 h-4" />,        cls: "text-blue-500" },
-  done:  { label: "Hoàn thành",    icon: <CheckCircle2 className="w-4 h-4" />,  cls: "text-green-500" },
+  done:  { label: "Hoàn thành",    icon: <CheckCircle2 className="w-4 h-4" />, cls: "text-green-500" },
+};
+
+const TASK_STATUS_META: Record<TaskStatus, { label: string; cls: string }> = {
+  todo:        { label: "Chờ",      cls: "bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300" },
+  in_progress: { label: "Đang làm", cls: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300" },
+  review:      { label: "Duyệt",    cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300" },
+  done:        { label: "Xong",     cls: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300" },
+  cancelled:   { label: "Hủy",      cls: "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-300" },
 };
 
 function getDescendantIds(items: PlanItem[], parentId: string): string[] {
   const children = items.filter(i => i.parentId === parentId);
   return children.flatMap(c => [c.id, ...getDescendantIds(items, c.id)]);
 }
-
-function countDone(items: PlanItem[], parentId: string | null): number {
-  return items.filter(i => i.parentId === parentId && i.status === "done").length;
-}
-
-function countTotal(items: PlanItem[], parentId: string | null): number {
-  return items.filter(i => i.parentId === parentId).length;
-}
-
-// ─── API helpers ─────────────────────────────────────────────────
 
 async function apiFetch<T>(url: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(url, opts);
@@ -48,11 +48,87 @@ async function apiFetch<T>(url: string, opts?: RequestInit): Promise<T> {
   return data as T;
 }
 
+// ─── Task Picker ────────────────────────────────────────────────
+
+interface TaskPickerProps {
+  allTasks: Task[];
+  currentTaskId?: string;
+  onSelect: (taskId: string | null) => void;
+  onClose: () => void;
+}
+
+function TaskPicker({ allTasks, currentTaskId, onSelect, onClose }: TaskPickerProps) {
+  const [search, setSearch] = useState("");
+
+  const filtered = allTasks
+    .filter(t => t.name.toLowerCase().includes(search.toLowerCase()))
+    .slice(0, 12);
+
+  return (
+    <div className="absolute z-50 top-full left-0 mt-1 w-72 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded-xl shadow-xl overflow-hidden">
+      <div className="p-2 border-b border-slate-100 dark:border-slate-700">
+        <div className="flex items-center gap-2 px-2 py-1 bg-slate-50 dark:bg-slate-700 rounded-lg">
+          <Search className="w-3.5 h-3.5 text-slate-400" />
+          <input
+            autoFocus
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Tìm nhiệm vụ..."
+            className="flex-1 text-xs bg-transparent outline-none text-slate-700 dark:text-slate-200"
+          />
+        </div>
+      </div>
+      <div className="max-h-52 overflow-y-auto">
+        {currentTaskId && (
+          <button
+            onClick={() => { onSelect(null); onClose(); }}
+            className="flex items-center gap-2 w-full px-3 py-2 text-xs text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition"
+          >
+            <Unlink className="w-3.5 h-3.5" />
+            Bỏ liên kết nhiệm vụ
+          </button>
+        )}
+        {filtered.length === 0 ? (
+          <p className="px-3 py-4 text-xs text-slate-400 text-center">Không tìm thấy</p>
+        ) : (
+          filtered.map(t => {
+            const meta = TASK_STATUS_META[t.status];
+            return (
+              <button
+                key={t.id}
+                onClick={() => { onSelect(t.id); onClose(); }}
+                className={cn(
+                  "flex items-start gap-2 w-full px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-slate-700/50 transition",
+                  currentTaskId === t.id && "bg-blue-50 dark:bg-blue-900/20"
+                )}
+              >
+                <span className={cn("shrink-0 mt-0.5 text-[10px] px-1.5 py-0.5 rounded font-medium", meta.cls)}>
+                  {meta.label}
+                </span>
+                <span className="text-xs text-slate-700 dark:text-slate-200 line-clamp-2">{t.name}</span>
+              </button>
+            );
+          })
+        )}
+      </div>
+      <div className="p-2 border-t border-slate-100 dark:border-slate-700">
+        <button
+          onClick={onClose}
+          className="w-full text-xs text-slate-400 hover:text-slate-600 py-1"
+        >
+          Đóng
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Item Row ────────────────────────────────────────────────────
 
 interface ItemRowProps {
   item: PlanItem;
   allItems: PlanItem[];
+  allTasks: Task[];
   depth: number;
   canManage: boolean;
   expanded: Set<string>;
@@ -61,17 +137,22 @@ interface ItemRowProps {
   onAddChild: (parentId: string) => void;
   onDelete: (id: string) => void;
   onRename: (id: string, name: string) => void;
+  onLinkTask: (id: string, taskId: string | null) => void;
 }
 
 function ItemRow({
-  item, allItems, depth, canManage, expanded,
-  onToggleExpand, onStatusCycle, onAddChild, onDelete, onRename,
+  item, allItems, allTasks, depth, canManage, expanded,
+  onToggleExpand, onStatusCycle, onAddChild, onDelete, onRename, onLinkTask,
 }: ItemRowProps) {
   const children = allItems.filter(i => i.parentId === item.id);
   const isExpanded = expanded.has(item.id);
-  const meta = STATUS_META[item.status];
+  const meta = PLAN_STATUS_META[item.status];
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(item.name);
+  const [showTaskPicker, setShowTaskPicker] = useState(false);
+
+  const linkedTask = item.taskId ? allTasks.find(t => t.id === item.taskId) : undefined;
+  const doneChildren = children.filter(c => c.status === "done").length;
 
   function commitRename() {
     const trimmed = draft.trim();
@@ -79,24 +160,18 @@ function ItemRow({
     setEditing(false);
   }
 
-  const doneChildren = children.filter(c => c.status === "done").length;
-
   return (
     <div>
       <div
-        className={cn(
-          "group flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors",
-        )}
-        style={{ paddingLeft: `${12 + depth * 20}px` }}
+        className="group flex items-center gap-1.5 px-2 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
+        style={{ paddingLeft: `${8 + depth * 20}px` }}
       >
         {/* Expand toggle */}
         <button
           onClick={() => children.length > 0 && onToggleExpand(item.id)}
           className={cn("shrink-0 text-slate-400", children.length === 0 && "invisible")}
         >
-          {isExpanded
-            ? <ChevronDown className="w-3.5 h-3.5" />
-            : <ChevronRight className="w-3.5 h-3.5" />}
+          {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
         </button>
 
         {/* Status toggle */}
@@ -109,53 +184,80 @@ function ItemRow({
         </button>
 
         {/* Name */}
-        {editing ? (
-          <input
-            autoFocus
-            value={draft}
-            onChange={e => setDraft(e.target.value)}
-            onBlur={commitRename}
-            onKeyDown={e => {
-              if (e.key === "Enter") commitRename();
-              if (e.key === "Escape") { setDraft(item.name); setEditing(false); }
-            }}
-            className="flex-1 text-sm bg-white dark:bg-slate-800 border border-blue-400 rounded px-2 py-0.5 outline-none"
-          />
-        ) : (
-          <span
-            className={cn(
-              "flex-1 text-sm",
-              item.status === "done" && "line-through text-slate-400"
-            )}
-            onDoubleClick={() => canManage && setEditing(true)}
-          >
-            {item.name}
-          </span>
-        )}
+        <div className="flex-1 min-w-0">
+          {editing ? (
+            <input
+              autoFocus
+              value={draft}
+              onChange={e => setDraft(e.target.value)}
+              onBlur={commitRename}
+              onKeyDown={e => {
+                if (e.key === "Enter") commitRename();
+                if (e.key === "Escape") { setDraft(item.name); setEditing(false); }
+              }}
+              className="w-full text-sm bg-white dark:bg-slate-800 border border-blue-400 rounded px-2 py-0.5 outline-none"
+            />
+          ) : (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span
+                className={cn(
+                  "text-sm",
+                  item.status === "done" && "line-through text-slate-400"
+                )}
+                onDoubleClick={() => canManage && setEditing(true)}
+              >
+                {item.name}
+              </span>
 
-        {/* Children progress */}
+              {/* Linked task badge */}
+              {linkedTask && (
+                <div className="flex items-center gap-1">
+                  <span className={cn(
+                    "text-[10px] px-1.5 py-0.5 rounded font-medium",
+                    TASK_STATUS_META[linkedTask.status].cls
+                  )}>
+                    {TASK_STATUS_META[linkedTask.status].label}
+                  </span>
+                  <Link
+                    href={`/tasks/${linkedTask.id}`}
+                    className="text-[10px] text-blue-500 hover:underline max-w-[100px] truncate"
+                    title={linkedTask.name}
+                    onClick={e => e.stopPropagation()}
+                  >
+                    {linkedTask.name}
+                  </Link>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Children count */}
         {children.length > 0 && (
-          <span className="text-xs text-slate-400 shrink-0">
-            {doneChildren}/{children.length}
-          </span>
+          <span className="text-xs text-slate-400 shrink-0">{doneChildren}/{children.length}</span>
         )}
 
-        {/* Deadline */}
-        {item.deadline && (
-          <span className="text-xs text-slate-400 shrink-0 hidden sm:block">
-            {item.deadline}
-          </span>
-        )}
-
-        {/* Actions (visible on hover) */}
-        {canManage && (
-          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+        {/* Actions (hover) */}
+        {canManage && !editing && (
+          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 relative">
             <button
               onClick={() => setEditing(true)}
               className="p-1 text-slate-400 hover:text-blue-500 rounded"
               title="Đổi tên"
             >
               <Pencil className="w-3 h-3" />
+            </button>
+            <button
+              onClick={() => setShowTaskPicker(v => !v)}
+              className={cn(
+                "p-1 rounded",
+                item.taskId
+                  ? "text-blue-500 hover:text-blue-700"
+                  : "text-slate-400 hover:text-blue-500"
+              )}
+              title={item.taskId ? "Đổi liên kết nhiệm vụ" : "Liên kết với nhiệm vụ"}
+            >
+              <Link2 className="w-3 h-3" />
             </button>
             <button
               onClick={() => onAddChild(item.id)}
@@ -171,6 +273,15 @@ function ItemRow({
             >
               <Trash2 className="w-3 h-3" />
             </button>
+
+            {showTaskPicker && (
+              <TaskPicker
+                allTasks={allTasks}
+                currentTaskId={item.taskId}
+                onSelect={taskId => onLinkTask(item.id, taskId)}
+                onClose={() => setShowTaskPicker(false)}
+              />
+            )}
           </div>
         )}
       </div>
@@ -183,6 +294,7 @@ function ItemRow({
             key={child.id}
             item={child}
             allItems={allItems}
+            allTasks={allTasks}
             depth={depth + 1}
             canManage={canManage}
             expanded={expanded}
@@ -191,61 +303,46 @@ function ItemRow({
             onAddChild={onAddChild}
             onDelete={onDelete}
             onRename={onRename}
+            onLinkTask={onLinkTask}
           />
         ))}
     </div>
   );
 }
 
-// ─── New Plan Modal ──────────────────────────────────────────────
+// ─── Plan Form (dùng chung cho Create & Edit) ─────────────────────
 
-interface NewPlanModalProps {
-  onClose: () => void;
-  onCreated: (plan: UnitPlan) => void;
+interface PlanFormData {
+  name: string;
+  description: string;
+  year: number;
+  target: number;
+  unit: string;
+  department: string;
 }
 
-function NewPlanModal({ onClose, onCreated }: NewPlanModalProps) {
-  const { currentUser } = useAuthStore();
-  const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState({
-    name: "",
-    description: "",
-    year: new Date().getFullYear(),
-    target: 1,
-    unit: "lần",
-    department: currentUser?.department ?? "",
-  });
+interface PlanFormModalProps {
+  title: string;
+  initial: PlanFormData;
+  saving: boolean;
+  onClose: () => void;
+  onSubmit: (data: PlanFormData) => void;
+}
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!form.name.trim()) return;
-    setSaving(true);
-    try {
-      const { plan } = await apiFetch<{ plan: UnitPlan }>("/api/unit-plans", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
-      });
-      onCreated(plan);
-      toast.success("Tạo kế hoạch thành công");
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Tạo thất bại");
-    } finally {
-      setSaving(false);
-    }
-  }
+function PlanFormModal({ title, initial, saving, onClose, onSubmit }: PlanFormModalProps) {
+  const [form, setForm] = useState<PlanFormData>(initial);
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-md">
         <div className="flex items-center justify-between p-5 border-b border-slate-200 dark:border-slate-700">
-          <h2 className="font-semibold text-slate-800 dark:text-white">Tạo kế hoạch mới</h2>
+          <h2 className="font-semibold text-slate-800 dark:text-white">{title}</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-5 space-y-4">
+        <form onSubmit={e => { e.preventDefault(); onSubmit(form); }} className="p-5 space-y-4">
           <div>
             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
               Tên kế hoạch <span className="text-red-500">*</span>
@@ -260,9 +357,7 @@ function NewPlanModal({ onClose, onCreated }: NewPlanModalProps) {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-              Mô tả
-            </label>
+            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Mô tả</label>
             <textarea
               value={form.description}
               onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
@@ -273,70 +368,55 @@ function NewPlanModal({ onClose, onCreated }: NewPlanModalProps) {
 
           <div className="grid grid-cols-3 gap-3">
             <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                Năm
-              </label>
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Năm</label>
               <input
-                type="number"
-                min={2020}
-                max={2040}
-                value={form.year}
+                type="number" min={2020} max={2040} value={form.year}
                 onChange={e => setForm(f => ({ ...f, year: Number(e.target.value) }))}
                 className="w-full border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                Chỉ tiêu
-              </label>
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Chỉ tiêu</label>
               <input
-                type="number"
-                min={1}
-                value={form.target}
+                type="number" min={1} value={form.target}
                 onChange={e => setForm(f => ({ ...f, target: Number(e.target.value) }))}
                 className="w-full border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                Đơn vị tính
-              </label>
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Đơn vị</label>
               <input
                 value={form.unit}
                 onChange={e => setForm(f => ({ ...f, unit: e.target.value }))}
-                placeholder="lần, buổi, đề tài..."
+                placeholder="lần, buổi..."
                 className="w-full border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-              Phòng ban
-            </label>
+            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Phòng ban</label>
             <input
               value={form.department}
               onChange={e => setForm(f => ({ ...f, department: e.target.value }))}
-              placeholder="Tên phòng ban (để trống nếu toàn đơn vị)"
+              placeholder="Để trống nếu toàn đơn vị"
               className="w-full border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
 
           <div className="flex gap-3 pt-2">
             <button
-              type="button"
-              onClick={onClose}
+              type="button" onClick={onClose}
               className="flex-1 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition"
             >
               Hủy
             </button>
             <button
-              type="submit"
-              disabled={saving}
+              type="submit" disabled={saving}
               className="flex-1 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition disabled:opacity-60 flex items-center justify-center gap-2"
             >
               {saving && <Loader2 className="w-4 h-4 animate-spin" />}
-              Tạo kế hoạch
+              Lưu
             </button>
           </div>
         </form>
@@ -349,37 +429,71 @@ function NewPlanModal({ onClose, onCreated }: NewPlanModalProps) {
 
 interface PlanDetailProps {
   plan: UnitPlan;
+  allTasks: Task[];
   canManage: boolean;
   onUpdated: (updated: UnitPlan) => void;
   onDeleted: () => void;
 }
 
-function PlanDetail({ plan, canManage, onUpdated, onDeleted }: PlanDetailProps) {
+function PlanDetail({ plan, allTasks, canManage, onUpdated, onDeleted }: PlanDetailProps) {
   const [items, setItems] = useState<PlanItem[]>(plan.items ?? []);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
+  const [hasUnsaved, setHasUnsaved] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
+
+  // Debounce refs
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingRef = useRef<PlanItem[] | null>(null);
 
   useEffect(() => {
     setItems(plan.items ?? []);
-    // Auto-expand top-level items
     const topIds = (plan.items ?? []).filter(i => i.parentId === null).map(i => i.id);
     setExpanded(new Set(topIds));
-  }, [plan.id, plan.items]);
+    setHasUnsaved(false);
+  }, [plan.id]);
 
-  async function persistItems(newItems: PlanItem[]) {
+  // Flush on unmount
+  useEffect(() => {
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      if (pendingRef.current) {
+        fetch(`/api/unit-plans/${plan.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items: pendingRef.current }),
+        });
+      }
+    };
+  }, [plan.id]);
+
+  async function flushSave(itemsToSave: PlanItem[]) {
     setSaving(true);
     try {
       await apiFetch(`/api/unit-plans/${plan.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ items: newItems }),
+        body: JSON.stringify({ items: itemsToSave }),
       });
-      onUpdated({ ...plan, items: newItems });
-    } catch (err) {
-      toast.error("Lưu thất bại");
+      onUpdated({ ...plan, items: itemsToSave });
+      setHasUnsaved(false);
+      pendingRef.current = null;
+    } catch {
+      toast.error("Lưu thất bại — thử lại sau");
     } finally {
       setSaving(false);
     }
+  }
+
+  // Debounced save: gộp nhiều thay đổi liên tiếp trong 1.2s thành 1 request
+  function scheduleItemsSave(newItems: PlanItem[]) {
+    pendingRef.current = newItems;
+    setHasUnsaved(true);
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      if (pendingRef.current) flushSave(pendingRef.current);
+    }, 1200);
   }
 
   function toggleExpand(id: string) {
@@ -401,7 +515,7 @@ function PlanDetail({ plan, canManage, onUpdated, onDeleted }: PlanDetailProps) 
     const newItems = [...items, newItem];
     setItems(newItems);
     if (parentId) setExpanded(prev => new Set([...prev, parentId]));
-    persistItems(newItems);
+    scheduleItemsSave(newItems);
   }
 
   function statusCycle(itemId: string) {
@@ -409,20 +523,47 @@ function PlanDetail({ plan, canManage, onUpdated, onDeleted }: PlanDetailProps) 
       i.id === itemId ? { ...i, status: STATUS_CYCLE[i.status] } : i
     );
     setItems(newItems);
-    persistItems(newItems);
+    scheduleItemsSave(newItems);
   }
 
   function deleteItem(itemId: string) {
     const toRemove = new Set([itemId, ...getDescendantIds(items, itemId)]);
     const newItems = items.filter(i => !toRemove.has(i.id));
     setItems(newItems);
-    persistItems(newItems);
+    scheduleItemsSave(newItems);
   }
 
   function renameItem(itemId: string, name: string) {
     const newItems = items.map(i => i.id === itemId ? { ...i, name } : i);
     setItems(newItems);
-    persistItems(newItems);
+    scheduleItemsSave(newItems);
+  }
+
+  function linkTask(itemId: string, taskId: string | null) {
+    const newItems = items.map(i =>
+      i.id === itemId ? { ...i, taskId: taskId ?? undefined } : i
+    );
+    setItems(newItems);
+    scheduleItemsSave(newItems);
+    toast.success(taskId ? "Đã liên kết nhiệm vụ" : "Đã bỏ liên kết");
+  }
+
+  async function handleEditPlan(data: PlanFormData) {
+    setEditSaving(true);
+    try {
+      await apiFetch(`/api/unit-plans/${plan.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      onUpdated({ ...plan, ...data });
+      setShowEditModal(false);
+      toast.success("Đã cập nhật kế hoạch");
+    } catch {
+      toast.error("Cập nhật thất bại");
+    } finally {
+      setEditSaving(false);
+    }
   }
 
   async function handleDeletePlan() {
@@ -439,6 +580,9 @@ function PlanDetail({ plan, canManage, onUpdated, onDeleted }: PlanDetailProps) 
   const topItems = items.filter(i => i.parentId === null).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   const doneTop = topItems.filter(i => i.status === "done").length;
   const progressPct = plan.target > 0 ? Math.min(100, Math.round((doneTop / plan.target) * 100)) : 0;
+
+  // Thống kê liên kết task
+  const linkedCount = items.filter(i => i.taskId).length;
 
   return (
     <div className="flex flex-col h-full">
@@ -465,16 +609,33 @@ function PlanDetail({ plan, canManage, onUpdated, onDeleted }: PlanDetailProps) 
                   {plan.department}
                 </span>
               )}
+              {linkedCount > 0 && (
+                <span className="flex items-center gap-1 text-blue-500">
+                  <Link2 className="w-4 h-4" />
+                  {linkedCount} liên kết
+                </span>
+              )}
             </div>
           </div>
+
+          {/* Action buttons */}
           {canManage && (
-            <button
-              onClick={handleDeletePlan}
-              className="text-slate-400 hover:text-red-500 transition p-1 rounded"
-              title="Xóa kế hoạch"
-            >
-              <Trash2 className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={() => setShowEditModal(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition"
+              >
+                <Pencil className="w-3.5 h-3.5" />
+                Sửa
+              </button>
+              <button
+                onClick={handleDeletePlan}
+                className="p-1.5 text-slate-400 hover:text-red-500 transition rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20"
+                title="Xóa kế hoạch"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
           )}
         </div>
 
@@ -506,7 +667,6 @@ function PlanDetail({ plan, canManage, onUpdated, onDeleted }: PlanDetailProps) 
       {/* Items */}
       <div className="flex-1 overflow-y-auto">
         <div className="p-4">
-          {/* Add top-level item */}
           {canManage && (
             <button
               onClick={() => addItem(null)}
@@ -521,9 +681,7 @@ function PlanDetail({ plan, canManage, onUpdated, onDeleted }: PlanDetailProps) 
             <div className="text-center py-12 text-slate-400">
               <ClipboardList className="w-12 h-12 mx-auto mb-3 opacity-30" />
               <p className="text-sm">Chưa có nhiệm vụ nào</p>
-              {canManage && (
-                <p className="text-xs mt-1">Nhấn "Thêm nhiệm vụ cấp 1" để bắt đầu</p>
-              )}
+              {canManage && <p className="text-xs mt-1">Nhấn "Thêm nhiệm vụ cấp 1" để bắt đầu</p>}
             </div>
           ) : (
             <div className="space-y-0.5">
@@ -532,6 +690,7 @@ function PlanDetail({ plan, canManage, onUpdated, onDeleted }: PlanDetailProps) 
                   key={item.id}
                   item={item}
                   allItems={items}
+                  allTasks={allTasks}
                   depth={0}
                   canManage={canManage}
                   expanded={expanded}
@@ -540,6 +699,7 @@ function PlanDetail({ plan, canManage, onUpdated, onDeleted }: PlanDetailProps) 
                   onAddChild={addItem}
                   onDelete={deleteItem}
                   onRename={renameItem}
+                  onLinkTask={linkTask}
                 />
               ))}
             </div>
@@ -547,11 +707,45 @@ function PlanDetail({ plan, canManage, onUpdated, onDeleted }: PlanDetailProps) 
         </div>
       </div>
 
-      {saving && (
-        <div className="px-5 py-2 border-t border-slate-200 dark:border-slate-700 flex items-center gap-2 text-xs text-slate-400">
-          <Loader2 className="w-3 h-3 animate-spin" />
-          Đang lưu...
-        </div>
+      {/* Save status bar */}
+      <div className="px-5 py-2 border-t border-slate-100 dark:border-slate-800 flex items-center gap-2 text-xs min-h-[36px]">
+        {saving ? (
+          <>
+            <Loader2 className="w-3 h-3 animate-spin text-slate-400" />
+            <span className="text-slate-400">Đang lưu...</span>
+          </>
+        ) : hasUnsaved ? (
+          <>
+            <span className="w-2 h-2 rounded-full bg-amber-400" />
+            <span className="text-amber-600 dark:text-amber-400">Chưa lưu</span>
+            <button
+              onClick={() => pendingRef.current && flushSave(pendingRef.current)}
+              className="ml-1 flex items-center gap-1 text-blue-500 hover:text-blue-700"
+            >
+              <Save className="w-3 h-3" /> Lưu ngay
+            </button>
+          </>
+        ) : (
+          <span className="text-slate-300 dark:text-slate-600">Đã lưu</span>
+        )}
+      </div>
+
+      {/* Edit modal */}
+      {showEditModal && (
+        <PlanFormModal
+          title="Chỉnh sửa kế hoạch"
+          initial={{
+            name: plan.name,
+            description: plan.description ?? "",
+            year: plan.year,
+            target: plan.target,
+            unit: plan.unit,
+            department: plan.department ?? "",
+          }}
+          saving={editSaving}
+          onClose={() => setShowEditModal(false)}
+          onSubmit={handleEditPlan}
+        />
       )}
     </div>
   );
@@ -562,9 +756,11 @@ function PlanDetail({ plan, canManage, onUpdated, onDeleted }: PlanDetailProps) 
 export default function UnitPlansPage() {
   const { currentUser } = useAuthStore();
   const [plans, setPlans] = useState<UnitPlan[]>([]);
+  const [allTasks, setAllTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
+  const [createSaving, setCreateSaving] = useState(false);
   const [selectedYear, setSelectedYear] = useState<number | "all">(new Date().getFullYear());
 
   const canManage = !!currentUser && hasPermission(currentUser.role, "plan:manage");
@@ -572,9 +768,15 @@ export default function UnitPlansPage() {
   const fetchPlans = useCallback(async () => {
     setLoading(true);
     try {
-      const { plans: data } = await apiFetch<{ plans: UnitPlan[] }>("/api/unit-plans");
-      setPlans(data);
-      if (data.length > 0 && !selectedId) setSelectedId(data[0].id);
+      const [plansData, tasksData] = await Promise.all([
+        apiFetch<{ plans: UnitPlan[] }>("/api/unit-plans"),
+        apiFetch<{ tasks: Task[] }>("/api/tasks").catch(() => ({ tasks: [] })),
+      ]);
+      setPlans(plansData.plans);
+      setAllTasks(tasksData.tasks);
+      if (plansData.plans.length > 0 && !selectedId) {
+        setSelectedId(plansData.plans[0].id);
+      }
     } catch {
       toast.error("Không thể tải danh sách kế hoạch");
     } finally {
@@ -585,17 +787,26 @@ export default function UnitPlansPage() {
   useEffect(() => { fetchPlans(); }, [fetchPlans]);
 
   const years = [...new Set(plans.map(p => p.year))].sort((a, b) => b - a);
-
-  const filteredPlans = selectedYear === "all"
-    ? plans
-    : plans.filter(p => p.year === selectedYear);
-
+  const filteredPlans = selectedYear === "all" ? plans : plans.filter(p => p.year === selectedYear);
   const selectedPlan = plans.find(p => p.id === selectedId) ?? null;
 
-  function handleCreated(plan: UnitPlan) {
-    setPlans(prev => [plan, ...prev]);
-    setSelectedId(plan.id);
-    setShowModal(false);
+  async function handleCreate(data: PlanFormData) {
+    setCreateSaving(true);
+    try {
+      const { plan } = await apiFetch<{ plan: UnitPlan }>("/api/unit-plans", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...data, items: [] }),
+      });
+      setPlans(prev => [plan, ...prev]);
+      setSelectedId(plan.id);
+      setShowModal(false);
+      toast.success("Tạo kế hoạch thành công");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Tạo thất bại");
+    } finally {
+      setCreateSaving(false);
+    }
   }
 
   function handleUpdated(updated: UnitPlan) {
@@ -614,9 +825,8 @@ export default function UnitPlansPage() {
 
   return (
     <div className="flex h-[calc(100vh-64px)] bg-slate-50 dark:bg-slate-950">
-      {/* Left panel — Plan list */}
+      {/* Left panel */}
       <div className="w-72 shrink-0 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-700 flex flex-col">
-        {/* Header */}
         <div className="p-4 border-b border-slate-200 dark:border-slate-700">
           <div className="flex items-center justify-between">
             <h1 className="font-bold text-slate-800 dark:text-white flex items-center gap-2">
@@ -677,10 +887,7 @@ export default function UnitPlansPage() {
               <ClipboardList className="w-10 h-10 mx-auto mb-2 opacity-30" />
               <p className="text-sm">Chưa có kế hoạch nào</p>
               {canManage && (
-                <button
-                  onClick={() => setShowModal(true)}
-                  className="mt-3 text-sm text-blue-600 hover:underline"
-                >
+                <button onClick={() => setShowModal(true)} className="mt-3 text-sm text-blue-600 hover:underline">
                   + Tạo kế hoạch đầu tiên
                 </button>
               )}
@@ -691,14 +898,14 @@ export default function UnitPlansPage() {
               const done = topItems.filter(i => i.status === "done").length;
               const pct = plan.target > 0 ? Math.min(100, Math.round((done / plan.target) * 100)) : 0;
               const isSelected = plan.id === selectedId;
+              const linked = (plan.items ?? []).filter(i => i.taskId).length;
 
               return (
                 <button
                   key={plan.id}
                   onClick={() => setSelectedId(plan.id)}
                   className={cn(
-                    "w-full text-left px-3 py-3 mx-2 rounded-xl transition mb-1",
-                    "border",
+                    "w-full text-left px-3 py-3 mx-2 rounded-xl transition mb-1 border",
                     isSelected
                       ? "bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-700"
                       : "bg-transparent border-transparent hover:bg-slate-50 dark:hover:bg-slate-800/50"
@@ -716,10 +923,17 @@ export default function UnitPlansPage() {
                   </div>
                   <div className="mt-2">
                     <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 mb-1">
-                      <span>{done}/{plan.target} {plan.unit}</span>
-                      <span className={cn(
-                        pct >= 100 ? "text-green-600" : pct >= 50 ? "text-blue-500" : ""
-                      )}>{pct}%</span>
+                      <span className="flex items-center gap-1.5">
+                        {done}/{plan.target} {plan.unit}
+                        {linked > 0 && (
+                          <span className="flex items-center gap-0.5 text-blue-400">
+                            <Link2 className="w-3 h-3" />{linked}
+                          </span>
+                        )}
+                      </span>
+                      <span className={cn(pct >= 100 ? "text-green-600" : pct >= 50 ? "text-blue-500" : "")}>
+                        {pct}%
+                      </span>
                     </div>
                     <div className="h-1 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
                       <div
@@ -738,12 +952,13 @@ export default function UnitPlansPage() {
         </div>
       </div>
 
-      {/* Right panel — Plan detail */}
+      {/* Right panel */}
       <div className="flex-1 overflow-hidden">
         {selectedPlan ? (
           <PlanDetail
             key={selectedPlan.id}
             plan={selectedPlan}
+            allTasks={allTasks}
             canManage={canManage}
             onUpdated={handleUpdated}
             onDeleted={handleDeleted}
@@ -765,9 +980,33 @@ export default function UnitPlansPage() {
         )}
       </div>
 
+      {/* Create modal */}
       {showModal && (
-        <NewPlanModal onClose={() => setShowModal(false)} onCreated={handleCreated} />
+        <PlanFormModal
+          title="Tạo kế hoạch mới"
+          initial={{
+            name: "",
+            description: "",
+            year: new Date().getFullYear(),
+            target: 1,
+            unit: "lần",
+            department: currentUser?.department ?? "",
+          }}
+          saving={createSaving}
+          onClose={() => setShowModal(false)}
+          onSubmit={handleCreate}
+        />
       )}
     </div>
   );
+}
+
+// ─── Local type (reuse PlanFormData in both modals) ──────────────
+interface PlanFormData {
+  name: string;
+  description: string;
+  year: number;
+  target: number;
+  unit: string;
+  department: string;
 }
