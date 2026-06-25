@@ -60,6 +60,38 @@ export interface NotificationPrefs {
   retentionDays?: number;
 }
 
+// ─── UNIT PLANS (kế hoạch chỉ tiêu đơn vị) ──────────────────────
+
+export type PlanItemStatus = "todo" | "doing" | "done";
+
+/** Một nhiệm vụ trong kế hoạch — lồng nhiều cấp (con/cháu/chít) qua parentId. */
+export interface PlanItem {
+  id: string;
+  parentId: string | null;   // null = cấp 1 (con trực tiếp của kế hoạch)
+  name: string;
+  status: PlanItemStatus;
+  assigneeId?: string;
+  deadline?: string;
+  note?: string;
+  order?: number;
+}
+
+/** Kế hoạch thực hiện một chỉ tiêu chung của đơn vị (VD: Hội thảo — 4 cái/năm). */
+export interface UnitPlan {
+  id: string;
+  name: string;            // VD: "Tổ chức Hội thảo khoa học"
+  description?: string;
+  year: number;
+  target: number;          // chỉ tiêu năm (VD: 4)
+  unit: string;            // đơn vị tính (VD: "hội thảo", "buổi", "đề tài")
+  department?: string;
+  ownerId?: string;
+  items: PlanItem[];       // cây nhiệm vụ con/cháu/chít
+  createdBy: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 export interface GoogleToken {
   access_token: string;
   refresh_token: string;

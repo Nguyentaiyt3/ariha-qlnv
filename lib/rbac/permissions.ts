@@ -25,6 +25,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "profile:edit",
     "evaluation:self",
     "kpi:read",
+    "plan:read",
     "request:create",
     "request:read",
     "template:create",
@@ -63,6 +64,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "report:read",
     "request:create",
     "request:read",
+    "plan:read",
+    "plan:manage",
     "request:approve",
     "template:create",
     "template:approve",
@@ -116,6 +119,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "approval:level2",
     "request:create",
     "request:read",
+    "plan:read",
+    "plan:manage",
     "request:approve",
     "template:create",
     "template:approve",
@@ -332,6 +337,13 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
       { id: "template:approve", label: "Duyệt biểu mẫu" },
     ],
   },
+  {
+    id: "plan", label: "Kế hoạch đơn vị",
+    permissions: [
+      { id: "plan:read",   label: "Xem kế hoạch" },
+      { id: "plan:manage", label: "Quản lý kế hoạch" },
+    ],
+  },
 ];
 
 // ─── Feature modules for module-access tab ────────────────────
@@ -436,6 +448,7 @@ export interface NavItem {
 export const NAV_ITEMS: NavItem[] = [
   { label: "Dashboard", href: "/dashboard", icon: "LayoutDashboard" },
   { label: "Nhiệm vụ", href: "/tasks", icon: "CheckSquare", requiredPermission: "task:read" },
+  { label: "Kế hoạch", href: "/unit-plans", icon: "ClipboardList", requiredPermission: "plan:read" },
   { label: "Lịch biểu", href: "/calendar", icon: "Calendar", requiredPermission: "calendar:read" },
   { label: "Đơn từ", href: "/requests", icon: "FileText", requiredPermission: "request:read" },
   { label: "Tài liệu", href: "/documents", icon: "FolderOpen", requiredPermission: "document:read" },

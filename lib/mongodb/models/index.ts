@@ -19,3 +19,4 @@ export {
 } from "./Finance";
 export { WorkNodeModel } from "./WorkNode";
 export { AuditEventModel } from "./AuditEvent";
+export { UnitPlanModel } from "./Plan";

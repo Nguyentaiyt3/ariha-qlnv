@@ -6,7 +6,7 @@ import {
   DocFolderModel, WorkDocumentModel, AnnouncementModel, AnnouncementCommentModel,
   ChannelModel, ChannelMessageModel,
   FinancialTransactionModel, AdvanceRequestModel, ReimbursementRequestModel, TaskFinancialSummaryModel,
-  WorkNodeModel, AuditEventModel,
+  WorkNodeModel, AuditEventModel, UnitPlanModel,
 } from "./models";
 import type {
   User, Task, Notification, Message, EmailLog, CalendarEvent,
@@ -14,7 +14,7 @@ import type {
   RequestTemplate, WorkRequest, DocFolder, WorkDocument,
   Announcement, AnnouncementComment, Channel, ChannelMessage,
   FinancialTransaction, AdvanceRequest, ReimbursementRequest, TaskFinancialSummary,
-  WorkNode,
+  WorkNode, UnitPlan,
 } from "@/types";
 import { generateId } from "@/lib/utils";
 
@@ -326,6 +326,41 @@ export async function saveKPIFramework(framework: KPIFramework): Promise<void> {
   await connectDB();
   const { id, ...data } = framework;
   await KPIFrameworkModel.findByIdAndUpdate(id, { _id: id, ...data }, { upsert: true });
+}
+
+// ─── UNIT PLANS (kế hoạch chỉ tiêu đơn vị) ────────────────────
+
+export async function getUnitPlans(): Promise<UnitPlan[]> {
+  await connectDB();
+  const plans = await UnitPlanModel.find().sort({ year: -1, createdAt: -1 }).lean();
+  return plans.map((p: any) => ({ id: p._id as string, ...p }) as UnitPlan);
+}
+
+export async function getUnitPlan(planId: string): Promise<UnitPlan | null> {
+  await connectDB();
+  const p = await UnitPlanModel.findById(planId).lean();
+  if (!p) return null;
+  return { id: (p as any)._id as string, ...(p as any) } as UnitPlan;
+}
+
+export async function createUnitPlan(plan: Omit<UnitPlan, "id" | "createdAt">): Promise<UnitPlan> {
+  await connectDB();
+  const id = generateId("plan");
+  const doc = { _id: id, ...plan, items: plan.items ?? [], createdAt: now(), updatedAt: now() };
+  await UnitPlanModel.create(doc);
+  const { _id, ...rest } = doc;
+  return { id, ...rest } as UnitPlan;
+}
+
+export async function updateUnitPlan(planId: string, data: Partial<UnitPlan>): Promise<void> {
+  await connectDB();
+  const { id, ...rest } = data;
+  await UnitPlanModel.findByIdAndUpdate(planId, { ...rest, updatedAt: now() });
+}
+
+export async function deleteUnitPlan(planId: string): Promise<void> {
+  await connectDB();
+  await UnitPlanModel.findByIdAndDelete(planId);
 }
 
 // ─── EVALUATIONS ──────────────────────────────────────────────
