@@ -10,6 +10,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "intranet:read",
     "document:read",
     "request:create",
+    "research:read",   // Chỉ xem đề tài của chính mình (lọc server-side)
+    "research:create", // Đăng ký đề tài mới
   ],
   staff: [
     "task:read",
@@ -25,6 +27,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "profile:edit",
     "evaluation:self",
     "kpi:read",
+    "plan:read",
     "request:create",
     "request:read",
     "template:create",
@@ -35,6 +38,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "intranet:comment",
     "workflow:read",
     "workflow:create",
+    "research:read",
+    "research:create",
     "finance:read",   // Thấy tab + thêm giao dịch/tạm ứng, KHÔNG duyệt
   ],
   teamLead: [
@@ -63,6 +68,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "report:read",
     "request:create",
     "request:read",
+    "plan:read",
+    "plan:manage",
     "request:approve",
     "template:create",
     "template:approve",
@@ -78,6 +85,9 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "workflow:read",
     "workflow:create",
     "workflow:approve",
+    "research:read",
+    "research:create",
+    "research:monitor",  // Xem tất cả + tiếp nhận đề cương (tab Giám sát)
     "calendar:approve",
     "finance:read",
     "finance:approve",
@@ -116,6 +126,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "approval:level2",
     "request:create",
     "request:read",
+    "plan:read",
+    "plan:manage",
     "request:approve",
     "template:create",
     "template:approve",
@@ -132,12 +144,55 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "workflow:read",
     "workflow:create",
     "workflow:approve",
+    "research:read",
+    "research:create",
+    "research:manage",
     "calendar:approve",
     "finance:read",
     "finance:approve",
     "finance:manage",
   ],
   hrAdmin: ["*"],
+
+  // ── Vai trò chuyên trách tài chính ──
+  // Theo dõi: chỉ xem toàn bộ tài chính + phân tích, không sửa/duyệt
+  financeViewer: [
+    "task:read",
+    "calendar:read",
+    "notification:read",
+    "profile:edit",
+    "finance:read",
+    "analytics:read",
+    "report:read",
+  ],
+  // Kiểm tra: xem + đối soát/đánh dấu kiểm tra + xuất báo cáo, không duyệt chi
+  financeAuditor: [
+    "task:read",
+    "calendar:read",
+    "notification:read",
+    "profile:edit",
+    "finance:read",
+    "finance:audit",
+    "analytics:read",
+    "report:read",
+    "report:export",
+  ],
+  // Giám sát: xem + kiểm tra + duyệt giao dịch + quản lý tài chính
+  financeSupervisor: [
+    "task:read",
+    "calendar:read",
+    "notification:read",
+    "notification:manage",
+    "profile:edit",
+    "finance:read",
+    "finance:audit",
+    "finance:approve",
+    "finance:manage",
+    "analytics:read",
+    "report:read",
+    "report:export",
+    "approval:level2",
+  ],
 };
 
 // ─── Runtime overrides (loaded from Firestore at startup) ─────
@@ -159,6 +214,25 @@ export function hasPermission(role: UserRole, action: string): boolean {
 
 export function getRolePermissions(role: UserRole): string[] {
   return (_permOverrides?.[role] ?? DEFAULT_ROLE_PERMISSIONS[role]) ?? [];
+}
+
+// ─── Cấp bậc vai trò (để giới hạn giao việc) ──────────────────
+// Quy tắc: chỉ giao cho người CÙNG CẤP hoặc THẤP HƠN, không giao cho cấp trên.
+
+export const ROLE_RANK: Record<UserRole, number> = {
+  guest: 0,
+  staff: 1,
+  financeViewer: 1,
+  financeAuditor: 1,
+  teamLead: 2,
+  financeSupervisor: 2,
+  director: 3,
+  hrAdmin: 4,
+};
+
+/** Người giao (actor) chỉ được giao cho người có cấp ≤ cấp của mình. */
+export function canAssignTo(actorRole: UserRole, targetRole: UserRole): boolean {
+  return (ROLE_RANK[targetRole] ?? 0) <= (ROLE_RANK[actorRole] ?? 0);
 }
 
 // ─── Permission groups for management UI ─────────────────────
@@ -219,6 +293,7 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
     id: "finance", label: "Tài chính",
     permissions: [
       { id: "finance:read",    label: "Xem tài chính" },
+      { id: "finance:audit",   label: "Kiểm tra / đối soát" },
       { id: "finance:approve", label: "Duyệt giao dịch" },
       { id: "finance:manage",  label: "Quản lý tài chính" },
     ],
@@ -269,6 +344,15 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
     ],
   },
   {
+    id: "research", label: "Nghiên cứu khoa học",
+    permissions: [
+      { id: "research:read",    label: "Xem đề tài (chỉ của mình)" },
+      { id: "research:create",  label: "Đăng ký đề tài mới" },
+      { id: "research:monitor", label: "Giám sát & tiếp nhận đề cương" },
+      { id: "research:manage",  label: "Quản trị KHCN (phản biện, hội đồng, chứng nhận)" },
+    ],
+  },
+  {
     id: "analytics", label: "Phân tích & Báo cáo",
     permissions: [
       { id: "analytics:read",    label: "Xem phân tích" },
@@ -289,6 +373,13 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
     permissions: [
       { id: "template:create",  label: "Tạo biểu mẫu" },
       { id: "template:approve", label: "Duyệt biểu mẫu" },
+    ],
+  },
+  {
+    id: "plan", label: "Kế hoạch đơn vị",
+    permissions: [
+      { id: "plan:read",   label: "Xem kế hoạch" },
+      { id: "plan:manage", label: "Quản lý kế hoạch" },
     ],
   },
 ];
@@ -363,6 +454,23 @@ export const DEFAULT_DASHBOARD_LAYOUTS: Record<UserRole, DefaultWidgetLayout[]> 
     { type: "kpi_week",           x: 0, y: 4, w: 2, h: 1 },
     { type: "team_leaderboard",   x: 2, y: 4, w: 2, h: 2 },
   ],
+  financeViewer: [
+    { type: "financial_overview", x: 0, y: 0, w: 2, h: 2 },
+    { type: "analytics_summary",  x: 2, y: 0, w: 2, h: 2 },
+    { type: "calendar_mini",      x: 0, y: 2, w: 2, h: 1 },
+  ],
+  financeAuditor: [
+    { type: "financial_overview", x: 0, y: 0, w: 2, h: 2 },
+    { type: "analytics_summary",  x: 2, y: 0, w: 2, h: 2 },
+    { type: "deadline_alert",     x: 0, y: 2, w: 1, h: 2 },
+    { type: "calendar_mini",      x: 1, y: 2, w: 3, h: 1 },
+  ],
+  financeSupervisor: [
+    { type: "analytics_summary",  x: 0, y: 0, w: 3, h: 2 },
+    { type: "financial_overview", x: 3, y: 0, w: 1, h: 2 },
+    { type: "deadline_alert",     x: 0, y: 2, w: 1, h: 2 },
+    { type: "calendar_mini",      x: 1, y: 2, w: 3, h: 2 },
+  ],
 };
 
 // ─── Sidebar navigation items per role ────────────────────────
@@ -378,6 +486,7 @@ export interface NavItem {
 export const NAV_ITEMS: NavItem[] = [
   { label: "Dashboard", href: "/dashboard", icon: "LayoutDashboard" },
   { label: "Nhiệm vụ", href: "/tasks", icon: "CheckSquare", requiredPermission: "task:read" },
+  { label: "Kế hoạch", href: "/unit-plans", icon: "ClipboardList", requiredPermission: "plan:read" },
   { label: "Lịch biểu", href: "/calendar", icon: "Calendar", requiredPermission: "calendar:read" },
   { label: "Đơn từ", href: "/requests", icon: "FileText", requiredPermission: "request:read" },
   { label: "Tài liệu", href: "/documents", icon: "FolderOpen", requiredPermission: "document:read" },
@@ -385,6 +494,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Hiệu suất", href: "/performance", icon: "TrendingUp", requiredPermission: "kpi:read" },
   { label: "Nhân viên", href: "/employees", icon: "Users", requiredPermission: "user:read" },
   { label: "Quy trình", href: "/workflow", icon: "GitBranch", requiredPermission: "task:read" },
+  { label: "Nghiên cứu KH", href: "/research", icon: "Microscope", requiredPermission: "research:read" },
   { label: "Tài chính", href: "/finance", icon: "DollarSign", requiredPermission: "finance:read" },
   { label: "Phân tích", href: "/analytics", icon: "BarChart3", requiredPermission: "analytics:read" },
   { label: "Thông báo", href: "/notifications", icon: "Bell", requiredPermission: "notification:read" },

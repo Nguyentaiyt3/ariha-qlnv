@@ -18,6 +18,9 @@ const ROLES: { id: UserRole; label: string; color: string }[] = [
   { id: "teamLead", label: "Trưởng nhóm",    color: "text-purple-600"},
   { id: "director", label: "Giám đốc",       color: "text-amber-600" },
   { id: "hrAdmin",  label: "HR/Admin",       color: "text-red-600"   },
+  { id: "financeViewer",     label: "Theo dõi tài chính",  color: "text-emerald-600" },
+  { id: "financeAuditor",    label: "Kiểm tra tài chính",  color: "text-teal-600"    },
+  { id: "financeSupervisor", label: "Giám sát tài chính",  color: "text-cyan-600"    },
 ];
 
 type PermConfig = Record<UserRole, string[]>;

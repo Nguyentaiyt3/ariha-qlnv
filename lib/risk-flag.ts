@@ -27,11 +27,11 @@ export async function checkAndUpdateRiskFlags(tasks: Task[]): Promise<string[]> 
       flaggedIds.push(task.id);
       await updateTask(task.id, { riskFlag: true });
 
-      // Notify stakeholders
+      // Notify stakeholders — gồm cả người giám sát để nhắc nhở rủi ro
       const notifyUserIds = [
         task.mainPerformerId,
         ...task.stakeholders
-          .filter((s) => s.role === "assignee" || s.role === "approver")
+          .filter((s) => s.role === "assignee" || s.role === "approver" || s.role === "supervisor")
           .map((s) => s.userId),
       ].filter((id, i, arr) => arr.indexOf(id) === i);
 

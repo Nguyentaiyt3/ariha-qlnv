@@ -141,3 +141,50 @@ export async function saveUser(user: Partial<User> & { id: string; password?: st
   const { id, password, ...updateData } = user;
   await UserModel.findByIdAndUpdate(id, { ...updateData, updatedAt: new Date().toISOString() });
 }
+
+// ─── Password change (user-initiated) ────────────────────
+export async function changePassword(
+  userId: string,
+  oldPassword: string,
+  newPassword: string
+): Promise<void> {
+  await connectDB();
+
+  const user = await UserModel.findById(userId);
+  if (!user) throw new Error("Không tìm thấy tài khoản.");
+
+  if (newPassword.length < 6) {
+    throw new Error("Mật khẩu mới tối thiểu 6 ký tự.");
+  }
+
+  const match = await comparePassword(oldPassword, user.password);
+  if (!match) throw new Error("Mật khẩu hiện tại không đúng.");
+
+  const same = await comparePassword(newPassword, user.password);
+  if (same) throw new Error("Mật khẩu mới phải khác mật khẩu hiện tại.");
+
+  user.password = await hashPassword(newPassword);
+  user.mustChangePassword = false;
+  user.passwordUpdatedAt = new Date().toISOString();
+  await user.save();
+}
+
+// ─── Admin reset password — sets a temp password + forces change at next login ──
+export async function adminResetPassword(
+  userId: string,
+  tempPassword: string
+): Promise<void> {
+  await connectDB();
+
+  if (tempPassword.length < 6) {
+    throw new Error("Mật khẩu tạm tối thiểu 6 ký tự.");
+  }
+
+  const user = await UserModel.findById(userId);
+  if (!user) throw new Error("Không tìm thấy tài khoản.");
+
+  user.password = await hashPassword(tempPassword);
+  user.mustChangePassword = true;
+  user.passwordUpdatedAt = new Date().toISOString();
+  await user.save();
+}

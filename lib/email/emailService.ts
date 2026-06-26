@@ -16,6 +16,8 @@ const STAKEHOLDER_EMAIL_RULES: Record<StakeholderRole, EmailEventType[]> = {
   collaborator: ["task_assigned", "deadline_alert", "task_overdue", "task_completed"],
   watcher: ["task_completed", "task_overdue"],
   approver: ["approval_request", "task_completed"],
+  // Người giám sát: theo dõi tiến độ + nhận cảnh báo rủi ro/trễ hạn.
+  supervisor: ["task_assigned", "deadline_alert", "task_overdue", "approval_request", "task_completed"],
 };
 
 const URGENT_EVENTS: EmailEventType[] = ["task_overdue", "approval_request"];

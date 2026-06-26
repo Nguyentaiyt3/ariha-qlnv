@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { TopNav } from "@/components/layout/TopNav";
 import { NotificationPanel } from "@/components/layout/NotificationPanel";
@@ -26,6 +26,7 @@ async function fetchData<T>(url: string): Promise<T | null> {
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const pathname = usePathname();
   const { currentUser, isLoading } = useAuthStore();
   const { setTasks, setUsers } = useTaskStore();
   const { setNotifications } = useNotificationStore();
@@ -42,6 +43,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       router.push("/login");
     }
   }, [currentUser, isLoading, router]);
+
+  // Guard: force password change before using the app
+  useEffect(() => {
+    if (currentUser?.mustChangePassword && pathname !== "/settings/security") {
+      router.push("/settings/security");
+    }
+  }, [currentUser, pathname, router]);
 
   // Load data via API routes (no direct MongoDB imports in client)
   const loadData = useCallback(async () => {

@@ -15,6 +15,12 @@ export default function ProfilePage() {
     phone: currentUser?.phone ?? "",
     position: currentUser?.position ?? "",
     department: currentUser?.department ?? "",
+    birthday: currentUser?.birthday ?? "",
+    educationLevel: currentUser?.educationLevel ?? "",
+    major: currentUser?.major ?? "",
+    academicTitle: currentUser?.academicTitle ?? "",
+    scientificProfile: currentUser?.scientificProfile ?? "",
+    workHistory: currentUser?.workHistory ?? "",
   });
   const [saving, setSaving] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
@@ -146,24 +152,28 @@ export default function ProfilePage() {
         </div>
       </div>
 
-      {/* Form */}
+      {/* Thông tin cơ bản */}
       <div className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-5 space-y-4 mb-4">
-        {[
-          { key: "name",       label: "Họ tên",          type: "text" },
-          { key: "phone",      label: "Số điện thoại",   type: "tel"  },
-          { key: "position",   label: "Chức danh",        type: "text" },
-          { key: "department", label: "Phòng ban",        type: "text" },
-        ].map(({ key, label, type }) => (
-          <div key={key}>
-            <label className="block text-sm font-medium text-[var(--foreground)] mb-1.5">{label}</label>
-            <input
-              type={type}
-              value={form[key as keyof typeof form]}
-              onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
-              className="w-full px-3 py-2.5 text-sm border border-[var(--border)] rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-        ))}
+        <h2 className="text-sm font-semibold text-[var(--foreground)] mb-1">Thông tin cơ bản</h2>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {[
+            { key: "name",       label: "Họ tên",          type: "text" },
+            { key: "phone",      label: "Số điện thoại",   type: "tel"  },
+            { key: "position",   label: "Chức danh",        type: "text" },
+            { key: "department", label: "Phòng ban",        type: "text" },
+            { key: "birthday",   label: "Ngày sinh",        type: "date" },
+          ].map(({ key, label, type }) => (
+            <div key={key}>
+              <label className="block text-sm font-medium text-[var(--foreground)] mb-1.5">{label}</label>
+              <input
+                type={type}
+                value={form[key as keyof typeof form]}
+                onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
+                className="w-full px-3 py-2.5 text-sm border border-[var(--border)] rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          ))}
+        </div>
 
         <div>
           <label className="block text-sm font-medium text-[var(--foreground)] mb-1.5">Email</label>
@@ -173,7 +183,52 @@ export default function ProfilePage() {
             disabled
             className="w-full px-3 py-2.5 text-sm border border-[var(--border)] rounded-lg bg-[var(--muted)] text-[var(--muted-foreground)] cursor-not-allowed"
           />
-          <p className="text-xs text-[var(--muted-foreground)] mt-1">Email được quản lý bởi Google Account.</p>
+          <p className="text-xs text-[var(--muted-foreground)] mt-1">Email được quản lý bởi tài khoản đăng nhập.</p>
+        </div>
+      </div>
+
+      {/* Hồ sơ học vấn & khoa học */}
+      <div className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-5 space-y-4 mb-4">
+        <h2 className="text-sm font-semibold text-[var(--foreground)] mb-1">Hồ sơ học vấn & khoa học</h2>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {[
+            { key: "educationLevel", label: "Trình độ",        placeholder: "Đại học / Thạc sĩ / Tiến sĩ" },
+            { key: "major",          label: "Chuyên ngành",    placeholder: "VD: Công nghệ thông tin" },
+            { key: "academicTitle",  label: "Học hàm / học vị", placeholder: "VD: GS, PGS, TS, ThS" },
+          ].map(({ key, label, placeholder }) => (
+            <div key={key}>
+              <label className="block text-sm font-medium text-[var(--foreground)] mb-1.5">{label}</label>
+              <input
+                type="text"
+                value={form[key as keyof typeof form]}
+                placeholder={placeholder}
+                onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
+                className="w-full px-3 py-2.5 text-sm border border-[var(--border)] rounded-lg bg-[var(--background)] text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          ))}
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-[var(--foreground)] mb-1.5">Lý lịch khoa học</label>
+          <textarea
+            rows={4}
+            value={form.scientificProfile}
+            placeholder="Công trình nghiên cứu, bài báo, đề tài, giải thưởng..."
+            onChange={(e) => setForm((f) => ({ ...f, scientificProfile: e.target.value }))}
+            className="w-full px-3 py-2.5 text-sm border border-[var(--border)] rounded-lg bg-[var(--background)] text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-[var(--foreground)] mb-1.5">Quá trình công tác</label>
+          <textarea
+            rows={3}
+            value={form.workHistory}
+            placeholder="Tóm tắt quá trình công tác, kinh nghiệm làm việc..."
+            onChange={(e) => setForm((f) => ({ ...f, workHistory: e.target.value }))}
+            className="w-full px-3 py-2.5 text-sm border border-[var(--border)] rounded-lg bg-[var(--background)] text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"
+          />
         </div>
       </div>
 
@@ -186,7 +241,11 @@ export default function ProfilePage() {
         Lưu hồ sơ
       </button>
 
-      <div className="mt-3 text-center">
+      <div className="mt-3 flex items-center justify-center gap-4">
+        <Link href="/settings/security" className="text-sm text-blue-600 hover:underline">
+          Đổi mật khẩu →
+        </Link>
+        <span className="text-[var(--border)]">|</span>
         <Link href="/settings/notifications" className="text-sm text-blue-600 hover:underline">
           Tùy chọn thông báo →
         </Link>

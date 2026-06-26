@@ -6,7 +6,8 @@ import {
   DocFolderModel, WorkDocumentModel, AnnouncementModel, AnnouncementCommentModel,
   ChannelModel, ChannelMessageModel,
   FinancialTransactionModel, AdvanceRequestModel, ReimbursementRequestModel, TaskFinancialSummaryModel,
-  WorkNodeModel, AuditEventModel,
+  WorkNodeModel, AuditEventModel, UnitPlanModel, ResearchTopicModel, ResearchGroupModel,
+  AppConfigModel,
 } from "./models";
 import type {
   User, Task, Notification, Message, EmailLog, CalendarEvent,
@@ -14,7 +15,7 @@ import type {
   RequestTemplate, WorkRequest, DocFolder, WorkDocument,
   Announcement, AnnouncementComment, Channel, ChannelMessage,
   FinancialTransaction, AdvanceRequest, ReimbursementRequest, TaskFinancialSummary,
-  WorkNode,
+  WorkNode, UnitPlan, ResearchTopic, ResearchGroup,
 } from "@/types";
 import { generateId } from "@/lib/utils";
 
@@ -41,13 +42,13 @@ export async function getUsers(): Promise<User[]> {
 
 export async function saveUser(user: Partial<User> & { id: string }): Promise<void> {
   await connectDB();
-  const { id, ...updateData } = user;
-  await UserModel.findByIdAndUpdate(id, { ...updateData, updatedAt: now() }, { upsert: false });
+  const { id, _id: _drop, ...updateData } = user as any;
+  await UserModel.findByIdAndUpdate(id, { $set: { ...updateData, updatedAt: now() } }, { upsert: false });
 }
 
 export async function deleteUser(userId: string): Promise<void> {
   await connectDB();
-  await UserModel.findByIdAndUpdate(userId, { isActive: false, updatedAt: now() });
+  await UserModel.findByIdAndUpdate(userId, { $set: { isActive: false, updatedAt: now() } });
 }
 
 export function subscribeUsers(callback: (users: User[]) => void) {
@@ -70,6 +71,12 @@ export async function getTasks(): Promise<Task[]> {
   return tasks.map((t: any) => ({ id: t._id as string, ...t }) as Task);
 }
 
+export async function getTasksByPlan(planId: string): Promise<Task[]> {
+  await connectDB();
+  const tasks = await TaskModel.find({ planId }).sort({ createdAt: -1 }).lean();
+  return tasks.map((t: any) => ({ id: t._id as string, ...t }) as Task);
+}
+
 export async function getTasksByUser(userId: string): Promise<Task[]> {
   await connectDB();
   const tasks = await TaskModel.find({
@@ -80,16 +87,17 @@ export async function getTasksByUser(userId: string): Promise<Task[]> {
 
 export async function saveTask(task: Partial<Task> & { id: string }): Promise<void> {
   await connectDB();
-  const { id, ...updateData } = task;
-  await TaskModel.findByIdAndUpdate(id, { ...updateData, updatedAt: now() });
+  const { id, _id: _drop, ...updateData } = task as any;
+  await TaskModel.findByIdAndUpdate(id, { $set: { ...updateData, updatedAt: now() } });
 }
 
-export async function createTask(task: Omit<Task, "id">): Promise<Task> {
+export async function createTask(task: Omit<Task, "id"> & { id?: string }): Promise<Task> {
   await connectDB();
-  const id = generateId("t");
-  const doc = new TaskModel({ _id: id, ...task, createdAt: task.createdAt || now(), updatedAt: now() });
+  const { id: incomingId, ...taskData } = task as any;
+  const id: string = incomingId || generateId("t");
+  const doc = new TaskModel({ _id: id, ...taskData, createdAt: taskData.createdAt || now(), updatedAt: now() });
   await doc.save();
-  return { id, ...task } as Task;
+  return { id, ...taskData } as Task;
 }
 
 export async function updateTask(
@@ -98,7 +106,7 @@ export async function updateTask(
   _actor?: { id: string; name: string }
 ): Promise<void> {
   await connectDB();
-  await TaskModel.findByIdAndUpdate(taskId, { ...updates, updatedAt: now() });
+  await TaskModel.findByIdAndUpdate(taskId, { $set: { ...updates, updatedAt: now() } });
 }
 
 export async function deleteTask(taskId: string): Promise<void> {
@@ -176,7 +184,7 @@ export async function createNotification(notif: Omit<Notification, "id">): Promi
 
 export async function markNotificationRead(userId: string, notifId: string): Promise<void> {
   await connectDB();
-  await NotificationModel.findByIdAndUpdate(notifId, { read: true });
+  await NotificationModel.findByIdAndUpdate(notifId, { $set: { read: true } });
 }
 
 export async function markAllNotificationsRead(userId: string): Promise<void> {
@@ -259,9 +267,15 @@ export async function approveCalendarEvent(id: string, approve: boolean, _reason
 
 // ─── WORKFLOWS ────────────────────────────────────────────────
 
-export async function getWorkflows(canApprove = false, _currentUserId?: string): Promise<Workflow[]> {
+export async function getWorkflows(canApprove = false, currentUserId?: string): Promise<Workflow[]> {
   await connectDB();
-  const filter = canApprove ? {} : { status: "published" };
+  // Approvers see everything. Others see published workflows + their own
+  // pending submissions (so creators can track / re-edit while awaiting approval).
+  const filter = canApprove
+    ? {}
+    : currentUserId
+    ? { $or: [{ status: "published" }, { createdBy: currentUserId }] }
+    : { status: "published" };
   const workflows = await WorkflowModel.find(filter).sort({ createdAt: -1 }).lean();
   return workflows.map((w: any) => ({ id: w._id as string, ...w }) as Workflow);
 }
@@ -278,7 +292,7 @@ export async function saveWorkflow(workflow: Workflow): Promise<void> {
 
 export async function approveWorkflow(id: string, approve: boolean, _reason?: string): Promise<void> {
   await connectDB();
-  await WorkflowModel.findByIdAndUpdate(id, { status: approve ? "published" : "pending", updatedAt: now() });
+  await WorkflowModel.findByIdAndUpdate(id, { $set: { status: approve ? "published" : "pending", updatedAt: now() } });
 }
 
 export async function deleteWorkflow(workflowId: string): Promise<void> {
@@ -325,7 +339,118 @@ export async function getKPIFrameworks(): Promise<KPIFramework[]> {
 export async function saveKPIFramework(framework: KPIFramework): Promise<void> {
   await connectDB();
   const { id, ...data } = framework;
-  await KPIFrameworkModel.findByIdAndUpdate(id, { _id: id, ...data }, { upsert: true });
+  await KPIFrameworkModel.findByIdAndUpdate(id, { $set: { ...data }, $setOnInsert: { createdAt: (data as any).createdAt || now() } }, { upsert: true });
+}
+
+// ─── UNIT PLANS (kế hoạch chỉ tiêu đơn vị) ────────────────────
+
+export async function getUnitPlans(): Promise<UnitPlan[]> {
+  await connectDB();
+  const plans = await UnitPlanModel.find().sort({ year: -1, createdAt: -1 }).lean();
+  return plans.map((p: any) => ({ id: p._id as string, ...p }) as UnitPlan);
+}
+
+export async function getUnitPlan(planId: string): Promise<UnitPlan | null> {
+  await connectDB();
+  const p = await UnitPlanModel.findById(planId).lean();
+  if (!p) return null;
+  return { id: (p as any)._id as string, ...(p as any) } as UnitPlan;
+}
+
+export async function createUnitPlan(plan: Omit<UnitPlan, "id" | "createdAt">): Promise<UnitPlan> {
+  await connectDB();
+  const id = generateId("plan");
+  const doc = { _id: id, ...plan, items: plan.items ?? [], createdAt: now(), updatedAt: now() };
+  await UnitPlanModel.create(doc);
+  const { _id, ...rest } = doc;
+  return { id, ...rest } as UnitPlan;
+}
+
+export async function updateUnitPlan(planId: string, data: Partial<UnitPlan>): Promise<void> {
+  await connectDB();
+  const { id, ...rest } = data;
+  await UnitPlanModel.findByIdAndUpdate(planId, { $set: { ...rest, updatedAt: now() } });
+}
+
+export async function deleteUnitPlan(planId: string): Promise<void> {
+  await connectDB();
+  await UnitPlanModel.findByIdAndDelete(planId);
+}
+
+// ─── NGHIÊN CỨU KHOA HỌC ──────────────────────────────────────
+
+export async function getResearchTopics(taskId?: string, userId?: string): Promise<ResearchTopic[]> {
+  await connectDB();
+  const filter: Record<string, unknown> = {};
+  if (taskId) filter.taskId = taskId;
+  if (userId) {
+    // Return only topics where the user is PI, member, or creator
+    filter.$or = [
+      { principalInvestigatorId: userId },
+      { memberIds: userId },
+      { createdBy: userId },
+    ];
+  }
+  const topics = await ResearchTopicModel.find(filter).sort({ year: -1, createdAt: -1 }).lean();
+  return topics.map((t: any) => {
+    const { _id, ...rest } = t;
+    return { id: _id as string, ...rest } as ResearchTopic;
+  });
+}
+
+export async function getResearchTopic(id: string): Promise<ResearchTopic | null> {
+  await connectDB();
+  const t = await ResearchTopicModel.findById(id).lean();
+  if (!t) return null;
+  const { _id, ...rest } = t as any;
+  return { id: _id as string, ...rest } as ResearchTopic;
+}
+
+export async function createResearchTopic(topic: ResearchTopic): Promise<void> {
+  await connectDB();
+  const { id, ...data } = topic;
+  // Explicit $set prevents Mongoose 8 from doing a full-document replacement.
+  // $setOnInsert keeps createdAt write-once (not overwritten on subsequent upserts).
+  const { createdAt, ...fields } = data as any;
+  await ResearchTopicModel.findByIdAndUpdate(
+    id,
+    {
+      $set:          { ...fields, updatedAt: now() },
+      $setOnInsert:  { createdAt: createdAt || now() },
+    },
+    { upsert: true }
+  );
+}
+
+export async function updateResearchTopic(id: string, data: Partial<ResearchTopic>): Promise<void> {
+  await connectDB();
+  const { id: _omit, _id: _omitId, createdAt: _omitCreated, ...rest } = data as any;
+  // Explicit $set prevents full-document replacement in Mongoose 8.
+  await ResearchTopicModel.findByIdAndUpdate(id, { $set: { ...rest, updatedAt: now() } });
+}
+
+export async function deleteResearchTopic(id: string): Promise<void> {
+  await connectDB();
+  await ResearchTopicModel.findByIdAndDelete(id);
+}
+
+/** Returns true if userId is a mainPerformer, creator, or stakeholder of any task
+ *  that has at least one research topic linked to it. Used to grant monitor access. */
+export async function checkResearchTaskParticipant(userId: string): Promise<boolean> {
+  await connectDB();
+  const taskIds: string[] = await ResearchTopicModel.distinct("taskId", {
+    taskId: { $exists: true, $nin: [null, ""] },
+  });
+  if (!taskIds.length) return false;
+  const count = await TaskModel.countDocuments({
+    _id: { $in: taskIds },
+    $or: [
+      { mainPerformerId: userId },
+      { creatorId: userId },
+      { "stakeholders.userId": userId },
+    ],
+  });
+  return count > 0;
 }
 
 // ─── EVALUATIONS ──────────────────────────────────────────────
@@ -398,13 +523,13 @@ export async function getPendingTemplates(): Promise<RequestTemplate[]> {
 
 export async function approveRequestTemplate(id: string, approve: boolean, _reason?: string): Promise<void> {
   await connectDB();
-  await RequestTemplateModel.findByIdAndUpdate(id, { status: approve ? "published" : "pending" });
+  await RequestTemplateModel.findByIdAndUpdate(id, { $set: { status: approve ? "published" : "pending" } });
 }
 
 export async function saveRequestTemplate(t: RequestTemplate): Promise<void> {
   await connectDB();
   const { id, ...data } = t;
-  await RequestTemplateModel.findByIdAndUpdate(id, { _id: id, ...data }, { upsert: true });
+  await RequestTemplateModel.findByIdAndUpdate(id, { $set: { ...data } }, { upsert: true });
 }
 
 export async function deleteRequestTemplate(id: string): Promise<void> {
@@ -439,7 +564,7 @@ export async function saveRequest(r: WorkRequest): Promise<void> {
 
 export async function updateRequest(id: string, updates: Partial<WorkRequest>): Promise<void> {
   await connectDB();
-  await WorkRequestModel.findByIdAndUpdate(id, { ...updates, updatedAt: now() });
+  await WorkRequestModel.findByIdAndUpdate(id, { $set: { ...updates, updatedAt: now() } });
 }
 
 export function subscribeRequests(userId: string, isManager: boolean, callback: (reqs: WorkRequest[]) => void) {
@@ -461,7 +586,7 @@ export async function getFolders(): Promise<DocFolder[]> {
 export async function saveFolder(f: DocFolder): Promise<void> {
   await connectDB();
   const { id, ...data } = f;
-  await DocFolderModel.findByIdAndUpdate(id, { _id: id, ...data }, { upsert: true });
+  await DocFolderModel.findByIdAndUpdate(id, { $set: { ...data } }, { upsert: true });
 }
 
 export async function deleteFolder(id: string): Promise<void> {
@@ -568,7 +693,7 @@ export function subscribeAnnouncements(callback: (items: Announcement[]) => void
 
 export async function updateAnnouncement(id: string, data: Partial<Announcement>): Promise<void> {
   await connectDB();
-  await AnnouncementModel.findByIdAndUpdate(id, { ...data, updatedAt: now() });
+  await AnnouncementModel.findByIdAndUpdate(id, { $set: { ...data, updatedAt: now() } });
 }
 
 export async function approveAnnouncement(id: string, approve: boolean, _reason?: string): Promise<void> {
@@ -591,7 +716,7 @@ export async function addAnnouncementComment(
   await connectDB();
   const id = generateId("comment");
   await new AnnouncementCommentModel({ _id: id, ...comment }).save();
-  await AnnouncementModel.findByIdAndUpdate(announcementId, { $inc: { commentsCount: 1 }, updatedAt: now() });
+  await AnnouncementModel.findByIdAndUpdate(announcementId, { $inc: { commentsCount: 1 }, $set: { updatedAt: now() } });
 }
 
 // ─── CHANNELS ────────────────────────────────────────────────
@@ -607,7 +732,7 @@ export async function getChannels(userId: string): Promise<Channel[]> {
 export async function saveChannel(ch: Channel): Promise<void> {
   await connectDB();
   const { id, ...data } = ch;
-  await ChannelModel.findByIdAndUpdate(id, { _id: id, ...data }, { upsert: true });
+  await ChannelModel.findByIdAndUpdate(id, { $set: { ...data } }, { upsert: true });
 }
 
 export function subscribeChannels(userId: string, callback: (channels: Channel[]) => void) {
@@ -693,7 +818,7 @@ export async function createAdvanceRequest(data: Omit<AdvanceRequest, "id">): Pr
 
 export async function updateAdvanceRequest(id: string, updates: Partial<AdvanceRequest>): Promise<void> {
   await connectDB();
-  await AdvanceRequestModel.findByIdAndUpdate(id, { ...updates, updatedAt: now() });
+  await AdvanceRequestModel.findByIdAndUpdate(id, { $set: { ...updates, updatedAt: now() } });
 }
 
 export async function getAllReimbursementRequests(): Promise<ReimbursementRequest[]> {
@@ -711,7 +836,7 @@ export async function createReimbursementRequest(data: Omit<ReimbursementRequest
 
 export async function updateReimbursementRequest(id: string, updates: Partial<ReimbursementRequest>): Promise<void> {
   await connectDB();
-  await ReimbursementRequestModel.findByIdAndUpdate(id, { ...updates, updatedAt: now() });
+  await ReimbursementRequestModel.findByIdAndUpdate(id, { $set: { ...updates, updatedAt: now() } });
 }
 
 export async function getTaskFinancialSummary(taskId: string): Promise<TaskFinancialSummary | null> {
@@ -882,10 +1007,55 @@ export async function reconcileAdvance(taskId: string, settledBy: string): Promi
   return { difference, settlementType, totalAdvanced, totalActualSpent, settledRequests };
 }
 
-// ─── PERMISSION CONFIG ────────────────────────────────────────
+// ─── RESEARCH GROUPS ──────────────────────────────────────────
 
-export async function getPermissionConfig(): Promise<Record<string, unknown>> {
-  return {};
+export async function getResearchGroups(year?: number): Promise<ResearchGroup[]> {
+  await connectDB();
+  const filter = year ? { year } : {};
+  const groups = await ResearchGroupModel.find(filter).sort({ year: -1, name: 1 }).lean();
+  return groups.map((g: any) => ({ id: g._id as string, ...g }) as ResearchGroup);
 }
 
-export async function savePermissionConfig(_config: unknown): Promise<void> {}
+export async function getResearchGroup(id: string): Promise<ResearchGroup | null> {
+  await connectDB();
+  const g = await ResearchGroupModel.findById(id).lean();
+  if (!g) return null;
+  return { id: (g as any)._id as string, ...(g as any) } as ResearchGroup;
+}
+
+export async function createResearchGroup(group: ResearchGroup): Promise<void> {
+  await connectDB();
+  const { id, ...data } = group;
+  await ResearchGroupModel.findByIdAndUpdate(
+    id, { _id: id, ...data, createdAt: data.createdAt || now(), updatedAt: now() }, { upsert: true }
+  );
+}
+
+export async function updateResearchGroup(id: string, data: Partial<ResearchGroup>): Promise<void> {
+  await connectDB();
+  await ResearchGroupModel.findByIdAndUpdate(id, { $set: { ...data, updatedAt: now() } });
+}
+
+export async function deleteResearchGroup(id: string): Promise<void> {
+  await connectDB();
+  await ResearchGroupModel.findByIdAndDelete(id);
+}
+
+// ─── PERMISSION CONFIG ────────────────────────────────────────
+
+const PERM_CONFIG_ID = "permissions";
+
+export async function getPermissionConfig(): Promise<Record<string, unknown>> {
+  await connectDB();
+  const doc = await AppConfigModel.findById(PERM_CONFIG_ID).lean();
+  return (doc as any)?.data ?? {};
+}
+
+export async function savePermissionConfig(config: Record<string, unknown>): Promise<void> {
+  await connectDB();
+  await AppConfigModel.findByIdAndUpdate(
+    PERM_CONFIG_ID,
+    { _id: PERM_CONFIG_ID, data: config, updatedAt: new Date().toISOString() },
+    { upsert: true, new: true }
+  );
+}
