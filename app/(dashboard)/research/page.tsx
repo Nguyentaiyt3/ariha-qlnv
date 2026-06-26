@@ -12,14 +12,14 @@ import { ImportReviewsModal } from "@/components/research/ImportReviewsModal";
 import { RegisterTopicModal } from "@/components/research/RegisterTopicModal";
 import { ImportTopicsModal } from "@/components/research/ImportTopicsModal";
 import { TemplateUploadButton } from "@/components/research/TemplateUploadButton";
-import { TopicDetailModal } from "@/components/research/TopicDetailModal";
+import { TopicDetailModal, FilePreviewOverlay } from "@/components/research/TopicDetailModal";
 import { cn, generateId } from "@/lib/utils";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { getResearchTopics, saveResearchTopic, updateResearchTopic, deleteResearchTopic } from "@/lib/firebase/firestore";
 import { RESEARCH_STEPS, STAGE_LABEL, buildInitialSteps, researchProgress, stepMeta } from "@/lib/research";
-import type { ResearchTopic, ResearchStage, ResearchReview, ResearchCouncilSession, IntakeLog } from "@/types";
+import type { ResearchTopic, ResearchStage, ResearchReview, ResearchCouncilSession, IntakeLog, Task } from "@/types";
 import { toast } from "sonner";
 
 // ─── Constants ─────────────────────────────────────────────────
@@ -82,6 +82,41 @@ function StatCard({ label, value, sub, variant = "default", active = false, onCl
       {sub && <p className="text-[11px] text-slate-400 mt-1">{sub}</p>}
     </button>
   );
+}
+
+// ─── Task-link helpers (shared with MonitorTab) ────────────────
+
+const ROMAN_Q: Record<string, number> = { I: 1, II: 2, III: 3, IV: 4 };
+
+function quarterFromTimeline(tl: string): number | null {
+  const m = tl.match(/Quý\s+(IV|III|II|I)\b/i);
+  return m ? (ROMAN_Q[m[1].toUpperCase()] ?? null) : null;
+}
+
+function quarterFromTaskName(name: string): number | null {
+  const m1 = name.match(/\bQ(\d)\b/i);
+  if (m1) return parseInt(m1[1]);
+  const m2 = name.match(/Quý\s+(IV|III|II|I)\b/i);
+  return m2 ? (ROMAN_Q[m2[1].toUpperCase()] ?? null) : null;
+}
+
+/** NCKH tasks that match a topic's year + quarter (best candidates first, rest appended). */
+function filterNckhTasksForTopic(
+  allNckhTasks: Task[],
+  topic: ResearchTopic,
+): { best: Task[]; rest: Task[] } {
+  const topicQ = topic.completionTimeline ? quarterFromTimeline(topic.completionTimeline) : null;
+  const best: Task[] = [];
+  const rest: Task[] = [];
+  for (const t of allNckhTasks) {
+    const taskYear = t.deadlineBase ? new Date(t.deadlineBase).getFullYear() : null;
+    const yearMatch = taskYear === null || taskYear === topic.year;
+    if (!yearMatch) { rest.push(t); continue; }
+    const taskQ = quarterFromTaskName(t.name ?? "");
+    const qMatch = topicQ === null || taskQ === null || taskQ === topicQ;
+    if (yearMatch && qMatch) best.push(t); else rest.push(t);
+  }
+  return { best, rest };
 }
 
 // ─── Filter bar ────────────────────────────────────────────────
@@ -777,6 +812,94 @@ function buildAcceptedSteps(existing: ResearchTopic["steps"]): ResearchTopic["st
   });
 }
 
+// ─── TaskLinkCell ──────────────────────────────────────────────
+
+interface TaskLinkCellProps {
+  topic: ResearchTopic;
+  nckhTasks: Task[];
+  allTasks: Task[];
+  isAssigning: boolean;
+  isSaving: boolean;
+  draft: string;
+  onOpen: () => void;
+  onClose: () => void;
+  onDraftChange: (v: string) => void;
+  onSave: (v: string) => void;
+}
+
+function TaskLinkCell({
+  topic, nckhTasks, allTasks, isAssigning, isSaving,
+  draft, onOpen, onClose, onDraftChange, onSave,
+}: TaskLinkCellProps) {
+  const linkedTask = allTasks.find(t => t.id === topic.taskId);
+  const { best, rest } = filterNckhTasksForTopic(nckhTasks, topic);
+
+  if (!isAssigning) {
+    return linkedTask ? (
+      // Linked — show task name, click to change
+      <button
+        onClick={onOpen}
+        className="group flex items-center gap-1 max-w-[140px] text-left"
+        title={`Nhiệm vụ: ${linkedTask.name} · Nhấn để thay đổi`}
+      >
+        <span className="text-[11px] font-medium text-violet-600 dark:text-violet-400 truncate group-hover:underline">
+          {linkedTask.name}
+        </span>
+      </button>
+    ) : (
+      // Not linked
+      <button
+        onClick={onOpen}
+        className="flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900/30 transition"
+      >
+        no task
+      </button>
+    );
+  }
+
+  // Editing mode — show combobox
+  return (
+    <div className="flex flex-col gap-1 min-w-[160px]" onClick={e => e.stopPropagation()}>
+      <select
+        autoFocus
+        value={draft}
+        onChange={e => onDraftChange(e.target.value)}
+        className="text-xs border border-violet-300 dark:border-violet-700 rounded-lg px-2 py-1 bg-white dark:bg-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-violet-400 w-full"
+      >
+        <option value="">— Không liên kết —</option>
+        {best.length > 0 && (
+          <optgroup label={`✓ Khớp năm/quý (${best.length})`}>
+            {best.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </optgroup>
+        )}
+        {rest.length > 0 && (
+          <optgroup label="Nhiệm vụ NCKH khác">
+            {rest.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </optgroup>
+        )}
+        {nckhTasks.length === 0 && (
+          <option disabled>Không có nhiệm vụ NCKH</option>
+        )}
+      </select>
+      <div className="flex gap-1">
+        <button
+          onClick={() => onSave(draft)}
+          disabled={isSaving}
+          className="flex-1 flex items-center justify-center gap-0.5 px-2 py-0.5 text-[11px] font-semibold rounded-lg bg-violet-600 hover:bg-violet-700 text-white transition disabled:opacity-50"
+        >
+          {isSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : "Lưu"}
+        </button>
+        <button
+          onClick={onClose}
+          className="px-2 py-0.5 text-[11px] rounded-lg border border-slate-200 dark:border-slate-700 text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800 transition"
+        >
+          Huỷ
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Tab: "Giám sát tiến độ" ──────────────────────────────────
 
 function MonitorTab({
@@ -792,13 +915,27 @@ function MonitorTab({
   onTopicUpdate: (id: string, updates: Partial<ResearchTopic>) => void;
 }) {
   const [filters, setFilters] = useState<FilterState>({ search: "", year: "all", stage: "all", department: "" });
+  const [taskLinked, setTaskLinked] = useState<"all" | "linked" | "unlinked">("all");
   const [intakeNote, setIntakeNote] = useState<Record<string, string>>({});
   const [noteOpen, setNoteOpen] = useState<string | null>(null);
   const [actioning, setActioning] = useState<string | null>(null);
   const [viewTopic, setViewTopic] = useState<ResearchTopic | null>(null);
+  const [previewFileUrl, setPreviewFileUrl] = useState<string | null>(null);
+  // Task-link assignment
+  const [assigningId, setAssigningId]   = useState<string | null>(null);
+  const [assignDraft, setAssignDraft]   = useState<Record<string, string>>({});
+  const [assignSaving, setAssignSaving] = useState<string | null>(null);
+
+  const { tasks } = useTaskStore();
 
   const years = useMemo(() => [...new Set(topics.map(t => t.year))].sort((a, b) => b - a), [topics]);
   const departments = useMemo(() => [...new Set(topics.map(t => t.department).filter((d): d is string => !!d))].sort(), [topics]);
+
+  // All NCKH-related tasks (for combobox)
+  const nckhTasks = useMemo<Task[]>(
+    () => tasks.filter(t => /NCKH/i.test(t.name) || /NCKH/i.test(t.workflowName ?? "")),
+    [tasks],
+  );
 
   // Show in intake queue: explicitly "awaiting", "revision_needed", OR
   // topics in init stage with no intakeStatus yet (submitted before the field existed)
@@ -932,10 +1069,31 @@ function MonitorTab({
     finally { setActioning(null); }
   }
 
+  async function handleAssignTask(topic: ResearchTopic, newTaskId: string | undefined) {
+    setAssignSaving(topic.id);
+    try {
+      const updates: Partial<ResearchTopic> = {
+        taskId: newTaskId || undefined,
+        updatedAt: new Date().toISOString(),
+      };
+      await fetch(`/api/research/${topic.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      });
+      onTopicUpdate(topic.id, updates);
+      toast.success(newTaskId ? "Đã liên kết nhiệm vụ" : "Đã bỏ liên kết nhiệm vụ");
+      setAssigningId(null);
+    } catch { toast.error("Lưu thất bại"); }
+    finally { setAssignSaving(null); }
+  }
+
   const filtered = useMemo(() => topics.filter(t => {
     if (filters.year !== "all" && t.year !== filters.year) return false;
     if (filters.stage !== "all" && t.stage !== filters.stage) return false;
     if (filters.department && t.department !== filters.department) return false;
+    if (taskLinked === "linked"   && !t.taskId) return false;
+    if (taskLinked === "unlinked" &&  t.taskId) return false;
     if (filters.search) {
       const q = filters.search.toLowerCase();
       const pi = users.find(u => u.id === t.principalInvestigatorId);
@@ -981,6 +1139,7 @@ function MonitorTab({
                   <th className="text-left px-3 py-2 font-medium hidden sm:table-cell">Đơn vị</th>
                   <th className="text-left px-3 py-2 font-medium hidden md:table-cell">File đề cương</th>
                   <th className="text-left px-3 py-2 font-medium">Trạng thái</th>
+                  <th className="text-left px-3 py-2 font-medium hidden lg:table-cell">Nhiệm vụ NCKH</th>
                   <th className="text-center px-3 py-2 font-medium">Thao tác</th>
                 </tr>
               </thead>
@@ -1009,10 +1168,12 @@ function MonitorTab({
                       <td className="px-3 py-2.5 text-xs text-slate-500 hidden sm:table-cell">{topic.department ?? "—"}</td>
                       <td className="px-3 py-2.5 hidden md:table-cell">
                         {topic.proposalFileUrl ? (
-                          <a href={topic.proposalFileUrl} target="_blank" rel="noopener noreferrer"
-                            className="flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline">
+                          <button
+                            onClick={() => setPreviewFileUrl(topic.proposalFileUrl!)}
+                            className="flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline"
+                          >
                             <Eye className="w-3 h-3" /> Xem file
-                          </a>
+                          </button>
                         ) : <span className="text-xs text-slate-400 italic">Chưa có</span>}
                       </td>
                       <td className="px-3 py-2.5">
@@ -1024,6 +1185,21 @@ function MonitorTab({
                             {topic.intakeNote}
                           </p>
                         )}
+                      </td>
+                      {/* ── Nhiệm vụ NCKH (intake queue) ── */}
+                      <td className="px-3 py-2.5 hidden lg:table-cell" onClick={e => e.stopPropagation()}>
+                        <TaskLinkCell
+                          topic={topic}
+                          nckhTasks={nckhTasks}
+                          allTasks={tasks}
+                          isAssigning={assigningId === topic.id}
+                          isSaving={assignSaving === topic.id}
+                          draft={assignDraft[topic.id] ?? topic.taskId ?? ""}
+                          onOpen={() => { setAssigningId(topic.id); setAssignDraft(d => ({ ...d, [topic.id]: topic.taskId ?? "" })); }}
+                          onClose={() => setAssigningId(null)}
+                          onDraftChange={v => setAssignDraft(d => ({ ...d, [topic.id]: v }))}
+                          onSave={v => handleAssignTask(topic, v || undefined)}
+                        />
                       </td>
                       <td className="px-3 py-2.5">
                         <div className="flex flex-col items-center gap-1">
@@ -1096,7 +1272,26 @@ function MonitorTab({
       </div>
 
       <div className="flex items-center justify-between gap-3 flex-wrap">
-        <FilterBar filters={filters} onChange={p => setFilters(f => ({ ...f, ...p }))} years={years} departments={departments} showDept={canManage} />
+        <div className="flex flex-wrap gap-2 items-center">
+          <FilterBar filters={filters} onChange={p => setFilters(f => ({ ...f, ...p }))} years={years} departments={departments} showDept={canManage} />
+          {/* Task-link filter */}
+          {canManage && (
+            <select
+              value={taskLinked}
+              onChange={e => setTaskLinked(e.target.value as "all" | "linked" | "unlinked")}
+              className={cn(
+                "text-sm px-2.5 py-1.5 bg-white dark:bg-slate-800 border rounded-lg outline-none focus:ring-2 focus:ring-violet-400 dark:text-white",
+                taskLinked === "unlinked"
+                  ? "border-amber-400 dark:border-amber-600 text-amber-700 dark:text-amber-400"
+                  : "border-slate-200 dark:border-slate-700",
+              )}
+            >
+              <option value="all">Tất cả NV</option>
+              <option value="linked">Đã liên kết NV</option>
+              <option value="unlinked">⚠ Chưa liên kết NV</option>
+            </select>
+          )}
+        </div>
         <span className="text-xs text-slate-400">{filtered.length} / {topics.length} đề tài</span>
       </div>
 
@@ -1113,12 +1308,13 @@ function MonitorTab({
               <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 dark:text-slate-400 w-36">Bước hiện tại</th>
               <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 dark:text-slate-400 w-28">Tiến độ</th>
               <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 dark:text-slate-400 w-14">Năm</th>
+              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 dark:text-slate-400 w-36 hidden lg:table-cell">Nhiệm vụ</th>
               <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 dark:text-slate-400 w-24"></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
             {filtered.length === 0 ? (
-              <EmptyRow cols={10} message="Không có đề tài khớp bộ lọc." />
+              <EmptyRow cols={11} message="Không có đề tài khớp bộ lọc." />
             ) : filtered.map((t, i) => {
               const pi = users.find(u => u.id === t.principalInvestigatorId);
               const pct = researchProgress(t);
@@ -1169,6 +1365,21 @@ function MonitorTab({
                   </td>
                   <td className="px-3 py-3"><ProgressCell pct={pct} /></td>
                   <td className="px-3 py-3 text-xs text-slate-500">{t.year}</td>
+                  {/* Nhiệm vụ column */}
+                  <td className="px-3 py-3 hidden lg:table-cell" onClick={e => e.stopPropagation()}>
+                    <TaskLinkCell
+                      topic={t}
+                      nckhTasks={nckhTasks}
+                      allTasks={tasks}
+                      isAssigning={assigningId === t.id}
+                      isSaving={assignSaving === t.id}
+                      draft={assignDraft[t.id] ?? t.taskId ?? ""}
+                      onOpen={() => { setAssigningId(t.id); setAssignDraft(d => ({ ...d, [t.id]: t.taskId ?? "" })); }}
+                      onClose={() => setAssigningId(null)}
+                      onDraftChange={v => setAssignDraft(d => ({ ...d, [t.id]: v }))}
+                      onSave={v => handleAssignTask(t, v || undefined)}
+                    />
+                  </td>
                   <td className="px-3 py-3">
                     <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition"
                       onClick={e => e.stopPropagation()}>
@@ -1197,6 +1408,10 @@ function MonitorTab({
 
       {viewTopic && (
         <TopicDetailModal topic={viewTopic} onClose={() => setViewTopic(null)} />
+      )}
+
+      {previewFileUrl && (
+        <FilePreviewOverlay url={previewFileUrl} onClose={() => setPreviewFileUrl(null)} />
       )}
     </div>
   );

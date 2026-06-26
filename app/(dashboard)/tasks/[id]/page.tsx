@@ -1,13 +1,13 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
   ArrowLeft, AlertTriangle, AlertCircle, User, Calendar, Flag,
   CheckSquare, MessageSquare, Users, Mail, Activity, BarChart3,
   CheckCheck, Loader2, Star, Send, ClipboardCheck, Pencil, Trash2, X as XIcon, Save,
   Paperclip, Link2, FolderOpen, FileText, Download, Plus, DollarSign, ShieldAlert,
-  Microscope, ChevronRight,
+  Microscope, ChevronRight, Bell, Copy, Check,
 } from "lucide-react";
 import { cn, formatDate, formatDateTime, formatRelativeTime, statusLabel, priorityLabel, getInitials, avatarColor, isTaskVisible } from "@/lib/utils";
 import { useTaskStore } from "@/stores/useTaskStore";
@@ -210,22 +210,94 @@ function ResourcesTab({ task, currentUser, isMainPerformer, onSave }: ResourcesT
 
 // ─── ResearchWidget ──────────────────────────────────────────
 
-const STAGE_BADGE: Record<string, { label: string; cls: string }> = {
-  init:        { label: "Khởi tạo",   cls: "bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300" },
-  proposal:    { label: "GĐ1",        cls: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300" },
-  recognition: { label: "GĐ2",        cls: "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300" },
-  completed:   { label: "Hoàn tất",   cls: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300" },
-  rejected:    { label: "Từ chối",    cls: "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-300" },
-};
 
-function ResearchWidget({ taskId, topics, canManage }: { taskId: string; topics: ResearchTopic[]; canManage: boolean }) {
-  const stageCounts = topics.reduce<Record<string, number>>((acc, t) => {
-    acc[t.stage] = (acc[t.stage] ?? 0) + 1;
-    return acc;
-  }, {});
+function ResearchWidget({
+  taskId, topics, task, canManage, users, currentUserId,
+}: {
+  taskId: string;
+  topics: ResearchTopic[];
+  task: Task;
+  canManage: boolean;
+  users: UserType[];
+  currentUserId: string;
+}) {
+  const [showSendPanel, setShowSendPanel] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const gd1 = useMemo(() => ({
+    dangKy:       topics.filter(t => t.stage === "init" && t.intakeStatus !== "revision_needed").length,
+    tiepNhan:     topics.filter(t => t.stage === "proposal" && (t.currentStep === "p_intake" || t.currentStep === "p_compile")).length,
+    dangThamDinh: topics.filter(t => t.stage === "proposal" && (t.currentStep === "p_review" || t.currentStep === "p_council")).length,
+    chinhSua:     topics.filter(t => t.intakeStatus === "revision_needed").length,
+    trienKhai:    topics.filter(t => t.stage === "proposal" && (t.currentStep === "p_assign" || t.currentStep === "p_ethics" || t.currentStep === "p_agree")).length,
+  }), [topics]);
+
+  const gd2 = useMemo(() => ({
+    deNghiTD:     topics.filter(t => t.stage === "recognition" && t.currentStep === "r_intake").length,
+    tiepNhan:     topics.filter(t =>
+      t.stage === "recognition" &&
+      (t.steps ?? []).find(s => s.key === "r_intake")?.status === "passed" &&
+      (t.steps ?? []).find(s => s.key === "r_review")?.status === "pending"
+    ).length,
+    dangThamDinh: topics.filter(t => t.stage === "recognition" && ["r_review","r_council"].includes(t.currentStep)).length,
+    chinhSua:     0,
+    congNhan:     topics.filter(t => t.stage === "completed" || (t.stage === "recognition" && t.currentStep === "r_recognize")).length,
+  }), [topics]);
+
+  // Collect unique participant ids (exclude current user)
+  const participants = useMemo(() => {
+    const seen = new Set<string>([currentUserId]);
+    const result: { id: string; name: string }[] = [];
+    const addParticipant = (id: string) => {
+      if (seen.has(id)) return;
+      seen.add(id);
+      const u = users.find(u => u.id === id);
+      result.push({ id, name: u?.name ?? id });
+    };
+    if (task.mainPerformerId) addParticipant(task.mainPerformerId);
+    for (const s of task.stakeholders ?? []) addParticipant(s.userId);
+    return result;
+  }, [task, users, currentUserId]);
+
+  const regUrl = `/research?taskId=${taskId}&create=1`;
+
+  const handleCopy = async () => {
+    const full = typeof window !== "undefined" ? `${window.location.origin}${regUrl}` : regUrl;
+    await navigator.clipboard.writeText(full).catch(() => {});
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleSendNotifications = async () => {
+    if (participants.length === 0) return;
+    setSending(true);
+    try {
+      await Promise.all(participants.map(p =>
+        addNotification({
+          userId: p.id,
+          type: "task_assigned",
+          title: `Đăng ký đề tài NCKH — ${task.name}`,
+          body: "Bạn được mời đăng ký đề tài NCKH cho nhiệm vụ này. Nhấn để mở form đăng ký.",
+          link: regUrl,
+          read: false,
+          priority: "normal",
+          taskId,
+          createdAt: new Date().toISOString(),
+        })
+      ));
+      toast.success(`Đã gửi thông báo đến ${participants.length} người tham gia`);
+      setShowSendPanel(false);
+    } catch {
+      toast.error("Gửi thông báo thất bại");
+    } finally {
+      setSending(false);
+    }
+  };
 
   return (
     <div className="bg-white dark:bg-slate-800 rounded-2xl border border-violet-200 dark:border-violet-800 shadow-sm overflow-hidden">
+      {/* Header */}
       <div className="flex items-center justify-between px-5 py-3.5 border-b border-violet-100 dark:border-violet-800 bg-violet-50/60 dark:bg-violet-900/10">
         <div className="flex items-center gap-2">
           <Microscope className="w-4 h-4 text-violet-500" />
@@ -238,14 +310,76 @@ function ResearchWidget({ taskId, topics, canManage }: { taskId: string; topics:
             </span>
           )}
         </div>
-        <a
-          href={`/research?taskId=${taskId}`}
-          className="flex items-center gap-1 text-xs text-violet-600 hover:text-violet-800 dark:text-violet-400 font-medium transition"
-        >
-          {topics.length > 0 ? "Xem & quản lý" : "Mở danh sách"} <ChevronRight className="w-3.5 h-3.5" />
-        </a>
+        <div className="flex items-center gap-2">
+          {canManage && (
+            <button
+              onClick={() => setShowSendPanel(v => !v)}
+              className={cn(
+                "flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-lg transition",
+                showSendPanel
+                  ? "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300"
+                  : "text-slate-500 hover:text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/20",
+              )}
+              title="Gửi link đăng ký đề tài cho người tham gia"
+            >
+              <Bell className="w-3.5 h-3.5" />
+              Gửi link
+            </button>
+          )}
+          <a
+            href={`/research?taskId=${taskId}`}
+            className="flex items-center gap-1 text-xs text-violet-600 hover:text-violet-800 dark:text-violet-400 font-medium transition"
+          >
+            {topics.length > 0 ? "Xem & quản lý" : "Mở danh sách"} <ChevronRight className="w-3.5 h-3.5" />
+          </a>
+        </div>
       </div>
 
+      {/* Send-link panel */}
+      {showSendPanel && (
+        <div className="px-5 py-4 border-b border-violet-100 dark:border-violet-800 bg-violet-50/40 dark:bg-violet-900/5 space-y-3">
+          <p className="text-xs font-medium text-slate-600 dark:text-slate-300">
+            Link đăng ký đề tài cho nhiệm vụ này:
+          </p>
+          {/* Link row */}
+          <div className="flex items-center gap-2">
+            <code className="flex-1 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-1.5 truncate text-slate-600 dark:text-slate-300">
+              {typeof window !== "undefined" ? `${window.location.origin}${regUrl}` : regUrl}
+            </code>
+            <button
+              onClick={handleCopy}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition shrink-0"
+            >
+              {copied ? <Check className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5" />}
+              {copied ? "Đã sao chép" : "Sao chép"}
+            </button>
+          </div>
+
+          {/* Participant list + send button */}
+          {participants.length > 0 ? (
+            <div className="space-y-2">
+              <p className="text-xs text-slate-500">
+                Gửi thông báo in-app đến {participants.length} người tham gia:
+                <span className="font-medium text-slate-600 dark:text-slate-300 ml-1">
+                  {participants.map(p => p.name).join(", ")}
+                </span>
+              </p>
+              <button
+                onClick={handleSendNotifications}
+                disabled={sending}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-violet-600 hover:bg-violet-700 text-white transition disabled:opacity-50"
+              >
+                {sending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                {sending ? "Đang gửi..." : "Gửi thông báo"}
+              </button>
+            </div>
+          ) : (
+            <p className="text-xs text-slate-400">Không có người tham gia khác để gửi thông báo.</p>
+          )}
+        </div>
+      )}
+
+      {/* Topics body */}
       {topics.length === 0 ? (
         <div className="px-5 py-4 text-sm text-slate-400">
           {canManage
@@ -254,38 +388,56 @@ function ResearchWidget({ taskId, topics, canManage }: { taskId: string; topics:
           }
         </div>
       ) : (
-        <div className="px-5 py-3 space-y-2">
-          {/* Stage summary pills */}
-          <div className="flex flex-wrap gap-1.5">
-            {Object.entries(stageCounts).map(([stage, count]) => {
-              const meta = STAGE_BADGE[stage] ?? { label: stage, cls: "bg-slate-100 text-slate-500" };
-              return (
-                <span key={stage} className={cn("text-xs font-semibold px-2.5 py-1 rounded-full", meta.cls)}>
-                  {meta.label}: {count}
-                </span>
-              );
-            })}
-          </div>
-          {/* Latest 3 topics */}
-          <div className="space-y-1">
-            {topics.slice(0, 3).map(t => {
-              const meta = STAGE_BADGE[t.stage] ?? STAGE_BADGE.init;
-              return (
-                <a key={t.id} href={`/research/${t.id}`}
-                  className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700/50 transition group">
-                  <span className={cn("text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0", meta.cls)}>{meta.label}</span>
-                  <span className="text-sm text-[var(--foreground)] truncate flex-1 group-hover:text-violet-600 dark:group-hover:text-violet-400 transition">
-                    {t.code ? `[${t.code}] ` : ""}{t.title}
+        <div className="px-5 py-3.5 space-y-3">
+          {/* Giai đoạn 1 */}
+          <div>
+            <p className="text-[11px] font-semibold text-blue-600 dark:text-blue-400 uppercase tracking-wide mb-1.5 flex items-center gap-2">
+              Giai đoạn 1 — Thẩm định đề cương
+              <span className="px-1.5 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-300 font-bold normal-case tracking-normal">
+                {Object.values(gd1).reduce((a, b) => a + b, 0)}
+              </span>
+            </p>
+            <div className="flex flex-wrap gap-x-4 gap-y-1">
+              {([
+                ["Đăng ký",        gd1.dangKy],
+                ["Tiếp nhận",      gd1.tiepNhan],
+                ["Đang thẩm định", gd1.dangThamDinh],
+                ["Chỉnh sửa",      gd1.chinhSua],
+                ["Triển khai",     gd1.trienKhai],
+              ] as [string, number][]).map(([label, count]) => (
+                <span key={label} className="text-xs text-slate-600 dark:text-slate-400">
+                  {label}:{" "}
+                  <span className={cn("font-semibold", count > 0 ? "text-blue-600 dark:text-blue-400" : "text-slate-400 dark:text-slate-500")}>
+                    {count}
                   </span>
-                  <ChevronRight className="w-3.5 h-3.5 text-slate-300 group-hover:text-violet-400 shrink-0" />
-                </a>
-              );
-            })}
-            {topics.length > 3 && (
-              <a href={`/research?taskId=${taskId}`} className="block text-xs text-center text-violet-500 hover:underline py-1">
-                +{topics.length - 3} đề tài khác →
-              </a>
-            )}
+                </span>
+              ))}
+            </div>
+          </div>
+          {/* Giai đoạn 2 */}
+          <div>
+            <p className="text-[11px] font-semibold text-violet-600 dark:text-violet-400 uppercase tracking-wide mb-1.5 flex items-center gap-2">
+              Giai đoạn 2 — Công nhận
+              <span className="px-1.5 py-0.5 rounded-full bg-violet-100 dark:bg-violet-900/40 text-violet-600 dark:text-violet-300 font-bold normal-case tracking-normal">
+                {Object.values(gd2).reduce((a, b) => a + b, 0)}
+              </span>
+            </p>
+            <div className="flex flex-wrap gap-x-4 gap-y-1">
+              {([
+                ["Đề nghị thẩm định", gd2.deNghiTD],
+                ["Tiếp nhận",         gd2.tiepNhan],
+                ["Đang thẩm định",    gd2.dangThamDinh],
+                ["Chỉnh sửa",         gd2.chinhSua],
+                ["Công nhận",         gd2.congNhan],
+              ] as [string, number][]).map(([label, count]) => (
+                <span key={label} className="text-xs text-slate-600 dark:text-slate-400">
+                  {label}:{" "}
+                  <span className={cn("font-semibold", count > 0 ? "text-violet-600 dark:text-violet-400" : "text-slate-400 dark:text-slate-500")}>
+                    {count}
+                  </span>
+                </span>
+              ))}
+            </div>
           </div>
         </div>
       )}
@@ -1585,8 +1737,15 @@ export default function TaskDetailsPage() {
       )}
 
       {/* Research topics widget — shown when this task has linked NCKH topics */}
-      {(researchTopics.length > 0 || (currentUser && hasPermission(currentUser.role, "research:manage"))) && (
-        <ResearchWidget taskId={id} topics={researchTopics} canManage={!!(currentUser && hasPermission(currentUser.role, "research:manage"))} />
+      {task && (researchTopics.length > 0 || (currentUser && hasPermission(currentUser.role, "research:manage"))) && (
+        <ResearchWidget
+          taskId={id}
+          topics={researchTopics}
+          task={task}
+          canManage={!!(currentUser && hasPermission(currentUser.role, "research:manage"))}
+          users={users}
+          currentUserId={currentUser?.id ?? ""}
+        />
       )}
 
       {/* Tabs */}

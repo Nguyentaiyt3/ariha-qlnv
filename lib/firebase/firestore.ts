@@ -253,8 +253,8 @@ export async function getResearchTopic(id: string): Promise<ResearchTopic | null
   const data = await api<{ topic: ResearchTopic }>(`/api/research/${id}`);
   return data?.topic ?? null;
 }
-export async function saveResearchTopic(topic: ResearchTopic): Promise<void> {
-  await api("/api/research", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(topic) });
+export async function saveResearchTopic(topic: ResearchTopic): Promise<{ id: string; autoLinked: boolean; taskId: string | null } | null> {
+  return api<{ id: string; autoLinked: boolean; taskId: string | null }>("/api/research", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(topic) });
 }
 export async function updateResearchTopic(id: string, updates: Partial<ResearchTopic>): Promise<void> {
   await api(`/api/research/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(updates) });

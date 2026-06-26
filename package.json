@@ -37,6 +37,7 @@
     "clsx": "^2.1.1",
     "cmdk": "^1.0.0",
     "date-fns": "^3.6.0",
+    "docx-preview": "^0.3.7",
     "framer-motion": "^11.3.0",
     "googleapis": "^140.0.0",
     "html2canvas": "^1.4.1",

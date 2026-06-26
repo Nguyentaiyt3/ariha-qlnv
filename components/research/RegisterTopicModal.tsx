@@ -1,18 +1,36 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import {
   X, Loader2, Plus, Trash2, Link2, FileText, Users,
   FlaskConical, MessageSquare, Download, Upload,
-  CheckCircle2, XCircle, File,
+  CheckCircle2, XCircle, File, Lock,
 } from "lucide-react";
 import { cn, generateId } from "@/lib/utils";
 import { toast } from "sonner";
-import { useEffect } from "react";
 import { DEPARTMENTS, COMPLETION_QUARTERS, COMPLETION_YEARS } from "@/lib/research-departments";
 import { buildInitialSteps } from "@/lib/research";
 import { saveResearchTopic } from "@/lib/firebase/firestore";
-import type { ResearchTopic } from "@/types";
+import { useTaskStore } from "@/stores/useTaskStore";
+import { useAuthStore } from "@/stores/useAuthStore";
+import type { ResearchTopic, Task } from "@/types";
+
+// ─── Quarter / year helpers ────────────────────────────────────
+
+const QUARTER_NUM: Record<string, number> = {
+  "Quý I": 1, "Quý II": 2, "Quý III": 3, "Quý IV": 4,
+};
+
+function quarterFromTaskName(name: string): number | null {
+  const m1 = name.match(/\bQ(\d)\b/i);
+  if (m1) return parseInt(m1[1]);
+  const m2 = name.match(/Quý\s+(IV|III|II|I)\b/i);
+  if (m2) {
+    const r: Record<string, number> = { I: 1, II: 2, III: 3, IV: 4 };
+    return r[m2[1].toUpperCase()] ?? null;
+  }
+  return null;
+}
 
 // ─── Helpers ───────────────────────────────────────────────────
 
@@ -317,6 +335,10 @@ export function RegisterTopicModal({
   const isEdit = !!initialData;
   const templateUrl = useTemplateUrl();
 
+  // Task store — for NCKH task matching combobox
+  const { tasks } = useTaskStore();
+  const { currentUser: me } = useAuthStore();
+
   const initTimeline = parseTimeline(initialData?.completionTimeline);
 
   // A — Đề tài
@@ -352,6 +374,51 @@ export function RegisterTopicModal({
   const [submissionType, setSubmissionType] = useState<"new" | "resubmit">(initialData?.submissionType ?? "new");
 
   const [saving, setSaving] = useState(false);
+
+  // ── Task-link state (create mode only) ────────────────────────
+  const [linkedTaskId, setLinkedTaskId] = useState<string | undefined>(defaultTaskId);
+  const [autoMatched, setAutoMatched] = useState(false);
+
+  // All NCKH tasks the current user participates in
+  const nckhTasks = useMemo<Task[]>(() => {
+    if (!me) return [];
+    return tasks.filter(t =>
+      (/NCKH/i.test(t.name) || /NCKH/i.test(t.workflowName ?? "")) &&
+      (t.mainPerformerId === me.id || t.creatorId === me.id ||
+        (t.stakeholders ?? []).some(s => s.userId === me.id))
+    );
+  }, [tasks, me]);
+
+  // Narrow by selected quarter + year
+  const matchingTasks = useMemo<Task[]>(() => {
+    const formQ = QUARTER_NUM[completionQ];
+    return nckhTasks.filter(t => {
+      if (!t.deadlineBase) return false;
+      const taskYear = new Date(t.deadlineBase).getFullYear();
+      if (taskYear !== completionY) return false;
+      const taskQ = quarterFromTaskName(t.name ?? "");
+      // Only reject if both sides have an explicit quarter and they differ
+      if (taskQ !== null && formQ !== undefined && taskQ !== formQ) return false;
+      return true;
+    });
+  }, [nckhTasks, completionQ, completionY]);
+
+  // Auto-set when exactly 1 task matches; reset when the match changes
+  useEffect(() => {
+    if (isEdit || defaultTaskId) return;
+    if (matchingTasks.length === 1) {
+      setLinkedTaskId(matchingTasks[0].id);
+      setAutoMatched(true);
+    } else {
+      setAutoMatched(false);
+      // Clear only if current selection is no longer in matching list
+      setLinkedTaskId(prev => {
+        if (!prev) return prev;
+        const stillValid = nckhTasks.some(t => t.id === prev);
+        return stillValid ? prev : undefined;
+      });
+    }
+  }, [matchingTasks, isEdit, defaultTaskId, nckhTasks]);
 
   function addMember() {
     setMembers(m => [...m, { id: generateId("mbr"), name: "", dept: "" }]);
@@ -430,15 +497,20 @@ export function RegisterTopicModal({
           excludedReviewers: excludedReviewers.trim() || undefined,
           submissionType,
           registrationNotes: notes.trim() || undefined,
-          taskId:            defaultTaskId || undefined,
+          taskId:            linkedTaskId || undefined,
           intakeStatus:      "awaiting",
           createdBy:         creatorId,
           createdByName:     creatorName,
           createdAt:         new Date().toISOString(),
         };
-        await saveResearchTopic(topic);
-        toast.success("Đã nộp đăng ký đề cương — đang chờ phê duyệt");
-        onCreated(topic);
+        const result = await saveResearchTopic(topic);
+        const finalTopic = result?.taskId ? { ...topic, taskId: result.taskId } : topic;
+        if (result?.autoLinked) {
+          toast.success("Đã nộp đăng ký — tự động liên kết với nhiệm vụ NCKH phù hợp");
+        } else {
+          toast.success("Đã nộp đăng ký đề cương — đang chờ phê duyệt");
+        }
+        onCreated(finalTopic);
       }
     } catch {
       toast.error(isEdit ? "Cập nhật thất bại" : "Nộp thất bại, vui lòng thử lại");
@@ -494,6 +566,78 @@ export function RegisterTopicModal({
                   </select>
                 </div>
               </Field>
+
+              {/* ── Liên kết nhiệm vụ NCKH (create mode only) ── */}
+              {!isEdit && (
+                <Field
+                  label="Liên kết nhiệm vụ NCKH"
+                  hint={
+                    defaultTaskId
+                      ? "Đề tài sẽ được gắn vào nhiệm vụ này"
+                      : "Hệ thống tự tìm nhiệm vụ phù hợp theo quý và năm bạn chọn"
+                  }
+                >
+                  {defaultTaskId ? (
+                    /* Locked — opened from task link */
+                    <div className="flex items-center gap-2 px-3 py-2 bg-violet-50 dark:bg-violet-900/20 border border-violet-200 dark:border-violet-700 rounded-lg">
+                      <Lock className="w-3.5 h-3.5 text-violet-500 shrink-0" />
+                      <span className="text-sm text-violet-700 dark:text-violet-300 font-medium truncate">
+                        {tasks.find(t => t.id === defaultTaskId)?.name ?? defaultTaskId}
+                      </span>
+                    </div>
+                  ) : (
+                    /* Combobox */
+                    <div className="space-y-1.5">
+                      <select
+                        value={linkedTaskId ?? ""}
+                        onChange={e => {
+                          setLinkedTaskId(e.target.value || undefined);
+                          setAutoMatched(false);
+                        }}
+                        className={SELECT_CLS}
+                      >
+                        <option value="">— Không liên kết —</option>
+
+                        {matchingTasks.length > 0 && (
+                          <optgroup label={`✓ Khớp ${completionQ}/${completionY} (${matchingTasks.length})`}>
+                            {matchingTasks.map(t => (
+                              <option key={t.id} value={t.id}>{t.name}</option>
+                            ))}
+                          </optgroup>
+                        )}
+
+                        {nckhTasks.filter(t => !matchingTasks.some(m => m.id === t.id)).length > 0 && (
+                          <optgroup label="Nhiệm vụ NCKH khác">
+                            {nckhTasks
+                              .filter(t => !matchingTasks.some(m => m.id === t.id))
+                              .map(t => (
+                                <option key={t.id} value={t.id}>{t.name}</option>
+                              ))}
+                          </optgroup>
+                        )}
+                      </select>
+
+                      {/* Status hints */}
+                      {autoMatched && linkedTaskId && (
+                        <p className="flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
+                          <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                          Tự động khớp · Bạn có thể thay đổi nếu cần
+                        </p>
+                      )}
+                      {matchingTasks.length > 1 && !autoMatched && (
+                        <p className="text-xs text-amber-600 dark:text-amber-400">
+                          {matchingTasks.length} nhiệm vụ khớp — vui lòng chọn đúng nhiệm vụ
+                        </p>
+                      )}
+                      {nckhTasks.length === 0 && (
+                        <p className="text-xs text-slate-400">
+                          Bạn chưa tham gia nhiệm vụ NCKH nào — đề tài sẽ không liên kết.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </Field>
+              )}
             </div>
           </section>
 
