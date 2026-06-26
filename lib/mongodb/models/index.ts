@@ -20,3 +20,6 @@ export {
 export { WorkNodeModel } from "./WorkNode";
 export { AuditEventModel } from "./AuditEvent";
 export { UnitPlanModel } from "./Plan";
+export { ResearchTopicModel } from "./Research";
+export { ResearchGroupModel } from "./ResearchGroup";
+export { AppConfigModel } from "./AppConfig";

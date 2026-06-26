@@ -7,18 +7,20 @@ import {
   CheckSquare, MessageSquare, Users, Mail, Activity, BarChart3,
   CheckCheck, Loader2, Star, Send, ClipboardCheck, Pencil, Trash2, X as XIcon, Save,
   Paperclip, Link2, FolderOpen, FileText, Download, Plus, DollarSign, ShieldAlert,
+  Microscope, ChevronRight,
 } from "lucide-react";
 import { cn, formatDate, formatDateTime, formatRelativeTime, statusLabel, priorityLabel, getInitials, avatarColor, isTaskVisible } from "@/lib/utils";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useAuthStore } from "@/stores/useAuthStore";
-import { subscribeTask, updateTask, deleteTask, getEmailLogs, getAuditTrail, addAuditEvent, addNotification, getEvaluations, saveEvaluation, getEvaluationConfig, getTaskEvaluations } from "@/lib/firebase/firestore";
+import { subscribeTask, updateTask, deleteTask, getEmailLogs, getAuditTrail, addAuditEvent, addNotification, getEvaluations, saveEvaluation, getEvaluationConfig, getTaskEvaluations, getResearchTopics } from "@/lib/firebase/firestore";
 import { uploadFile } from "@/lib/firebase/storage";
-import { hasPermission } from "@/lib/rbac/permissions";
+import { hasPermission, canAssignTo } from "@/lib/rbac/permissions";
+import { updateStepById } from "@/lib/workflow-engine";
 import { StepsTab } from "@/components/tasks/StepsTab";
 import { TaskChat } from "@/components/tasks/TaskChat";
 import { FinancialWidget } from "@/components/tasks/FinancialWidget";
 import { UserAvatar } from "@/components/common/UserAvatar";
-import type { Task, User as UserType, EmailLog, AuditEvent, Evaluation, CompletionProposal, TaskResource, ChangeRequest, EvaluationConfig } from "@/types";
+import type { Task, User as UserType, EmailLog, AuditEvent, Evaluation, CompletionProposal, TaskResource, ChangeRequest, EvaluationConfig, ResearchTopic } from "@/types";
 import { scoreT1, scoreT2Task, scoreT3Task, buildEval3TScore, DEFAULT_EVAL_CONFIG, GRADE_LABEL } from "@/lib/eval3T";
 import { generateId } from "@/lib/utils";
 import { toast } from "sonner";
@@ -206,6 +208,91 @@ function ResourcesTab({ task, currentUser, isMainPerformer, onSave }: ResourcesT
   );
 }
 
+// ─── ResearchWidget ──────────────────────────────────────────
+
+const STAGE_BADGE: Record<string, { label: string; cls: string }> = {
+  init:        { label: "Khởi tạo",   cls: "bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300" },
+  proposal:    { label: "GĐ1",        cls: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300" },
+  recognition: { label: "GĐ2",        cls: "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300" },
+  completed:   { label: "Hoàn tất",   cls: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300" },
+  rejected:    { label: "Từ chối",    cls: "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-300" },
+};
+
+function ResearchWidget({ taskId, topics, canManage }: { taskId: string; topics: ResearchTopic[]; canManage: boolean }) {
+  const stageCounts = topics.reduce<Record<string, number>>((acc, t) => {
+    acc[t.stage] = (acc[t.stage] ?? 0) + 1;
+    return acc;
+  }, {});
+
+  return (
+    <div className="bg-white dark:bg-slate-800 rounded-2xl border border-violet-200 dark:border-violet-800 shadow-sm overflow-hidden">
+      <div className="flex items-center justify-between px-5 py-3.5 border-b border-violet-100 dark:border-violet-800 bg-violet-50/60 dark:bg-violet-900/10">
+        <div className="flex items-center gap-2">
+          <Microscope className="w-4 h-4 text-violet-500" />
+          <span className="text-sm font-semibold text-violet-700 dark:text-violet-300">
+            Đề tài NCKH liên kết
+          </span>
+          {topics.length > 0 && (
+            <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-violet-100 dark:bg-violet-900/40 text-violet-600 dark:text-violet-300">
+              {topics.length}
+            </span>
+          )}
+        </div>
+        <a
+          href={`/research?taskId=${taskId}`}
+          className="flex items-center gap-1 text-xs text-violet-600 hover:text-violet-800 dark:text-violet-400 font-medium transition"
+        >
+          {topics.length > 0 ? "Xem & quản lý" : "Mở danh sách"} <ChevronRight className="w-3.5 h-3.5" />
+        </a>
+      </div>
+
+      {topics.length === 0 ? (
+        <div className="px-5 py-4 text-sm text-slate-400">
+          {canManage
+            ? <>Chưa có đề tài nào liên kết. <a href={`/research?taskId=${taskId}&create=1`} className="text-violet-600 hover:underline font-medium">Tạo đề tài đầu tiên →</a></>
+            : "Chưa có đề tài NCKH nào được liên kết với nhiệm vụ này."
+          }
+        </div>
+      ) : (
+        <div className="px-5 py-3 space-y-2">
+          {/* Stage summary pills */}
+          <div className="flex flex-wrap gap-1.5">
+            {Object.entries(stageCounts).map(([stage, count]) => {
+              const meta = STAGE_BADGE[stage] ?? { label: stage, cls: "bg-slate-100 text-slate-500" };
+              return (
+                <span key={stage} className={cn("text-xs font-semibold px-2.5 py-1 rounded-full", meta.cls)}>
+                  {meta.label}: {count}
+                </span>
+              );
+            })}
+          </div>
+          {/* Latest 3 topics */}
+          <div className="space-y-1">
+            {topics.slice(0, 3).map(t => {
+              const meta = STAGE_BADGE[t.stage] ?? STAGE_BADGE.init;
+              return (
+                <a key={t.id} href={`/research/${t.id}`}
+                  className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700/50 transition group">
+                  <span className={cn("text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0", meta.cls)}>{meta.label}</span>
+                  <span className="text-sm text-[var(--foreground)] truncate flex-1 group-hover:text-violet-600 dark:group-hover:text-violet-400 transition">
+                    {t.code ? `[${t.code}] ` : ""}{t.title}
+                  </span>
+                  <ChevronRight className="w-3.5 h-3.5 text-slate-300 group-hover:text-violet-400 shrink-0" />
+                </a>
+              );
+            })}
+            {topics.length > 3 && (
+              <a href={`/research?taskId=${taskId}`} className="block text-xs text-center text-violet-500 hover:underline py-1">
+                +{topics.length - 3} đề tài khác →
+              </a>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function TaskDetailsPage() {
   const { id } = useParams() as { id: string };
   const router = useRouter();
@@ -224,6 +311,9 @@ export default function TaskDetailsPage() {
   const [evalRatings, setEvalRatings] = useState<Record<string, number>>({});
   const [evalComments, setEvalComments] = useState<Record<string, string>>({});
   const [submittingEval, setSubmittingEval] = useState(false);
+
+  // Research topics linked to this task
+  const [researchTopics, setResearchTopics] = useState<ResearchTopic[]>([]);
 
   // Completion proposal state
   const [proposalSummary, setProposalSummary] = useState("");
@@ -250,6 +340,15 @@ export default function TaskDetailsPage() {
   const [issueDescription, setIssueDescription] = useState("");
   const [submittingIssue, setSubmittingIssue] = useState(false);
 
+  // Supervisor assignment state
+  const [showSupervisorPicker, setShowSupervisorPicker] = useState(false);
+  const [supervisorPickerId, setSupervisorPickerId] = useState("");
+  const [savingSupervisor, setSavingSupervisor] = useState(false);
+
+  // Optimistic progress — updates immediately on step change, syncs from subscription
+  const [localProgress, setLocalProgress] = useState(0);
+  useEffect(() => { if (task) setLocalProgress(task.progress ?? 0); }, [task?.progress]);
+
   const refreshEmailLogs = useCallback(() => {
     getEmailLogs(id).then(setEmailLogs).catch(console.error);
   }, [id]);
@@ -261,6 +360,11 @@ export default function TaskDetailsPage() {
       setLoading(false);
     });
     return unsub;
+  }, [id]);
+
+  // Load research topics linked to this task
+  useEffect(() => {
+    getResearchTopics(id).then(setResearchTopics).catch(() => {});
   }, [id]);
 
   // Access guard — redirect if user is not a participant
@@ -425,6 +529,13 @@ export default function TaskDetailsPage() {
         if (cr.changedFields.deadlineBase) updates.deadlineBase = cr.changedFields.deadlineBase.before;
         if (cr.changedFields.mainPerformerId) updates.mainPerformerId = cr.changedFields.mainPerformerId.before;
       }
+      if (approved && cr.type === "subworkflow_change" && cr.changedFields?.subWorkflowChange) {
+        const { stepId, proposedChildSteps, proposedChildEdges } = cr.changedFields.subWorkflowChange;
+        updates.steps = updateStepById(task.steps ?? [], stepId, {
+          childSteps: proposedChildSteps,
+          childEdges: proposedChildEdges,
+        });
+      }
       await updateTask(id, updates);
       if (cr.requestedBy !== currentUser.id) {
         await addNotification({
@@ -575,8 +686,45 @@ export default function TaskDetailsPage() {
         ? Math.round(updates.steps.reduce((s, step) => s + step.progress, 0) / updates.steps.length)
         : 0;
       updates.progress = avg;
+      setLocalProgress(avg);
     }
-    await updateTask(id, { ...updates, updatedAt: new Date().toISOString() });
+
+    // When a pending change request is submitted, await save then notify managers
+    if (updates.pendingChangeRequest?.status === "pending" && currentUser && task) {
+      try {
+        await updateTask(id, { ...updates, updatedAt: new Date().toISOString() });
+        const cr = updates.pendingChangeRequest;
+        const managers = users.filter(
+          (u) => ["teamLead", "director", "hrAdmin"].includes(u.role) && u.isActive && u.id !== currentUser.id
+        );
+        const typeLabel =
+          cr.type === "subworkflow_change"
+            ? `đề xuất sửa quy trình con "${cr.changedFields?.subWorkflowChange?.stepName ?? ""}"`
+            : cr.type === "deadline_change"
+            ? "yêu cầu thay đổi thời hạn"
+            : cr.type === "performer_change"
+            ? "yêu cầu thay đổi người thực hiện"
+            : "báo cáo vấn đề phát sinh";
+        await Promise.all(managers.map((u) =>
+          addNotification({
+            userId: u.id, type: "approval_request",
+            title: "Chờ phê duyệt thay đổi",
+            body: `${cr.requestedByName} ${typeLabel} trong nhiệm vụ "${task.name}".`,
+            link: `/tasks/${id}`, read: false, priority: "urgent",
+            createdAt: new Date().toISOString(), actionRequired: true,
+          })
+        ));
+        await addAuditEvent(id, {
+          taskId: id, action: "change_requested",
+          userId: currentUser.id, userName: currentUser.name,
+          note: cr.reason, timestamp: new Date().toISOString(),
+        });
+      } catch { toast.error("Gửi yêu cầu phê duyệt thất bại."); }
+      return;
+    }
+
+    // Fire-and-forget — StepsTab already has optimistic local state, no need to block here
+    updateTask(id, { ...updates, updatedAt: new Date().toISOString() }).catch(console.error);
   }
 
   async function handleSubmitEval(targetUserId: string) {
@@ -660,6 +808,48 @@ export default function TaskDetailsPage() {
     finally { setSubmittingProposal(false); }
   }
 
+  async function handleAssignSupervisor() {
+    if (!currentUser || !task || !supervisorPickerId) return;
+    setSavingSupervisor(true);
+    try {
+      const existing = task.stakeholders ?? [];
+      const updated = [...existing, { userId: supervisorPickerId, role: "supervisor" as const }];
+      await updateTask(id, { stakeholders: updated });
+      const supervisorUser = users.find((u) => u.id === supervisorPickerId);
+      await addNotification({
+        userId: supervisorPickerId,
+        type: "task_assigned",
+        title: "Bạn được chỉ định làm Giám sát",
+        body: `${currentUser.name} chỉ định bạn giám sát nhiệm vụ "${task.name}".`,
+        link: `/tasks/${id}`,
+        read: false,
+        priority: "normal",
+        taskId: id,
+        createdAt: new Date().toISOString(),
+      });
+      await addAuditEvent(id, {
+        taskId: id, action: "supervisor_assigned",
+        userId: currentUser.id, userName: currentUser.name,
+        timestamp: new Date().toISOString(),
+        after: { name: `supervisor:${supervisorPickerId}:${supervisorUser?.name ?? ""}` } as Partial<Task>,
+      });
+      setShowSupervisorPicker(false);
+      setSupervisorPickerId("");
+      toast.success(`Đã chỉ định ${supervisorUser?.name ?? ""} làm giám sát.`);
+    } catch { toast.error("Chỉ định thất bại."); }
+    finally { setSavingSupervisor(false); }
+  }
+
+  async function handleRevokeSupervisor(userId: string) {
+    if (!currentUser || !task) return;
+    const updated = (task.stakeholders ?? []).filter(
+      (s) => !(s.userId === userId && s.role === "supervisor")
+    );
+    await updateTask(id, { stakeholders: updated });
+    const u = users.find((x) => x.id === userId);
+    toast.success(`Đã hủy giám sát của ${u?.name ?? ""}.`);
+  }
+
   async function handleReviewProposal(approved: boolean) {
     if (!currentUser || !task || !task.completionProposal) return;
     if (approved && closureRating === 0) { toast.error("Vui lòng chọn số sao đánh giá."); return; }
@@ -717,6 +907,14 @@ export default function TaskDetailsPage() {
 
   const performer = users.find((u) => u.id === task.mainPerformerId);
   const canApprove = !!(currentUser && hasPermission(currentUser.role, "task:approve"));
+
+  // Progress color helper — 3 levels
+  const progressTextCls = (p: number) =>
+    p <= 33 ? "text-red-600 dark:text-red-400 font-bold"
+    : p <= 66 ? "text-amber-600 dark:text-amber-400 font-bold"
+    : "text-green-600 dark:text-green-400 font-bold";
+  const progressBarCls = (p: number) =>
+    p <= 33 ? "bg-red-500" : p <= 66 ? "bg-amber-500" : "bg-green-500";
   const isMainPerformer = currentUser?.id === task.mainPerformerId;
   const canAssignSteps = task.approved && (isMainPerformer || canApprove);
   // Only mainPerformer (or director/hrAdmin override) can change status
@@ -1079,21 +1277,28 @@ export default function TaskDetailsPage() {
           {[
             { label: "Hạn hoàn thành", value: task.deadlineBase ? formatDate(task.deadlineBase) : "—", icon: Calendar },
             { label: "Phòng ban", value: task.department ?? "—", icon: Flag },
-            { label: "Tiến độ", value: `${task.progress}%`, icon: BarChart3 },
           ].map(({ label, value, icon: Icon }) => (
             <div key={label}>
               <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1"><Icon className="w-3.5 h-3.5" /> {label}</div>
               <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">{value}</p>
             </div>
           ))}
+          <div>
+            <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1"><BarChart3 className="w-3.5 h-3.5" /> Tiến độ</div>
+            <p className={cn("text-sm", progressTextCls(localProgress))}>{localProgress}%</p>
+          </div>
         </div>
 
         {/* Progress bar */}
         <div className="mt-4">
-          <div className="h-2 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
+          <div className="flex items-center justify-between text-xs mb-1">
+            <span className="text-slate-400">Tiến độ tổng</span>
+            <span className={progressTextCls(localProgress)}>{localProgress}%</span>
+          </div>
+          <div className="h-2.5 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
             <div
-              className={cn("h-full rounded-full transition-all", task.progress >= 100 ? "bg-green-500" : task.riskFlag ? "bg-red-500" : "bg-blue-500")}
-              style={{ width: `${task.progress}%` }}
+              className={cn("h-full rounded-full transition-all duration-300", progressBarCls(localProgress))}
+              style={{ width: `${localProgress}%` }}
             />
           </div>
         </div>
@@ -1120,15 +1325,34 @@ export default function TaskDetailsPage() {
         })()}
 
         {/* 3-phase deadlines */}
-        <div className="flex gap-3 mt-4 flex-wrap">
+        <div className="flex gap-2 mt-4 flex-wrap">
           {[
-            { phase: "Chuẩn bị", deadline: task.deadlinePrepare },
-            { phase: "Thực hiện", deadline: task.deadlineExecute },
-            { phase: "Hoàn thiện", deadline: task.deadlineFinalize },
-          ].filter(p => p.deadline).map(({ phase, deadline }) => (
-            <div key={phase} className="px-3 py-1.5 bg-slate-50 dark:bg-slate-900 rounded-xl text-xs">
-              <span className="text-slate-400">{phase}: </span>
-              <span className="font-semibold text-slate-600 dark:text-slate-300">{formatDate(deadline!)}</span>
+            {
+              phase: "Chuẩn bị", deadline: task.deadlinePrepare,
+              dot: "bg-blue-500",
+              badge: "bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800",
+              label: "text-blue-500 dark:text-blue-400",
+              value: "text-blue-700 dark:text-blue-300",
+            },
+            {
+              phase: "Thực hiện", deadline: task.deadlineExecute,
+              dot: "bg-amber-500",
+              badge: "bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800",
+              label: "text-amber-500 dark:text-amber-400",
+              value: "text-amber-700 dark:text-amber-300",
+            },
+            {
+              phase: "Hoàn thiện", deadline: task.deadlineFinalize,
+              dot: "bg-green-500",
+              badge: "bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-800",
+              label: "text-green-600 dark:text-green-400",
+              value: "text-green-700 dark:text-green-300",
+            },
+          ].filter(p => p.deadline).map(({ phase, deadline, dot, badge, label, value }) => (
+            <div key={phase} className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium ${badge}`}>
+              <span className={`w-2 h-2 rounded-full shrink-0 ${dot}`} />
+              <span className={label}>{phase}</span>
+              <span className={`font-bold ${value}`}>{formatDate(deadline!)}</span>
             </div>
           ))}
         </div>
@@ -1142,6 +1366,7 @@ export default function TaskDetailsPage() {
                 {task.pendingChangeRequest.type === "deadline_change" && "Yêu cầu thay đổi thời hạn"}
                 {task.pendingChangeRequest.type === "performer_change" && "Yêu cầu thay đổi người thực hiện"}
                 {task.pendingChangeRequest.type === "issue_raised" && "Vấn đề phát sinh cần xem xét"}
+                {task.pendingChangeRequest.type === "subworkflow_change" && `Đề xuất sửa quy trình con "${task.pendingChangeRequest.changedFields?.subWorkflowChange?.stepName ?? ""}"`}
                 {" — chờ phê duyệt"}
               </p>
             </div>
@@ -1158,6 +1383,12 @@ export default function TaskDetailsPage() {
               <p className="text-xs text-slate-600 dark:text-slate-400 ml-6">
                 Người thực hiện: <span className="line-through text-red-500">{users.find(u => u.id === task.pendingChangeRequest?.changedFields?.mainPerformerId?.before)?.name ?? "—"}</span>
                 {" → "}<span className="text-green-600 font-medium">{users.find(u => u.id === task.pendingChangeRequest?.changedFields?.mainPerformerId?.after)?.name ?? "—"}</span>
+              </p>
+            )}
+            {task.pendingChangeRequest.changedFields?.subWorkflowChange && (
+              <p className="text-xs text-slate-600 dark:text-slate-400 ml-6">
+                Bước <span className="font-medium">"{task.pendingChangeRequest.changedFields.subWorkflowChange.stepName}"</span>
+                {" — "}{task.pendingChangeRequest.changedFields.subWorkflowChange.proposedChildSteps.length} bước con mới
               </p>
             )}
             <p className="text-[10px] text-amber-500 ml-6">{formatRelativeTime(task.pendingChangeRequest.requestedAt)}</p>
@@ -1353,6 +1584,11 @@ export default function TaskDetailsPage() {
         </div>
       )}
 
+      {/* Research topics widget — shown when this task has linked NCKH topics */}
+      {(researchTopics.length > 0 || (currentUser && hasPermission(currentUser.role, "research:manage"))) && (
+        <ResearchWidget taskId={id} topics={researchTopics} canManage={!!(currentUser && hasPermission(currentUser.role, "research:manage"))} />
+      )}
+
       {/* Tabs */}
       <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden shadow-sm">
         <div className="flex border-b border-slate-100 dark:border-slate-700 overflow-x-auto">
@@ -1381,6 +1617,7 @@ export default function TaskDetailsPage() {
               users={users}
               currentUser={currentUser}
               canAssignSteps={canAssignSteps}
+              canApprove={canApprove}
               onSave={onSaveTask}
               onEmailSent={refreshEmailLogs}
             />
@@ -1388,14 +1625,101 @@ export default function TaskDetailsPage() {
 
           {/* Stakeholders tab */}
           {activeTab === "stakeholders" && (
-            <div className="space-y-3">
+            <div className="space-y-4">
+              {/* Supervisor assignment panel — approvers only */}
+              {canApprove && currentUser && (
+                <div className="border border-amber-200 dark:border-amber-800 rounded-2xl p-4 bg-amber-50/50 dark:bg-amber-900/10">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <ShieldAlert className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                      <span className="text-sm font-semibold text-amber-700 dark:text-amber-400">Chỉ định Giám sát</span>
+                    </div>
+                    {!showSupervisorPicker && (
+                      <button
+                        onClick={() => setShowSupervisorPicker(true)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-xs rounded-lg transition"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        Thêm giám sát
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Existing supervisors */}
+                  {(task.stakeholders ?? []).filter((s) => s.role === "supervisor").length > 0 && (
+                    <div className="flex flex-wrap gap-2 mb-3">
+                      {(task.stakeholders ?? []).filter((s) => s.role === "supervisor").map((s) => {
+                        const u = users.find((x) => x.id === s.userId);
+                        if (!u) return null;
+                        return (
+                          <div key={s.userId} className="flex items-center gap-2 px-3 py-1.5 bg-amber-100 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-700 rounded-full text-xs">
+                            <UserAvatar user={u} size="sm" showName />
+                            <span className="text-amber-500 dark:text-amber-400">{u.department}</span>
+                            <button
+                              onClick={() => handleRevokeSupervisor(s.userId)}
+                              className="text-amber-400 hover:text-red-500 ml-1 transition"
+                              title="Hủy giám sát"
+                            >
+                              <XIcon className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Picker */}
+                  {showSupervisorPicker && (
+                    <div className="flex gap-2 mt-2">
+                      <select
+                        value={supervisorPickerId}
+                        onChange={(e) => setSupervisorPickerId(e.target.value)}
+                        className="flex-1 px-3 py-2 border border-amber-300 dark:border-amber-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-amber-500 dark:bg-slate-800 dark:text-white"
+                      >
+                        <option value="">Chọn người giám sát...</option>
+                        {users
+                          .filter((u) =>
+                            u.isActive &&
+                            canAssignTo(currentUser.role, u.role) &&
+                            !(task.stakeholders ?? []).some((s) => s.userId === u.id && s.role === "supervisor")
+                          )
+                          .map((u) => (
+                            <option key={u.id} value={u.id}>
+                              {u.name} ({u.department ?? u.role})
+                            </option>
+                          ))}
+                      </select>
+                      <button
+                        onClick={handleAssignSupervisor}
+                        disabled={!supervisorPickerId || savingSupervisor}
+                        className="px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white text-sm rounded-xl transition flex items-center gap-1.5"
+                      >
+                        {savingSupervisor ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                        Xác nhận
+                      </button>
+                      <button
+                        onClick={() => { setShowSupervisorPicker(false); setSupervisorPickerId(""); }}
+                        className="px-3 py-2 bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-500 rounded-xl transition"
+                      >
+                        <XIcon className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
+
+                  {(task.stakeholders ?? []).filter((s) => s.role === "supervisor").length === 0 && !showSupervisorPicker && (
+                    <p className="text-xs text-amber-500/70">Chưa có người giám sát. Chỉ định để nhận cảnh báo rủi ro.</p>
+                  )}
+                </div>
+              )}
+
+              {/* All stakeholder groups */}
               {[
                 { role: "assignee", label: "Người thực hiện", color: "blue" },
                 { role: "collaborator", label: "Hỗ trợ", color: "purple" },
                 { role: "supervisor", label: "Giám sát", color: "amber" },
                 { role: "watcher", label: "Theo dõi", color: "slate" },
                 { role: "approver", label: "Phê duyệt", color: "green" },
-              ].map(({ role, label, color }) => {
+              ].map(({ role, label }) => {
                 const roleStakeholders = task.stakeholders?.filter((s) => s.role === role) ?? [];
                 if (roleStakeholders.length === 0) return null;
                 return (

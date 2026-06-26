@@ -4,14 +4,14 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import {
   ClipboardList, Plus, ChevronDown, ChevronRight, Trash2,
   Loader2, CheckCircle2, Circle, Clock, Pencil, X,
-  Target, Calendar, User, FolderPlus, ExternalLink, Save,
+  Target, Calendar, User, FolderPlus, Save,
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { cn, generateId } from "@/lib/utils";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { hasPermission } from "@/lib/rbac/permissions";
-import type { UnitPlan, PlanItem, PlanItemStatus, Task, TaskStatus } from "@/types";
+import type { UnitPlan, PlanItem, PlanItemStatus, PlanMetricType, Task, TaskStatus } from "@/types";
 
 // ─── Helpers ────────────────────────────────────────────────────
 
@@ -38,6 +38,56 @@ const TASK_STATUS_META: Record<TaskStatus, { label: string; cls: string }> = {
 function getDescendantIds(items: PlanItem[], parentId: string): string[] {
   const children = items.filter(i => i.parentId === parentId);
   return children.flatMap(c => [c.id, ...getDescendantIds(items, c.id)]);
+}
+
+// ─── Cộng dồn nhiệm vụ → so chỉ tiêu kế hoạch ───────────────────
+
+const METRIC_META: Record<PlanMetricType, { label: string; hint: string }> = {
+  count:   { label: "Đếm số nhiệm vụ đạt", hint: "Mỗi nhiệm vụ hoàn thành & đạt = 1" },
+  revenue: { label: "Cộng tiền thu",        hint: "Tổng thu (totalAmount) của nhiệm vụ đạt" },
+  expense: { label: "Cộng tiền chi",        hint: "Tổng chi (totalExpense) của nhiệm vụ đạt" },
+};
+
+/** Nhiệm vụ được tính "đạt": đã hoàn thành + được duyệt + đánh giá 3T không phải "không hoàn thành". */
+function isTaskAchieved(t: Task): boolean {
+  return (
+    t.status === "done" &&
+    t.completionProposal?.status === "approved" &&
+    t.completionProposal?.score3T?.grade !== "khongHoanThanh"
+  );
+}
+
+/** Mức đóng góp của 1 nhiệm vụ vào chỉ tiêu (ưu tiên ghi đè tay). */
+function taskContribution(t: Task, metric: PlanMetricType): number {
+  if (typeof t.planContribution === "number") return t.planContribution;
+  if (metric === "revenue") return t.totalAmount ?? 0;
+  if (metric === "expense") return t.totalExpense ?? 0;
+  return 1; // count
+}
+
+interface PlanAchievement {
+  metric: PlanMetricType;
+  planTasks: Task[];
+  achievedTasks: Task[];
+  achieved: number;       // tổng đã đạt (số task hoặc số tiền)
+  inProgress: number;     // số nhiệm vụ chưa đạt nhưng đang chạy
+  pct: number;
+}
+
+function computePlanAchievement(plan: UnitPlan, tasks: Task[]): PlanAchievement {
+  const metric = plan.metricType ?? "count";
+  const planTasks = tasks.filter(t => t.planId === plan.id);
+  const achievedTasks = planTasks.filter(isTaskAchieved);
+  const achieved = achievedTasks.reduce((sum, t) => sum + taskContribution(t, metric), 0);
+  const inProgress = planTasks.filter(t => !isTaskAchieved(t) && t.status !== "cancelled").length;
+  const pct = plan.target > 0 ? Math.min(100, Math.round((achieved / plan.target) * 100)) : 0;
+  return { metric, planTasks, achievedTasks, achieved, inProgress, pct };
+}
+
+/** Định dạng giá trị theo loại chỉ tiêu (tiền có phân tách hàng nghìn). */
+function formatMetricValue(value: number, metric: PlanMetricType): string {
+  if (metric === "count") return String(value);
+  return value.toLocaleString("vi-VN");
 }
 
 async function apiFetch<T>(url: string, opts?: RequestInit): Promise<T> {
@@ -193,6 +243,7 @@ interface PlanFormData {
   year: number;
   target: number;
   unit: string;
+  metricType: PlanMetricType;
   department: string;
 }
 
@@ -263,10 +314,24 @@ function PlanFormModal({ title, initial, saving, onClose, onSubmit }: PlanFormMo
               <input
                 value={form.unit}
                 onChange={e => setForm(f => ({ ...f, unit: e.target.value }))}
-                placeholder="lần, buổi..."
+                placeholder={form.metricType === "count" ? "lần, buổi..." : "đồng, triệu..."}
                 className="w-full border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Cách tính đạt chỉ tiêu</label>
+            <select
+              value={form.metricType}
+              onChange={e => setForm(f => ({ ...f, metricType: e.target.value as PlanMetricType }))}
+              className="w-full border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              {(Object.keys(METRIC_META) as PlanMetricType[]).map(m => (
+                <option key={m} value={m}>{METRIC_META[m].label}</option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-slate-400">{METRIC_META[form.metricType].hint} · so với chỉ tiêu {form.target} {form.unit}</p>
           </div>
 
           <div>
@@ -302,15 +367,86 @@ function PlanFormModal({ title, initial, saving, onClose, onSubmit }: PlanFormMo
 
 // ─── Plan Detail ─────────────────────────────────────────────────
 
+// ─── Hàng nhiệm vụ trong kế hoạch (kèm đóng góp + ghi đè tay) ────
+interface PlanTaskRowProps {
+  task: Task;
+  parentItem?: PlanItem;
+  metric: PlanMetricType;
+  canManage: boolean;
+  onContribution: (taskId: string, value: number | null) => void;
+}
+
+function PlanTaskRow({ task, parentItem, metric, canManage, onContribution }: PlanTaskRowProps) {
+  const achieved = isTaskAchieved(task);
+  const overridden = typeof task.planContribution === "number";
+  const contrib = taskContribution(task, metric);
+  const meta = TASK_STATUS_META[task.status];
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(String(contrib));
+
+  function save() {
+    const v = Number(draft.replace(/[^\d.-]/g, ""));
+    onContribution(task.id, Number.isFinite(v) ? v : null);
+    setEditing(false);
+  }
+
+  return (
+    <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white dark:bg-slate-800/50 border border-slate-100 dark:border-slate-700">
+      <span className={cn("shrink-0 text-[10px] px-1.5 py-0.5 rounded font-medium", meta.cls)}>{meta.label}</span>
+      <div className="flex-1 min-w-0">
+        <Link
+          href={`/tasks/${task.id}`}
+          className="text-sm text-slate-700 dark:text-slate-200 hover:text-blue-600 dark:hover:text-blue-400 hover:underline truncate block"
+          title={task.name}
+        >
+          {task.name}
+        </Link>
+        {parentItem && <p className="text-[10px] text-slate-400 mt-0.5 truncate">Thuộc: {parentItem.name}</p>}
+      </div>
+
+      {editing ? (
+        <div className="flex items-center gap-1 shrink-0">
+          <input
+            autoFocus value={draft}
+            onChange={e => setDraft(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") save(); if (e.key === "Escape") setEditing(false); }}
+            className="w-24 px-1.5 py-0.5 text-xs border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <button onClick={save} title="Lưu" className="text-green-600 hover:text-green-700"><CheckCircle2 className="w-4 h-4" /></button>
+          {overridden && (
+            <button onClick={() => { onContribution(task.id, null); setEditing(false); }} title="Về số tự động" className="text-slate-400 hover:text-red-500"><X className="w-4 h-4" /></button>
+          )}
+        </div>
+      ) : (
+        <div className="flex items-center gap-1.5 shrink-0">
+          <span
+            className={cn("text-xs font-semibold", achieved ? "text-green-600 dark:text-green-400" : "text-slate-300 dark:text-slate-600")}
+            title={achieved ? "Đã tính vào kế hoạch" : "Chưa đạt — không tính vào kế hoạch"}
+          >
+            {achieved ? `+${formatMetricValue(contrib, metric)}` : "—"}
+            {overridden && <span className="ml-0.5 text-amber-500" title="Đã chỉnh tay">✎</span>}
+          </span>
+          {canManage && achieved && (
+            <button onClick={() => { setDraft(String(contrib)); setEditing(true); }} title="Điều chỉnh mức đóng góp" className="text-slate-300 hover:text-blue-500">
+              <Pencil className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface PlanDetailProps {
   plan: UnitPlan;
   allTasks: Task[];
   canManage: boolean;
   onUpdated: (updated: UnitPlan) => void;
   onDeleted: () => void;
+  onTaskContribution: (taskId: string, value: number | null) => void;
 }
 
-function PlanDetail({ plan, allTasks, canManage, onUpdated, onDeleted }: PlanDetailProps) {
+function PlanDetail({ plan, allTasks, canManage, onUpdated, onDeleted, onTaskContribution }: PlanDetailProps) {
   const [items, setItems] = useState<PlanItem[]>(plan.items ?? []);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
@@ -444,11 +580,12 @@ function PlanDetail({ plan, allTasks, canManage, onUpdated, onDeleted }: PlanDet
   }
 
   const topItems = items.filter(i => i.parentId === null).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-  const doneTop = topItems.filter(i => i.status === "done").length;
-  const progressPct = plan.target > 0 ? Math.min(100, Math.round((doneTop / plan.target) * 100)) : 0;
 
-  // Tasks thuộc kế hoạch này (từ hệ thống nhiệm vụ)
-  const planTasks = allTasks.filter(t => t.planId === plan.id);
+  // Tiến độ thực tế: cộng dồn nhiệm vụ đạt → so chỉ tiêu
+  const ach = computePlanAchievement(plan, allTasks);
+  const progressPct = ach.pct;
+  const metric = ach.metric;
+  const planTasks = ach.planTasks;
   const [showTasks, setShowTasks] = useState(planTasks.length > 0);
 
   return (
@@ -504,7 +641,9 @@ function PlanDetail({ plan, allTasks, canManage, onUpdated, onDeleted }: PlanDet
         <div className="mt-4">
           <div className="flex items-center justify-between text-sm mb-1.5">
             <span className="text-slate-600 dark:text-slate-400">
-              Tiến độ: <span className="font-semibold text-slate-800 dark:text-white">{doneTop}/{plan.target}</span> {plan.unit}
+              Tiến độ: <span className="font-semibold text-slate-800 dark:text-white">
+                {formatMetricValue(ach.achieved, metric)}/{formatMetricValue(plan.target, metric)}
+              </span> {plan.unit}
             </span>
             <span className={cn(
               "font-semibold",
@@ -522,6 +661,10 @@ function PlanDetail({ plan, allTasks, canManage, onUpdated, onDeleted }: PlanDet
               style={{ width: `${progressPct}%` }}
             />
           </div>
+          <p className="mt-1.5 text-xs text-slate-400">
+            {METRIC_META[metric].label} · {ach.achievedTasks.length} nhiệm vụ đạt
+            {ach.inProgress > 0 && ` · ${ach.inProgress} đang làm`}
+          </p>
         </div>
       </div>
 
@@ -578,34 +721,16 @@ function PlanDetail({ plan, allTasks, canManage, onUpdated, onDeleted }: PlanDet
 
               {showTasks && (
                 <div className="space-y-1">
-                  {planTasks.map(task => {
-                    const parentItem = task.planItemParentId
-                      ? items.find(i => i.id === task.planItemParentId)
-                      : undefined;
-                    const meta = TASK_STATUS_META[task.status];
-                    return (
-                      <div key={task.id} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white dark:bg-slate-800/50 border border-slate-100 dark:border-slate-700">
-                        <span className={cn("shrink-0 text-[10px] px-1.5 py-0.5 rounded font-medium", meta.cls)}>
-                          {meta.label}
-                        </span>
-                        <div className="flex-1 min-w-0">
-                          <Link
-                            href={`/tasks/${task.id}`}
-                            className="text-sm text-slate-700 dark:text-slate-200 hover:text-blue-600 dark:hover:text-blue-400 hover:underline truncate block"
-                            title={task.name}
-                          >
-                            {task.name}
-                          </Link>
-                          {parentItem && (
-                            <p className="text-[10px] text-slate-400 mt-0.5 truncate">
-                              Thuộc: {parentItem.name}
-                            </p>
-                          )}
-                        </div>
-                        <ExternalLink className="w-3.5 h-3.5 text-slate-300 shrink-0" />
-                      </div>
-                    );
-                  })}
+                  {planTasks.map(task => (
+                    <PlanTaskRow
+                      key={task.id}
+                      task={task}
+                      parentItem={task.planItemParentId ? items.find(i => i.id === task.planItemParentId) : undefined}
+                      metric={metric}
+                      canManage={canManage}
+                      onContribution={onTaskContribution}
+                    />
+                  ))}
                 </div>
               )}
             </div>
@@ -646,6 +771,7 @@ function PlanDetail({ plan, allTasks, canManage, onUpdated, onDeleted }: PlanDet
             year: plan.year,
             target: plan.target,
             unit: plan.unit,
+            metricType: plan.metricType ?? "count",
             department: plan.department ?? "",
           }}
           saving={editSaving}
@@ -727,6 +853,25 @@ export default function UnitPlansPage() {
     });
   }
 
+  // Ghi đè / xoá ghi đè mức đóng góp của 1 nhiệm vụ vào kế hoạch
+  async function handleTaskContribution(taskId: string, value: number | null) {
+    // Optimistic
+    setAllTasks(prev => prev.map(t =>
+      t.id === taskId ? { ...t, planContribution: value ?? undefined } : t
+    ));
+    try {
+      await apiFetch(`/api/tasks/${taskId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ planContribution: value }),
+      });
+      toast.success(value === null ? "Đã về số tự động" : "Đã cập nhật mức đóng góp");
+    } catch {
+      toast.error("Cập nhật thất bại");
+      fetchPlans();
+    }
+  }
+
   if (!currentUser) return null;
 
   return (
@@ -800,9 +945,8 @@ export default function UnitPlansPage() {
             </div>
           ) : (
             filteredPlans.map(plan => {
-              const topItems = (plan.items ?? []).filter(i => i.parentId === null);
-              const done = topItems.filter(i => i.status === "done").length;
-              const pct = plan.target > 0 ? Math.min(100, Math.round((done / plan.target) * 100)) : 0;
+              const cardAch = computePlanAchievement(plan, allTasks);
+              const pct = cardAch.pct;
               const isSelected = plan.id === selectedId;
               return (
                 <button
@@ -827,7 +971,7 @@ export default function UnitPlansPage() {
                   </div>
                   <div className="mt-2">
                     <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 mb-1">
-                      <span>{done}/{plan.target} {plan.unit}</span>
+                      <span>{formatMetricValue(cardAch.achieved, cardAch.metric)}/{formatMetricValue(plan.target, cardAch.metric)} {plan.unit}</span>
                       <span className={cn(pct >= 100 ? "text-green-600" : pct >= 50 ? "text-blue-500" : "")}>
                         {pct}%
                       </span>
@@ -859,6 +1003,7 @@ export default function UnitPlansPage() {
             canManage={canManage}
             onUpdated={handleUpdated}
             onDeleted={handleDeleted}
+            onTaskContribution={handleTaskContribution}
           />
         ) : (
           <div className="flex flex-col items-center justify-center h-full text-slate-400">
@@ -887,6 +1032,7 @@ export default function UnitPlansPage() {
             year: new Date().getFullYear(),
             target: 1,
             unit: "lần",
+            metricType: "count",
             department: currentUser?.department ?? "",
           }}
           saving={createSaving}
@@ -905,5 +1051,6 @@ interface PlanFormData {
   year: number;
   target: number;
   unit: string;
+  metricType: PlanMetricType;
   department: string;
 }

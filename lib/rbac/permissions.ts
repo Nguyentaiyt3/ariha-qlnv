@@ -10,6 +10,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "intranet:read",
     "document:read",
     "request:create",
+    "research:read",   // Chỉ xem đề tài của chính mình (lọc server-side)
+    "research:create", // Đăng ký đề tài mới
   ],
   staff: [
     "task:read",
@@ -36,6 +38,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "intranet:comment",
     "workflow:read",
     "workflow:create",
+    "research:read",
+    "research:create",
     "finance:read",   // Thấy tab + thêm giao dịch/tạm ứng, KHÔNG duyệt
   ],
   teamLead: [
@@ -81,6 +85,9 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "workflow:read",
     "workflow:create",
     "workflow:approve",
+    "research:read",
+    "research:create",
+    "research:monitor",  // Xem tất cả + tiếp nhận đề cương (tab Giám sát)
     "calendar:approve",
     "finance:read",
     "finance:approve",
@@ -137,6 +144,9 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "workflow:read",
     "workflow:create",
     "workflow:approve",
+    "research:read",
+    "research:create",
+    "research:manage",
     "calendar:approve",
     "finance:read",
     "finance:approve",
@@ -334,6 +344,15 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
     ],
   },
   {
+    id: "research", label: "Nghiên cứu khoa học",
+    permissions: [
+      { id: "research:read",    label: "Xem đề tài (chỉ của mình)" },
+      { id: "research:create",  label: "Đăng ký đề tài mới" },
+      { id: "research:monitor", label: "Giám sát & tiếp nhận đề cương" },
+      { id: "research:manage",  label: "Quản trị KHCN (phản biện, hội đồng, chứng nhận)" },
+    ],
+  },
+  {
     id: "analytics", label: "Phân tích & Báo cáo",
     permissions: [
       { id: "analytics:read",    label: "Xem phân tích" },
@@ -475,6 +494,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Hiệu suất", href: "/performance", icon: "TrendingUp", requiredPermission: "kpi:read" },
   { label: "Nhân viên", href: "/employees", icon: "Users", requiredPermission: "user:read" },
   { label: "Quy trình", href: "/workflow", icon: "GitBranch", requiredPermission: "task:read" },
+  { label: "Nghiên cứu KH", href: "/research", icon: "Microscope", requiredPermission: "research:read" },
   { label: "Tài chính", href: "/finance", icon: "DollarSign", requiredPermission: "finance:read" },
   { label: "Phân tích", href: "/analytics", icon: "BarChart3", requiredPermission: "analytics:read" },
   { label: "Thông báo", href: "/notifications", icon: "Bell", requiredPermission: "notification:read" },

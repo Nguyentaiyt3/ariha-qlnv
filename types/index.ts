@@ -77,6 +77,9 @@ export interface PlanItem {
   taskId?: string;           // tuỳ chọn: liên kết với Task đã tạo
 }
 
+/** Cách cộng dồn nhiệm vụ để so với chỉ tiêu kế hoạch. */
+export type PlanMetricType = "count" | "revenue" | "expense";
+
 /** Kế hoạch thực hiện một chỉ tiêu chung của đơn vị (VD: Hội thảo — 4 cái/năm). */
 export interface UnitPlan {
   id: string;
@@ -85,10 +88,212 @@ export interface UnitPlan {
   year: number;
   target: number;          // chỉ tiêu năm (VD: 4)
   unit: string;            // đơn vị tính (VD: "hội thảo", "buổi", "đề tài")
+  /** Cách tính đạt chỉ tiêu: đếm số nhiệm vụ đạt / cộng thu / cộng chi. Mặc định "count". */
+  metricType?: PlanMetricType;
   department?: string;
   ownerId?: string;
   items: PlanItem[];       // cây nhiệm vụ con/cháu/chít
   createdBy: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+// ─── NGHIÊN CỨU KHOA HỌC (thẩm định & công nhận đề tài cấp cơ sở) ─
+
+/** Giai đoạn tổng của đề tài. */
+export type ResearchStage = "init" | "proposal" | "recognition" | "completed" | "rejected";
+
+/** Các bước trong quy trình đề tài (cố định). */
+export type ResearchStepKey =
+  | "create"        // GĐ0: nhân viên tạo đề tài
+  | "approve_task"  // GĐ0: quản lý phê duyệt task
+  | "notify"        // GĐ0: thông báo nhân viên
+  | "p_intake"      // GĐ1: tiếp nhận
+  | "p_compile"     // GĐ1: tổng hợp đề cương, nộp báo cáo quản lý
+  | "p_assign"      // GĐ1: phê duyệt thực hiện + gán người thực hiện chính/giám sát (theo nhóm)
+  | "p_review"      // GĐ1: 2 phản biện kín
+  | "p_council"     // GĐ1: họp Hội đồng KHCN
+  | "p_ethics"      // GĐ1: chứng nhận y đức
+  | "p_agree"       // GĐ1: đồng ý cho thực hiện
+  | "r_intake"      // GĐ2: tiếp nhận kết quả
+  | "r_review"      // GĐ2: 2 phản biện kín
+  | "r_council"     // GĐ2: họp Hội đồng KHCN
+  | "r_recognize";  // GĐ2: công nhận phạm vi ảnh hưởng
+
+export type ResearchStepStatus = "pending" | "in_progress" | "passed" | "failed";
+
+export interface ResearchStepState {
+  key: ResearchStepKey;
+  status: ResearchStepStatus;
+  note?: string;
+  completedAt?: string;
+  completedBy?: string;
+}
+
+/**
+ * 7 tiêu chí đánh giá đề tài (mỗi tiêu chí 1-5 điểm, tổng tối đa 35).
+ * Khớp với cấu trúc "PHIẾU NHẬN XÉT ĐỀ TÀI CẤP CƠ SỞ".
+ */
+export interface ReviewScores {
+  datvande: number;         // 1. Đặt vấn đề
+  muctieu: number;          // 2. Mục tiêu
+  ppThietke: number;        // 3a. Phương pháp — thiết kế & đối tượng
+  ppQuytrinh: number;       // 3b. Phương pháp — quy trình thu thập & phân tích
+  ketqua: number;           // 4. Kết quả
+  ketluanBandluan: number;  // 5. Kết luận - Bàn luận
+  cachTrinhbay: number;     // 6. Cách trình bày
+}
+
+export type ReviewVerdict = "pass" | "pass_if_revised" | "fail";
+export type ReviewGrade   = "excellent" | "good" | "average" | "fail";
+
+export interface IntakeLog {
+  id: string;
+  action: "accepted" | "revision_requested";
+  userId: string;
+  userName: string;
+  note?: string;
+  timestamp: string;
+}
+
+/** Phiếu phản biện kín — nội bộ (có tài khoản) hoặc chuyên gia ngoài. */
+export interface ResearchReview {
+  id: string;
+  stage: "proposal" | "recognition";
+  reviewerType: "internal" | "external";
+  reviewerId?: string;      // nếu nội bộ
+  reviewerName?: string;    // nếu ngoài (hoặc hiển thị)
+  reviewerEmail?: string;
+  reviewerOrg?: string;
+  assignedAt: string;
+  dueAt?: string;
+  submittedAt?: string;
+
+  // ── Chi tiết phiếu nhận xét ──
+  topicFileUrl?: string;    // File PDF đề tài (Google Drive hoặc upload)
+  scores?: ReviewScores;    // 7 tiêu chí (1-5 mỗi tiêu chí)
+
+  // 4 trường đánh giá định tính
+  urgency?: string;         // Tính cấp thiết
+  methodFit?: string;       // Sự phù hợp thiết kế
+  novelty?: string;         // Tính mới kết quả
+  significance?: string;    // Ý nghĩa khoa học & ứng dụng
+
+  revisionPoints?: string;  // Các điểm cần chỉnh sửa
+  additionalComments?: string; // Ý kiến thêm
+
+  verdict?: ReviewVerdict;  // KẾT LUẬN: ĐẠT / KHÔNG ĐẠT / ĐẠT nếu chỉnh sửa
+  grade?: ReviewGrade;      // Xếp loại: Giỏi / Khá / Trung bình / KHÔNG ĐẠT
+  needResubmit?: boolean;   // Cần nộp lại bài?
+
+  // ── Legacy fields (kept for compatibility) ──
+  recommendation?: "pass" | "revise" | "fail";
+  score?: number;           // Tổng điểm (tự tính từ scores)
+  comments?: string;
+  fileUrl?: string;
+  status: "assigned" | "submitted";
+}
+
+export interface ResearchCouncilVote {
+  memberId: string;
+  vote: "approve" | "reject" | "abstain";
+  comment?: string;
+  votedAt: string;
+}
+
+/** Phiên họp Hội đồng KHCN — họp trực tiếp (quyết nghị chung) hoặc online (phiếu biểu quyết). */
+export interface ResearchCouncilSession {
+  id: string;
+  stage: "proposal" | "recognition";
+  mode: "in_person" | "online";
+  scheduledAt?: string;
+  location?: string;
+  memberIds: string[];
+  votes?: ResearchCouncilVote[];               // chế độ online
+  decision?: "passed" | "failed" | "revise";   // kết luận chung
+  conclusion?: string;
+  minutesUrl?: string;                         // biên bản họp
+  createdAt: string;
+}
+
+export interface ResearchCertificate {
+  type: "ethics" | "recognition";
+  number?: string;
+  issuedAt?: string;
+  issuedBy?: string;
+  fileUrl?: string;
+  scope?: string;   // phạm vi ảnh hưởng (cấp cơ sở)
+}
+
+/** Nhóm đề tài NCKH — 1 người thực hiện phụ trách nhiều đề tài trong cùng nhóm. */
+export interface ResearchGroup {
+  id: string;
+  name: string;
+  year: number;
+  field?: string;
+  description?: string;
+  mainPerformerId: string;   // người thực hiện chính
+  supervisorId?: string;     // người giám sát
+  topicIds: string[];        // danh sách ID đề tài trong nhóm
+  createdBy: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface ResearchTopic {
+  id: string;
+  code?: string;                       // mã đề tài
+  title: string;
+  field?: string;                      // lĩnh vực / chuyên ngành
+  principalInvestigatorId: string;     // chủ nhiệm đề tài
+  memberIds?: string[];                // thành viên
+  groupId?: string;                    // ID nhóm đề tài (ResearchGroup)
+  groupName?: string;                  // tên nhóm (cache để hiển thị)
+  mainPerformerId?: string;            // người thực hiện chính (kế thừa từ nhóm)
+  supervisorId?: string;               // người giám sát (kế thừa từ nhóm)
+  department?: string;
+  year: number;
+  abstract?: string;
+  compileNote?: string;                // đề cương / tóm tắt nộp ở bước p_compile
+
+  stage: ResearchStage;
+  currentStep: ResearchStepKey;
+  steps: ResearchStepState[];
+
+  reviews: ResearchReview[];
+  councilSessions: ResearchCouncilSession[];
+  certificates: ResearchCertificate[];
+  documents: TaskResource[];
+
+  taskId?: string;                     // Task liên kết (theo dõi tiến độ + đánh giá 3T)
+  planId?: string;                     // Kế hoạch NCKH liên kết (roll-up khi công nhận)
+  approvedToExecute?: boolean;
+  revisionCount?: number;              // số lần yêu cầu sửa đổi
+  revisionNote?: string;              // ghi chú lần sửa đổi gần nhất
+  rejectionReason?: string;           // lý do từ chối
+
+  // Registration form fields (from Google Form / Import)
+  principalInvestigatorName?: string; // plain text PI name (for import/external reg)
+  memberNames?: string;               // multiline: one name per line
+  memberDepartments?: string;         // multiline: departments of members
+  submitterName?: string;             // person who filled the form (may differ from PI)
+  submitterEmail?: string;
+  submitterPhone?: string;
+  proposalFileUrl?: string;           // attached file đề cương (URL)
+  completionTimeline?: string;        // "Quý III, năm 2026"
+  proposedReviewers?: string;         // suggested reviewer names (multiline)
+  excludedReviewers?: string;         // excluded reviewer names (multiline)
+  submissionType?: "new" | "resubmit";
+  registrationNotes?: string;
+
+  // B02 intake screening result
+  intakeStatus?: "awaiting" | "passed" | "revision_needed" | "rejected";
+  intakeNote?: string;                  // ghi chú yêu cầu chỉnh sửa / từ chối
+  intakeRevisionCount?: number;         // số lần yêu cầu chỉnh sửa
+  intakeLogs?: IntakeLog[];             // lịch sử thao tác tiếp nhận
+
+  createdBy: string;
+  createdByName?: string;
   createdAt: string;
   updatedAt?: string;
 }
@@ -181,7 +386,7 @@ export interface CompletionProposal {
   score3T?: Eval3TScore;
 }
 
-export type ChangeRequestType = "deadline_change" | "performer_change" | "issue_raised";
+export type ChangeRequestType = "deadline_change" | "performer_change" | "issue_raised" | "subworkflow_change";
 
 export interface ChangeRequest {
   type: ChangeRequestType;
@@ -194,6 +399,12 @@ export interface ChangeRequest {
   changedFields?: {
     deadlineBase?: { before: string; after: string };
     mainPerformerId?: { before: string; after: string };
+    subWorkflowChange?: {
+      stepId: string;
+      stepName: string;
+      proposedChildSteps: TaskStep[];
+      proposedChildEdges?: WorkflowEdge[];
+    };
   };
   reviewedBy?: string;
   reviewedByName?: string;
@@ -235,6 +446,14 @@ export interface TaskStep {
   /** Đánh giá 3T của riêng bước (auto suy ra hoặc người duyệt chỉnh). */
   eval3T?: "tot" | "trung_binh" | "te";
   evalNote?: string;
+
+  // ── Quy trình con (sub-workflow) ──
+  /** Các bước con — bước này chứa một mini DAG riêng. */
+  childSteps?: TaskStep[];
+  /** Edges của quy trình con. */
+  childEdges?: WorkflowEdge[];
+  /** userIds của người hỗ trợ bổ sung (khác assigneeId chính). */
+  helpers?: string[];
 }
 
 export interface Proof {
@@ -340,6 +559,8 @@ export interface Task {
   // Kế hoạch đơn vị — nhiệm vụ thuộc kế hoạch
   planId?: string;              // ID của UnitPlan chứa nhiệm vụ này
   planItemParentId?: string;    // ID của PlanItem cha (undefined = cấp 1 trong kế hoạch)
+  /** Ghi đè thủ công mức đóng góp của nhiệm vụ vào chỉ tiêu kế hoạch (khi số tự động sai lệch). undefined = dùng số tự động. */
+  planContribution?: number;
 
   // Meta
   department?: string;
@@ -416,6 +637,9 @@ export interface WorkflowNode {
   eval3T?: "tot" | "trung_binh" | "te";
   evalNote?: string;
   proofs?: { id: string; name: string; mimeType: string; dataUrl: string }[];
+  /** Quy trình con — node này chứa một mini DAG. */
+  childNodes?: WorkflowNode[];
+  childEdges?: WorkflowEdge[];
 }
 
 export interface WorkflowEdge {

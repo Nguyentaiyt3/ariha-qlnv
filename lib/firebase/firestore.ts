@@ -8,6 +8,7 @@ import type {
   Workflow, MilestoneConfig, KPIFramework, Evaluation, AuditEvent,
   RequestTemplate, WorkRequest, DocFolder, WorkDocument,
   Announcement, AnnouncementComment, Channel, ChannelMessage,
+  ResearchTopic, ResearchGroup,
 } from "@/types";
 import { generateId } from "@/lib/utils";
 
@@ -241,6 +242,48 @@ export async function deleteWorkflow(id: string): Promise<void> {
   await api(`/api/workflows/${id}`, { method: "DELETE" });
 }
 
+// ─── RESEARCH TOPICS ──────────────────────────────────────────
+
+export async function getResearchTopics(taskId?: string): Promise<ResearchTopic[]> {
+  const url = taskId ? `/api/research?taskId=${encodeURIComponent(taskId)}` : "/api/research";
+  const data = await api<{ topics: ResearchTopic[] }>(url);
+  return data?.topics ?? [];
+}
+export async function getResearchTopic(id: string): Promise<ResearchTopic | null> {
+  const data = await api<{ topic: ResearchTopic }>(`/api/research/${id}`);
+  return data?.topic ?? null;
+}
+export async function saveResearchTopic(topic: ResearchTopic): Promise<void> {
+  await api("/api/research", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(topic) });
+}
+export async function updateResearchTopic(id: string, updates: Partial<ResearchTopic>): Promise<void> {
+  await api(`/api/research/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(updates) });
+}
+export async function deleteResearchTopic(id: string): Promise<void> {
+  await api(`/api/research/${id}`, { method: "DELETE" });
+}
+
+// ─── RESEARCH GROUPS ──────────────────────────────────────────
+
+export async function getResearchGroups(year?: number): Promise<ResearchGroup[]> {
+  const url = year ? `/api/research/groups?year=${year}` : "/api/research/groups";
+  const data = await api<{ groups: ResearchGroup[] }>(url);
+  return data?.groups ?? [];
+}
+export async function getResearchGroup(id: string): Promise<ResearchGroup | null> {
+  const data = await api<{ group: ResearchGroup }>(`/api/research/groups/${id}`);
+  return data?.group ?? null;
+}
+export async function createResearchGroup(group: ResearchGroup): Promise<void> {
+  await api("/api/research/groups", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(group) });
+}
+export async function updateResearchGroup(id: string, updates: Partial<ResearchGroup>): Promise<void> {
+  await api(`/api/research/groups/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(updates) });
+}
+export async function deleteResearchGroup(id: string): Promise<void> {
+  await api(`/api/research/groups/${id}`, { method: "DELETE" });
+}
+
 // ─── MILESTONE CONFIG ─────────────────────────────────────────
 
 export async function getMilestoneConfigs(): Promise<MilestoneConfig[]> {
@@ -447,4 +490,10 @@ export async function getPermissionConfig() {
   return data ?? {};
 }
 
-export async function savePermissionConfig(_config: unknown): Promise<void> {}
+export async function savePermissionConfig(config: unknown): Promise<void> {
+  await api("/api/config/permissions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(config),
+  });
+}

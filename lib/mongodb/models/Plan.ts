@@ -11,6 +11,7 @@ const unitPlanSchema = new Schema(
     year: { type: Number, required: true, index: true },
     target: { type: Number, required: true, default: 1 },
     unit: { type: String, required: true, default: "lần" },
+    metricType: { type: String, enum: ["count", "revenue", "expense"], default: "count" },
     department: String,
     ownerId: String,
     items: { type: Schema.Types.Mixed, default: [] },

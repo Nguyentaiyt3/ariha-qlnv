@@ -4,20 +4,25 @@ import { useState, useRef, useEffect } from "react";
 import {
   Plus, ChevronDown, ChevronRight, Camera, Link2, X,
   Loader2, TrendingUp, TrendingDown, Image as ImageIcon, Paperclip, AlertTriangle,
-  Mail, Send, CreditCard, Check, QrCode, DollarSign,
+  Mail, Send, CreditCard, Check, QrCode, DollarSign, List, GitBranch,
 } from "lucide-react";
 import { cn, generateId, formatDate, priorityLabel } from "@/lib/utils";
 import {
   computeInputState, computeOutputState, computeStepEval3T, STEP_EVAL_LABEL,
+  nodesToTaskSteps, updateStepById,
 } from "@/lib/workflow-engine";
 import { canAssignTo } from "@/lib/rbac/permissions";
 import { uploadFile } from "@/lib/firebase/storage";
 import { UserAvatar } from "@/components/common/UserAvatar";
-import type { Task, TaskStep, StepSubTask, User, TaskPriority, Proof, AdvanceRequest, FinancialProof } from "@/types";
+import type { Task, TaskStep, StepSubTask, User, TaskPriority, Proof, AdvanceRequest, FinancialProof, ChangeRequest, Workflow, WorkflowNode, WorkflowEdge } from "@/types";
 import {
   createAdvanceRequest, subscribeAdvanceRequests,
   createTransaction, EXPENSE_CATEGORIES,
 } from "@/lib/firebase/finance";
+import { StepFlowDiagram, type PanelSection } from "@/components/tasks/StepFlowDiagram";
+import { StepNodePanel } from "@/components/tasks/StepNodePanel";
+import WorkflowBuilder from "@/components/tasks/WorkflowBuilder";
+import { ResearchStepPanel } from "@/components/tasks/ResearchStepPanel";
 import { toast } from "sonner";
 
 interface Props {
@@ -25,6 +30,7 @@ interface Props {
   users: User[];
   currentUser: User;
   canAssignSteps: boolean;
+  canApprove?: boolean;
   onSave: (updates: Partial<Task>) => Promise<void>;
   onEmailSent?: () => void;
 }
@@ -70,7 +76,7 @@ const BLANK_SUB = {
 
 // ── Main component ────────────────────────────────────────────
 
-export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onEmailSent }: Props) {
+export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove = false, onSave, onEmailSent }: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [assigningStep, setAssigningStep] = useState<string | null>(null);
   const [addSubStep, setAddSubStep] = useState<string | null>(null);
@@ -119,10 +125,27 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
   const [emailBody, setEmailBody] = useState("");
   const [emailSending, setEmailSending] = useState(false);
 
-  const steps = task.steps ?? [];
-  const activeUsers = users.filter((u) => u.isActive);
-  // Chỉ được giao cho người cùng cấp trở xuống (không giao cấp trên).
-  const assignableUsers = activeUsers.filter((u) => canAssignTo(currentUser.role, u.role));
+  // View mode: list (default) or diagram
+  const [viewMode, setViewMode] = useState<"list" | "diagram">("list");
+  // Panel state for diagram node click
+  const [panelStepId,  setPanelStepId]  = useState<string | null>(null);
+  const [panelSection, setPanelSection] = useState<PanelSection>("progress");
+  // Sub-workflow editor overlay
+  const [editSubWfStep, setEditSubWfStep] = useState<TaskStep | null>(null);
+
+  // Optimistic local copy — updates instantly on action, syncs when subscription fires.
+  const [localSteps, setLocalSteps] = useState<TaskStep[]>(task.steps ?? []);
+  useEffect(() => { setLocalSteps(task.steps ?? []); }, [task.steps]);
+  const steps = localSteps;
+
+  // Chỉ hiển thị người đã thuộc task (stakeholder + mainPerformer), cùng cấp trở xuống.
+  const taskMemberIds = new Set([
+    task.mainPerformerId,
+    ...(task.stakeholders ?? []).map((s) => s.userId),
+  ].filter(Boolean));
+  const assignableUsers = users.filter(
+    (u) => u.isActive && taskMemberIds.has(u.id) && canAssignTo(currentUser.role, u.role)
+  );
 
   // ── Helpers ──────────────────────────────────────────────────
 
@@ -187,6 +210,78 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
     });
   }
 
+  // ── Sub-workflow helpers ──────────────────────────────────────
+  function buildSubWorkflow(step: TaskStep): Workflow {
+    const childSteps = step.childSteps ?? [];
+    const nodes: WorkflowNode[] = childSteps.map((cs, i) => ({
+      id: cs.id,
+      name: cs.name,
+      description: cs.description,
+      department: cs.department,
+      status: (cs.status === "completed" ? "done" : cs.status === "in_progress" ? "in_progress" : "todo") as any,
+      position: cs.position ?? { x: (i % 3) * 260 + 40, y: Math.floor(i / 3) * 160 + 80 },
+      assigneeId: cs.assigneeId,
+      deadline: cs.deadline,
+      kpiTarget: cs.kpiTarget,
+      kpiUnit: cs.kpiUnit,
+    }));
+    const edges: WorkflowEdge[] = step.childEdges ?? [];
+    return {
+      id: `sub-${step.id}`, name: `Quy trình con: ${step.name}`,
+      nodes, edges, steps: [], status: "published" as const,
+      createdBy: "", createdByName: "", createdAt: "", updatedAt: "",
+    };
+  }
+
+  async function handleSubWorkflowSave(newNodes: WorkflowNode[], newEdges: WorkflowEdge[]) {
+    if (!editSubWfStep) return;
+    const newChildSteps = nodesToTaskSteps(newNodes, newEdges);
+    const updatedSteps = updateStepById(localSteps, editSubWfStep.id, {
+      childSteps: newChildSteps, childEdges: newEdges,
+    });
+    setLocalSteps(updatedSteps);
+    setEditSubWfStep(null);
+    try {
+      await onSave({ steps: updatedSteps });
+      toast.success("Đã lưu quy trình con.");
+    } catch {
+      toast.error("Lưu quy trình con thất bại");
+      setLocalSteps(task.steps ?? []);
+    }
+  }
+
+  function handleSubWorkflowConfirm(newNodes: WorkflowNode[], newEdges: WorkflowEdge[]) {
+    if (!editSubWfStep) return;
+    const isFirstSetup = !(editSubWfStep.childSteps?.length);
+    const newChildSteps = nodesToTaskSteps(newNodes, newEdges);
+    if (isFirstSetup || canApprove) {
+      // Direct apply: initial setup or approver
+      handleSubWorkflowSave(newNodes, newEdges);
+    } else {
+      // Create change request for post-setup modification
+      const cr: ChangeRequest = {
+        type: "subworkflow_change",
+        reason: `Đề xuất sửa quy trình con "${editSubWfStep.name}"`,
+        requestedBy: currentUser.id,
+        requestedByName: currentUser.name,
+        requestedAt: new Date().toISOString(),
+        previousStatus: task.status,
+        status: "pending",
+        changedFields: {
+          subWorkflowChange: {
+            stepId: editSubWfStep.id,
+            stepName: editSubWfStep.name,
+            proposedChildSteps: newChildSteps,
+            proposedChildEdges: newEdges,
+          },
+        },
+      };
+      onSave({ status: "review" as const, pendingChangeRequest: cr }).catch(console.error);
+      toast.info("Đã gửi đề xuất sửa quy trình con — chờ quản lý phê duyệt.");
+      setEditSubWfStep(null);
+    }
+  }
+
   // ── Handlers ─────────────────────────────────────────────────
 
   async function handleAssignStep(stepId: string, userId: string) {
@@ -195,9 +290,14 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
       ? task.stakeholders
       : [...(task.stakeholders ?? []), { userId, role: "assignee" as const }];
     const updatedSteps = patchStep(stepId, { assigneeId: userId, status: "pending" });
-    await onSave({ steps: updatedSteps, stakeholders });
+    // Optimistic: close picker + show new assignee immediately
+    setLocalSteps(updatedSteps);
     setAssigningStep(null);
     toast.success("Đã phân công");
+    onSave({ steps: updatedSteps, stakeholders }).catch(() => {
+      toast.error("Lưu thất bại — đang hoàn tác");
+      setLocalSteps(task.steps ?? []);
+    });
   }
 
   async function handleAddSubTask(stepId: string) {
@@ -222,16 +322,22 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
       ? task.stakeholders
       : [...(task.stakeholders ?? []), { userId: subForm.userId, role: "assignee" as const }];
     const updatedSteps = patchStep(stepId, { subTasks });
-    await onSave({ steps: updatedSteps, stakeholders });
+    setLocalSteps(updatedSteps);
     setSubForm(BLANK_SUB);
     setAddSubStep(null);
     toast.success("Đã giao việc hỗ trợ");
+    onSave({ steps: updatedSteps, stakeholders }).catch(() => {
+      toast.error("Lưu thất bại — đang hoàn tác");
+      setLocalSteps(task.steps ?? []);
+    });
   }
 
   async function handleRemoveSubTask(stepId: string, subId: string) {
     const step = steps.find((s) => s.id === stepId)!;
     const subTasks = (step.subTasks ?? []).filter((st) => st.id !== subId);
-    await onSave({ steps: patchStep(stepId, { subTasks }) });
+    const updatedSteps = patchStep(stepId, { subTasks });
+    setLocalSteps(updatedSteps);
+    onSave({ steps: updatedSteps }).catch(() => setLocalSteps(task.steps ?? []));
   }
 
   function startEdit(stepId: string, subId?: string, current = 0) {
@@ -248,9 +354,14 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
       updatedSteps = patchStep(stepId, { progress: progressVal });
     }
     const normalized = normalizeSteps(updatedSteps);
-    await onSave({ steps: normalized, progress: recalcProgress(normalized) });
+    // Optimistic: close editor immediately
+    setLocalSteps(normalized);
     setEditKey(null);
     toast.success("Đã cập nhật tiến độ");
+    onSave({ steps: normalized, progress: recalcProgress(normalized) }).catch(() => {
+      toast.error("Lưu thất bại — đang hoàn tác");
+      setLocalSteps(task.steps ?? []);
+    });
   }
 
   async function addProof(stepId: string, subId: string | undefined, proof: Proof) {
@@ -263,8 +374,12 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
       const step = steps.find((s) => s.id === stepId)!;
       updatedSteps = patchStep(stepId, { proofs: [...(step.proofs ?? []), proof] });
     }
-    await onSave({ steps: updatedSteps });
+    setLocalSteps(updatedSteps);
     toast.success("Đã thêm minh chứng");
+    onSave({ steps: updatedSteps }).catch(() => {
+      toast.error("Lưu minh chứng thất bại");
+      setLocalSteps(task.steps ?? []);
+    });
   }
 
   async function handleAddLink(stepId: string, subId?: string) {
@@ -501,6 +616,13 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
 
   // ── UI ───────────────────────────────────────────────────────
 
+  const pCls = (p: number) =>
+    p <= 33 ? "text-red-600 dark:text-red-400 font-semibold"
+    : p <= 66 ? "text-amber-600 dark:text-amber-400 font-semibold"
+    : "text-green-600 dark:text-green-400 font-semibold";
+  const pBar = (p: number) =>
+    p <= 33 ? "bg-red-500" : p <= 66 ? "bg-amber-500" : "bg-green-500";
+
   if (steps.length === 0) {
     return (
       <p className="text-slate-400 text-sm text-center py-10">
@@ -513,7 +635,7 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
 
   return (
     <div className="space-y-3">
-      {/* Workflow badge + progress summary */}
+      {/* Workflow badge + progress summary + view toggle */}
       <div className="flex items-center gap-2 text-xs">
         {task.workflowName && (
           <span className="px-2.5 py-1 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-full font-medium">
@@ -521,15 +643,103 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
           </span>
         )}
         <span className="text-slate-400">{done}/{steps.length} bước hoàn thành</span>
+        <div className="ml-auto flex items-center gap-1 bg-slate-100 dark:bg-slate-800 rounded-lg p-0.5">
+          <button
+            onClick={() => setViewMode("list")}
+            className={cn("flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition",
+              viewMode === "list" ? "bg-white dark:bg-slate-700 text-slate-700 dark:text-white shadow-sm" : "text-slate-500 hover:text-slate-700")}
+          >
+            <List className="w-3 h-3" />Danh sách
+          </button>
+          <button
+            onClick={() => setViewMode("diagram")}
+            className={cn("flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition",
+              viewMode === "diagram" ? "bg-white dark:bg-slate-700 text-slate-700 dark:text-white shadow-sm" : "text-slate-500 hover:text-slate-700")}
+          >
+            <GitBranch className="w-3 h-3" />Sơ đồ
+          </button>
+        </div>
       </div>
 
-      {!task.approved && (
+      {/* ── Diagram mode ── */}
+      {viewMode === "diagram" && (
+        <>
+          <StepFlowDiagram
+            task={{ ...task, steps }}
+            steps={steps}
+            users={users}
+            currentUser={currentUser}
+            canAssignSteps={canAssignSteps}
+            onNodeClick={(stepId, section) => {
+              if (section === "subworkflow") return; // handled by onEditSubWorkflow
+              setPanelStepId(stepId);
+              setPanelSection(section);
+            }}
+            onEditSubWorkflow={(stepId) => {
+              const step = localSteps.find((s) => s.id === stepId);
+              if (step) setEditSubWfStep(step);
+            }}
+          />
+          {panelStepId && (
+            <StepNodePanel
+              task={{ ...task, steps }}
+              stepId={panelStepId}
+              section={panelSection}
+              onSectionChange={setPanelSection}
+              onClose={() => setPanelStepId(null)}
+              users={users}
+              currentUser={currentUser}
+              taskMemberIds={taskMemberIds}
+              onSave={onSave}
+              onEmailSent={onEmailSent}
+            />
+          )}
+        </>
+      )}
+
+      {/* ── List mode ── */}
+      {viewMode === "list" && !task.approved && (
         <div className="text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 rounded-xl border border-amber-200 dark:border-amber-800">
           Nhiệm vụ chưa được phê duyệt — phân công và cập nhật tiến độ sẽ khả dụng sau khi duyệt.
         </div>
       )}
 
-      {steps.map((step, idx) => {
+      {/* ── Sub-workflow editor overlay ── */}
+      {editSubWfStep && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 60, background: "var(--background, #fff)", display: "flex", flexDirection: "column" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", borderBottom: "1px solid #e2e8f0", flexShrink: 0, background: "var(--card, #fff)" }}>
+            <GitBranch style={{ width: 16, height: 16, color: "#8B5CF6", flexShrink: 0 }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <p style={{ fontSize: 13, fontWeight: 700, color: "var(--foreground, #0f172a)", margin: 0 }}>
+                Quy trình con: {editSubWfStep.name}
+              </p>
+              {!canApprove && (editSubWfStep.childSteps?.length ?? 0) > 0 && (
+                <p style={{ fontSize: 11, color: "#D97706", margin: "2px 0 0" }}>
+                  Đã có quy trình con — thay đổi sẽ gửi đề xuất cho quản lý phê duyệt
+                </p>
+              )}
+            </div>
+            <button
+              onClick={() => setEditSubWfStep(null)}
+              style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid #e2e8f0", background: "#f8fafc", color: "#64748b", cursor: "pointer", fontSize: 12, fontWeight: 600 }}
+            >
+              Đóng
+            </button>
+          </div>
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <WorkflowBuilder
+              workflow={buildSubWorkflow(editSubWfStep)}
+              allWorkflows={[]}
+              canEdit={canAssignSteps}
+              canApprove={canApprove || !(editSubWfStep.childSteps?.length)}
+              onSave={async (nodes, edges) => { handleSubWorkflowConfirm(nodes, edges); }}
+              onCancelDraft={() => setEditSubWfStep(null)}
+            />
+          </div>
+        </div>
+      )}
+
+      {viewMode === "list" && steps.map((step, idx) => {
         const stepUser = users.find((u) => u.id === step.assigneeId);
         const isOpen = expanded.has(step.id);
 
@@ -548,6 +758,13 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
         const isAddingSub = addSubStep === step.id;
         const canIUpdate =
           step.assigneeId === currentUser.id || canAssignSteps;
+        // Sub-task members in this step also get read access to research panels
+        const isStepMember = canIUpdate ||
+          (step.subTasks ?? []).some(st => st.userId === currentUser.id);
+        const myRole: "assignee" | "helper" | null =
+          step.assigneeId === currentUser.id ? "assignee"
+          : (step.helpers ?? []).includes(currentUser.id) ? "helper"
+          : null;
 
         return (
           <div
@@ -581,6 +798,16 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
                 {/* Tên bước + badge tạm ứng cùng hàng */}
                 <div className="flex items-center gap-1.5 flex-wrap">
                   <p className="font-medium text-sm dark:text-white truncate">{step.name}</p>
+                  {myRole && (
+                    <span className={cn(
+                      "shrink-0 text-[10px] px-1.5 py-0.5 rounded-full font-semibold",
+                      myRole === "assignee"
+                        ? "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
+                        : "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300",
+                    )}>
+                      {myRole === "assignee" ? "Thực hiện chính" : "Cộng tác"}
+                    </span>
+                  )}
                   {taskAdvances.filter((a) => a.stepId === step.id).map((adv) => {
                     const ADV_CLS: Record<string, string> = {
                       PENDING:             "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
@@ -621,7 +848,7 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
                 </div>
               </div>
 
-              <span className="text-xs text-slate-400 shrink-0">{step.progress}%</span>
+              <span className={cn("text-xs shrink-0", pCls(step.progress))}>{step.progress}%</span>
 
               {/* Proof indicators (always visible) */}
               {proofCount > 0 && (
@@ -647,9 +874,9 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
             </button>
 
             {/* Progress bar */}
-            <div className="h-1 bg-slate-100 dark:bg-slate-800">
+            <div className="h-1.5 bg-slate-100 dark:bg-slate-800">
               <div
-                className={cn("h-full transition-all", isStepDone(step) ? "bg-green-500" : "bg-blue-500")}
+                className={cn("h-full transition-all duration-300", pBar(step.progress))}
                 style={{ width: `${step.progress}%` }}
               />
             </div>
@@ -660,6 +887,16 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
 
                 {/* Đầu vào / Đầu ra / Đánh giá 3T — chuỗi quy trình liền mạch */}
                 <StepFlowBanner step={step} allSteps={steps} />
+
+                {/* B01 / B02 research workflow action panels */}
+                <ResearchStepPanel
+                  task={task}
+                  step={step}
+                  users={users}
+                  currentUser={currentUser}
+                  canView={isStepMember}
+                  canUpdate={canIUpdate}
+                />
 
                 {/* Assign / change main assignee */}
                 {task.approved && canAssignSteps && (
@@ -873,9 +1110,9 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, onSave, onE
                               {sub.note && <p className="text-xs text-slate-400 mt-0.5">{sub.note}</p>}
                               <div className="flex items-center gap-2 mt-1.5">
                                 <div className="flex-1 h-1.5 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
-                                  <div className="h-full bg-blue-500 rounded-full" style={{ width: `${sub.progress}%` }} />
+                                  <div className={cn("h-full rounded-full transition-all duration-300", pBar(sub.progress))} style={{ width: `${sub.progress}%` }} />
                                 </div>
-                                <span className="text-xs text-slate-400 shrink-0">{sub.progress}%</span>
+                                <span className={cn("text-xs shrink-0", pCls(sub.progress))}>{sub.progress}%</span>
                               </div>
                             </div>
                             <div className="flex items-center gap-1 shrink-0 ml-1">

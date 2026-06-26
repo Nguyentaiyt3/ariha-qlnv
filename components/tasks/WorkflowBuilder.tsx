@@ -44,8 +44,17 @@ const EVAL_3T = [
   { key: "te"         as const, label: "Tệ",          color: "#EF4444" },
 ];
 type Eval3T = "tot" | "trung_binh" | "te";
-type ArrowType = "closed" | "open" | "none";
-type LineType  = "smoothstep" | "straight" | "step";
+type ArrowType      = "closed" | "open" | "none";
+type LineType       = "smoothstep" | "straight" | "step";
+type ArrowDirection = "forward" | "backward" | "both";
+
+const HANDLE_SIDE_MAP: Record<string, "left" | "right" | "top" | "bottom"> = {
+  sl: "left", sr: "right", st: "top", sb: "bottom",
+  tl: "left", tr: "right", tt: "top", tb: "bottom",
+};
+const SOURCE_HANDLE_BY_SIDE: Record<string, string> = { left: "sl", right: "sr", top: "st", bottom: "sb" };
+const TARGET_HANDLE_BY_SIDE: Record<string, string> = { left: "tl", right: "tr", top: "tt", bottom: "tb" };
+const FLIP_HANDLE: Record<string, string> = { sl: "tl", sr: "tr", st: "tt", sb: "tb", tl: "sl", tr: "sr", tt: "st", tb: "sb" };
 
 interface ProofItem {
   id: string; name: string; mimeType: string; dataUrl: string;
@@ -72,6 +81,8 @@ interface WFNodeData {
   eval3T?: Eval3T;
   evalNote?: string;
   proofs?: ProofItem[];
+  /** Số node con — để hiện badge quy trình con */
+  childCount?: number;
 }
 
 // ── Context ───────────────────────────────────────────────────
@@ -299,6 +310,13 @@ function WFNodeCard({ data, id, selected }: NodeProps) {
         </div>
       )}
 
+      {/* Sub-workflow badge */}
+      {(d.childCount ?? 0) > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 10px 6px", fontSize: 9.5, fontWeight: 700, color: "#8B5CF6" }}>
+          <GitBranch size={9} />⊞ {d.childCount} bước con
+        </div>
+      )}
+
       {/* Description toggle */}
       {d.description && (
         <div style={{ padding: "0 10px 7px" }}>
@@ -356,7 +374,9 @@ function toRFEdges(wf: Workflow): Edge[] {
       }));
   return src.map((e) =>
     buildEdge(e.id, e.source, e.target, !!e.required, e.label,
-      (e as any).arrowType ?? "closed", (e as any).lineType ?? "smoothstep")
+      (e as any).arrowType ?? "closed", (e as any).lineType ?? "smoothstep",
+      (e as any).arrowDirection ?? "forward",
+      (e as any).sourceHandle ?? null, (e as any).targetHandle ?? null)
   );
 }
 
@@ -364,19 +384,28 @@ function buildEdge(
   id: string, source: string, target: string,
   required: boolean, label?: string,
   arrowType: ArrowType = "closed", lineType: LineType = "smoothstep",
+  arrowDirection: ArrowDirection = "forward",
+  sourceHandle?: string | null, targetHandle?: string | null,
 ): Edge {
   const color = required ? "#3B82F6" : "#94A3B8";
-  let markerEnd: Edge["markerEnd"];
-  if (arrowType === "closed") markerEnd = { type: MarkerType.ArrowClosed, color };
-  else if (arrowType === "open") markerEnd = { type: MarkerType.Arrow, color };
+  let markerEnd:   Edge["markerEnd"];
+  let markerStart: Edge["markerStart"];
+  if (arrowType !== "none") {
+    const mtype = arrowType === "closed" ? MarkerType.ArrowClosed : MarkerType.Arrow;
+    if (arrowDirection !== "backward") markerEnd   = { type: mtype, color };
+    if (arrowDirection !== "forward")  markerStart = { type: mtype, color };
+  }
   return {
     id, source, target, type: lineType,
     label: required ? "Phải xong trước" : label,
     labelStyle: required ? { fontSize: 10, fontWeight: 600, fill: "#3B82F6" } : { fontSize: 10, fill: "#94A3B8" },
     labelBgStyle: required ? { fill: "#EFF6FF", fillOpacity: 1 } : { fill: "#ffffff", fillOpacity: 0.85 },
     markerEnd,
+    markerStart,
+    ...(sourceHandle ? { sourceHandle } : {}),
+    ...(targetHandle ? { targetHandle } : {}),
     style: { strokeWidth: required ? 2.5 : 1.5, stroke: color, strokeDasharray: required ? undefined : "5 4" },
-    data: { required, arrowType, lineType },
+    data: { required, arrowType, lineType, arrowDirection, sourceHandle: sourceHandle ?? null, targetHandle: targetHandle ?? null },
   };
 }
 
@@ -405,6 +434,9 @@ function fromRF(rfNodes: Node[], rfEdges: Edge[], extEdges: WorkflowEdge[]) {
       required: !!(e.data?.required),
       label: typeof e.label === "string" && !e.data?.required ? e.label : undefined,
       arrowType: e.data?.arrowType, lineType: e.data?.lineType,
+      arrowDirection: e.data?.arrowDirection,
+      sourceHandle: e.data?.sourceHandle || undefined,
+      targetHandle: e.data?.targetHandle || undefined,
     } as any)),
     ...extEdges,
   ];
@@ -428,6 +460,7 @@ type EditorTab = "chung" | "dau_vao" | "dau_ra" | "danh_gia";
 function NodeEditor({
   node, allWorkflows, extEdges, viewMode, users,
   onUpdate, onDelete, onClose, onAddExtEdge, onRemoveExtEdge, predecessors,
+  onEditSubWorkflow,
 }: {
   node: Node; allWorkflows: Workflow[]; extEdges: WorkflowEdge[];
   viewMode: "zones" | "classic"; users: UserBasic[];
@@ -435,6 +468,7 @@ function NodeEditor({
   onDelete: (id: string) => void; onClose: () => void;
   onAddExtEdge: (e: WorkflowEdge) => void; onRemoveExtEdge: (id: string) => void;
   predecessors: Node[];
+  onEditSubWorkflow?: (nodeId: string) => void;
 }) {
   const [tab, setTab]             = useState<EditorTab>("chung");
   const [showExtForm, setShowExt] = useState(false);
@@ -544,6 +578,16 @@ function NodeEditor({
             <span style={{ fontSize: 11, fontWeight: 600, color: currentZone.color }}>{currentZone.label}</span>
             <span style={{ fontSize: 10, color: `${currentZone.color}80` }}>· kéo để đổi vùng</span>
           </div>
+        )}
+        {/* Sub-workflow button */}
+        {onEditSubWorkflow && (
+          <button
+            onClick={() => onEditSubWorkflow(node.id)}
+            style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", marginBottom: 8, padding: "7px 10px", borderRadius: 8, fontSize: 11.5, fontWeight: 700, border: `1.5px solid ${(d.childCount ?? 0) > 0 ? "#8B5CF6" : "#e2e8f0"}`, background: (d.childCount ?? 0) > 0 ? "#F5F3FF" : "#f8fafc", color: (d.childCount ?? 0) > 0 ? "#8B5CF6" : "#64748b", cursor: "pointer" }}
+          >
+            <GitBranch size={12} />
+            {(d.childCount ?? 0) > 0 ? `⊞ Sửa quy trình con (${d.childCount} bước)` : "⊞ Thêm quy trình con"}
+          </button>
         )}
         <div style={{ display: "flex", borderBottom: "1px solid #e2e8f0" }}>
           {TABS.map((t) => (
@@ -882,42 +926,91 @@ function NodeEditor({
 }
 
 // ── Edge hint ─────────────────────────────────────────────────
-function EdgeHint({ edge, onToggleRequired, onChangeStyle, onDeleteEdge, onClose }: {
+const SIDE_ICONS: Record<string, string> = { left: "←", right: "→", top: "↑", bottom: "↓" };
+const SIDES = ["left", "right", "top", "bottom"] as const;
+
+function EdgeHint({ edge, onToggleRequired, onChangeStyle, onFlipEdge, onDeleteEdge, onClose }: {
   edge: Edge;
   onToggleRequired: () => void;
-  onChangeStyle: (a?: ArrowType, l?: LineType) => void;
+  onChangeStyle: (a?: ArrowType, l?: LineType, dir?: ArrowDirection, src?: string | null, tgt?: string | null) => void;
+  onFlipEdge: () => void;
   onDeleteEdge: () => void;
   onClose: () => void;
 }) {
-  const required  = !!(edge.data?.required);
-  const arrowType = (edge.data?.arrowType ?? "closed") as ArrowType;
-  const lineType  = (edge.data?.lineType  ?? "smoothstep") as LineType;
+  const required       = !!(edge.data?.required);
+  const arrowType      = (edge.data?.arrowType      ?? "closed")     as ArrowType;
+  const lineType       = (edge.data?.lineType        ?? "smoothstep") as LineType;
+  const arrowDirection = (edge.data?.arrowDirection  ?? "forward")    as ArrowDirection;
+  const srcHandle      = (edge.data?.sourceHandle    ?? null)         as string | null;
+  const tgtHandle      = (edge.data?.targetHandle    ?? null)         as string | null;
+
+  const currentSrcSide = srcHandle ? HANDLE_SIDE_MAP[srcHandle] : null;
+  const currentTgtSide = tgtHandle ? HANDLE_SIDE_MAP[tgtHandle] : null;
+
   const ARROWS: { key: ArrowType; label: string }[] = [
     { key: "closed", label: "▶ Mũi tên" }, { key: "open", label: "→ Mở" }, { key: "none", label: "— Không" },
   ];
   const LINES: { key: LineType; label: string }[] = [
-    { key: "smoothstep", label: "Cong" }, { key: "straight", label: "Thẳng" }, { key: "step", label: "Bậc" },
+    { key: "smoothstep", label: "⌒ Cong" }, { key: "straight", label: "— Thẳng" }, { key: "step", label: "⌐ Bậc" },
   ];
+  const DIRECTIONS: { key: ArrowDirection; label: string }[] = [
+    { key: "forward",  label: "→ Xuôi"    },
+    { key: "backward", label: "← Ngược"   },
+    { key: "both",     label: "↔ Hai chiều" },
+  ];
+
+  const btnBase: React.CSSProperties = {
+    width: "100%", marginBottom: 4, padding: "5px 8px", borderRadius: 7, fontSize: 11, fontWeight: 600,
+    textAlign: "left", cursor: "pointer",
+  };
+  const sideBtnBase: React.CSSProperties = {
+    flex: 1, padding: "4px 0", borderRadius: 6, fontSize: 12, fontWeight: 700,
+    cursor: "pointer", textAlign: "center" as const,
+  };
+
   return (
     <div style={{
       position: "absolute", left: "50%", bottom: 72, transform: "translateX(-50%)",
       zIndex: 30, background: "#ffffff", border: "1px solid #e2e8f0",
       borderRadius: 14, padding: "12px 14px", boxShadow: "0 4px 24px rgba(0,0,0,.13)",
-      minWidth: 340,
+      minWidth: 420,
     }}>
+      {/* Header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
         <span style={{ fontSize: 12, fontWeight: 700, color: "#0f172a" }}>Tuỳ chỉnh đường kết nối</span>
         <button onClick={onClose} style={{ padding: 4, borderRadius: 6, border: "none", background: "#f1f5f9", color: "#64748b", cursor: "pointer", lineHeight: 0 }}><X size={13} /></button>
       </div>
-      <div style={{ display: "flex", gap: 10 }}>
+
+      {/* Row 1: Arrow direction + Flip */}
+      <div style={{ marginBottom: 10 }}>
+        <p style={{ fontSize: 9, fontWeight: 700, color: "#64748b", textTransform: "uppercase", marginBottom: 5 }}>Hướng mũi tên</p>
+        <div style={{ display: "flex", gap: 5 }}>
+          {DIRECTIONS.map((d) => (
+            <button key={d.key} onClick={() => onChangeStyle(undefined, undefined, d.key)} style={{
+              flex: 1, padding: "5px 6px", borderRadius: 7, fontSize: 10.5, fontWeight: 700,
+              border: arrowDirection === d.key ? "1.5px solid #F59E0B" : "1px solid #e2e8f0",
+              background: arrowDirection === d.key ? "#FFFBEB" : "#f8fafc",
+              color: arrowDirection === d.key ? "#D97706" : "#64748b", cursor: "pointer",
+            }}>{d.label}</button>
+          ))}
+          <button onClick={onFlipEdge} title="Đảo nguồn ↔ đích" style={{
+            padding: "5px 10px", borderRadius: 7, fontSize: 11, fontWeight: 700,
+            border: "1px solid #e2e8f0", background: "#f8fafc", color: "#64748b",
+            cursor: "pointer", whiteSpace: "nowrap",
+          }}>⇄ Đảo chiều</button>
+        </div>
+      </div>
+
+      {/* Row 2: Arrow style + Line type */}
+      <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
         <div style={{ flex: 1 }}>
           <p style={{ fontSize: 9, fontWeight: 700, color: "#64748b", textTransform: "uppercase", marginBottom: 5 }}>Đầu mũi tên</p>
           {ARROWS.map((a) => (
-            <button key={a.key} onClick={() => onChangeStyle(a.key, undefined)} style={{
-              width: "100%", marginBottom: 4, padding: "5px 8px", borderRadius: 7, fontSize: 11, fontWeight: 600, textAlign: "left",
+            <button key={a.key} onClick={() => onChangeStyle(a.key)} style={{
+              ...btnBase,
               border: arrowType === a.key ? "1.5px solid #3B82F6" : "1px solid #e2e8f0",
               background: arrowType === a.key ? "#EFF6FF" : "#f8fafc",
-              color: arrowType === a.key ? "#3B82F6" : "#64748b", cursor: "pointer",
+              color: arrowType === a.key ? "#3B82F6" : "#64748b",
             }}>{a.label}</button>
           ))}
         </div>
@@ -925,32 +1018,77 @@ function EdgeHint({ edge, onToggleRequired, onChangeStyle, onDeleteEdge, onClose
           <p style={{ fontSize: 9, fontWeight: 700, color: "#64748b", textTransform: "uppercase", marginBottom: 5 }}>Dạng đường</p>
           {LINES.map((l) => (
             <button key={l.key} onClick={() => onChangeStyle(undefined, l.key)} style={{
-              width: "100%", marginBottom: 4, padding: "5px 8px", borderRadius: 7, fontSize: 11, fontWeight: 600, textAlign: "left",
+              ...btnBase,
               border: lineType === l.key ? "1.5px solid #8B5CF6" : "1px solid #e2e8f0",
               background: lineType === l.key ? "#F5F3FF" : "#f8fafc",
-              color: lineType === l.key ? "#8B5CF6" : "#64748b", cursor: "pointer",
+              color: lineType === l.key ? "#8B5CF6" : "#64748b",
             }}>{l.label}</button>
           ))}
         </div>
         <div style={{ flex: 1 }}>
           <p style={{ fontSize: 9, fontWeight: 700, color: "#64748b", textTransform: "uppercase", marginBottom: 5 }}>Điều kiện</p>
           <button onClick={onToggleRequired} style={{
-            width: "100%", marginBottom: 4, padding: "5px 8px", borderRadius: 7, fontSize: 11, fontWeight: 600,
+            ...btnBase,
             border: `1.5px solid ${required ? "#3B82F6" : "#e2e8f0"}`,
             background: required ? "#EFF6FF" : "#f8fafc",
-            color: required ? "#3B82F6" : "#64748b", cursor: "pointer",
+            color: required ? "#3B82F6" : "#64748b",
             display: "flex", alignItems: "center", gap: 4,
           }}>
             {required ? <Lock size={11} /> : <Unlock size={11} />}
             {required ? "Bắt buộc" : "Tuỳ chọn"}
           </button>
           <button onClick={onDeleteEdge} style={{
-            width: "100%", padding: "5px 8px", borderRadius: 7, fontSize: 11, fontWeight: 600,
-            border: "1px solid #FCA5A5", background: "#FFF1F2", color: "#EF4444", cursor: "pointer",
+            ...btnBase, marginBottom: 0,
+            border: "1px solid #FCA5A5", background: "#FFF1F2", color: "#EF4444",
             display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
           }}>
             <Trash2 size={11} /> Xoá
           </button>
+        </div>
+      </div>
+
+      {/* Row 3: Connection point (source side + target side) */}
+      <div style={{ borderTop: "1px solid #f1f5f9", paddingTop: 10 }}>
+        <p style={{ fontSize: 9, fontWeight: 700, color: "#64748b", textTransform: "uppercase", marginBottom: 6 }}>Vị trí kết nối với node</p>
+        <div style={{ display: "flex", gap: 10 }}>
+          <div style={{ flex: 1 }}>
+            <p style={{ fontSize: 9.5, fontWeight: 600, color: "#3B82F6", marginBottom: 4 }}>Đầu nguồn</p>
+            <div style={{ display: "flex", gap: 3 }}>
+              {SIDES.map((side) => (
+                <button key={side} onClick={() => onChangeStyle(undefined, undefined, undefined, SOURCE_HANDLE_BY_SIDE[side], undefined)} style={{
+                  ...sideBtnBase,
+                  border: currentSrcSide === side ? "1.5px solid #3B82F6" : "1px solid #e2e8f0",
+                  background: currentSrcSide === side ? "#EFF6FF" : "#f8fafc",
+                  color: currentSrcSide === side ? "#3B82F6" : "#94a3b8",
+                }} title={side}>{SIDE_ICONS[side]}</button>
+              ))}
+              {srcHandle && (
+                <button onClick={() => onChangeStyle(undefined, undefined, undefined, null, undefined)} style={{
+                  ...sideBtnBase, flex: "unset", padding: "4px 6px",
+                  border: "1px solid #e2e8f0", background: "#f8fafc", color: "#94a3b8", fontSize: 9,
+                }} title="Tự động">Auto</button>
+              )}
+            </div>
+          </div>
+          <div style={{ flex: 1 }}>
+            <p style={{ fontSize: 9.5, fontWeight: 600, color: "#8B5CF6", marginBottom: 4 }}>Đầu đích</p>
+            <div style={{ display: "flex", gap: 3 }}>
+              {SIDES.map((side) => (
+                <button key={side} onClick={() => onChangeStyle(undefined, undefined, undefined, undefined, TARGET_HANDLE_BY_SIDE[side])} style={{
+                  ...sideBtnBase,
+                  border: currentTgtSide === side ? "1.5px solid #8B5CF6" : "1px solid #e2e8f0",
+                  background: currentTgtSide === side ? "#F5F3FF" : "#f8fafc",
+                  color: currentTgtSide === side ? "#8B5CF6" : "#94a3b8",
+                }} title={side}>{SIDE_ICONS[side]}</button>
+              ))}
+              {tgtHandle && (
+                <button onClick={() => onChangeStyle(undefined, undefined, undefined, undefined, null)} style={{
+                  ...sideBtnBase, flex: "unset", padding: "4px 6px",
+                  border: "1px solid #e2e8f0", background: "#f8fafc", color: "#94a3b8", fontSize: 9,
+                }} title="Tự động">Auto</button>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -965,10 +1103,14 @@ export interface WorkflowBuilderProps {
   canApprove?: boolean;
   users?: UserBasic[];
   onSave: (nodes: WorkflowNode[], edges: WorkflowEdge[]) => Promise<void>;
+  /** Draft mode: when set, "Xác nhận" calls this instead of onSave (no DB write). */
+  onConfirm?: (nodes: WorkflowNode[], edges: WorkflowEdge[]) => void;
+  /** Called when user wants to cancel out of draft mode. */
+  onCancelDraft?: () => void;
 }
 
 // ── Main component ────────────────────────────────────────────
-export default function WorkflowBuilder({ workflow, allWorkflows, canEdit, canApprove, users = [], onSave }: WorkflowBuilderProps) {
+export default function WorkflowBuilder({ workflow, allWorkflows, canEdit, canApprove, users = [], onSave, onConfirm, onCancelDraft }: WorkflowBuilderProps) {
   const [viewMode, setViewMode] = useState<"zones" | "classic">("zones");
   const [vp, setVp]             = useState<Viewport>({ x: 40, y: 40, zoom: 1 });
 
@@ -982,6 +1124,49 @@ export default function WorkflowBuilder({ workflow, allWorkflows, canEdit, canAp
   const [saving, setSaving]       = useState(false);
   const [dirty,  setDirty]        = useState(false);
   const [showAddMenu, setShowAdd] = useState(false);
+
+  // ── Sub-workflow state ─────────────────────────────────────────
+  /** null = top-level; nodeId = đang sửa quy trình con của node đó */
+  const [parentNodeId,   setParentNodeId]   = useState<string | null>(null);
+  const [parentNodeName, setParentNodeName] = useState<string>("");
+  /** Lưu trạng thái top-level khi drill vào sub-workflow */
+  const savedTopLevelRef = useRef<{ nodes: Node[]; edges: Edge[] } | null>(null);
+  /** Map: nodeId → {nodes, edges} của quy trình con đã lưu */
+  const [childDataMap, setChildDataMap] = useState<Map<string, { nodes: Node[]; edges: Edge[] }>>(new Map());
+  /** nodeId đang được highlight vì một node khác đang kéo vào */
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+
+  function enterSubWorkflow(nodeId: string) {
+    const nodeName = nodes.find((n) => n.id === nodeId)?.data.label ?? "";
+    savedTopLevelRef.current = { nodes: [...nodes], edges: [...edges] };
+    const child = childDataMap.get(nodeId) ?? { nodes: [], edges: [] };
+    setParentNodeId(nodeId);
+    setParentNodeName(nodeName);
+    setNodes(child.nodes);
+    setEdges(child.edges);
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
+  }
+
+  function exitSubWorkflow() {
+    if (!parentNodeId || !savedTopLevelRef.current) return;
+    // Lưu trạng thái con hiện tại
+    const childCount = nodes.length;
+    setChildDataMap((prev) => new Map(prev).set(parentNodeId, { nodes: [...nodes], edges: [...edges] }));
+    // Khôi phục top-level + cập nhật badge
+    const restoredNodes = savedTopLevelRef.current.nodes.map((n) =>
+      n.id === parentNodeId
+        ? { ...n, data: { ...n.data, childCount } satisfies WFNodeData }
+        : n
+    );
+    setNodes(restoredNodes);
+    setEdges(savedTopLevelRef.current.edges);
+    setParentNodeId(null);
+    setParentNodeName("");
+    savedTopLevelRef.current = null;
+    setSelectedNodeId(null);
+    setDirty(true);
+  }
 
   const selectedNode   = nodes.find((n) => n.id === selectedNodeId) ?? null;
   const selectedEdge   = edges.find((e) => e.id === selectedEdgeId) ?? null;
@@ -1007,7 +1192,12 @@ export default function WorkflowBuilder({ workflow, allWorkflows, canEdit, canAp
 
   const onConnect = useCallback((connection: Connection) => {
     setEdges((eds) => addEdge(
-      buildEdge(`e-${connection.source}-${connection.target}-${Date.now()}`, connection.source!, connection.target!, false),
+      buildEdge(
+        `e-${connection.source}-${connection.target}-${Date.now()}`,
+        connection.source!, connection.target!, false,
+        undefined, "closed", "smoothstep", "forward",
+        connection.sourceHandle, connection.targetHandle,
+      ),
       eds
     ));
     setDirty(true);
@@ -1020,7 +1210,62 @@ export default function WorkflowBuilder({ workflow, allWorkflows, canEdit, canAp
       if (node.data.status !== newStatus)
         setNodes((ns) => ns.map((n) => n.id === node.id ? { ...n, data: { ...n.data, status: newStatus } } : n));
     }
+
+    // Drag-to-parent: phát hiện node bị thả lên node khác → thêm vào quy trình con
+    if (canEdit && !parentNodeId) {
+      const NODE_W = 220, NODE_H = 120;
+      const cx = node.position.x + NODE_W / 2;
+      const cy = node.position.y + NODE_H / 2;
+      setDropTargetId(null);
+      for (const other of nodes) {
+        if (other.id === node.id) continue;
+        const ox = other.position.x, oy = other.position.y;
+        const inside = cx > ox + 10 && cx < ox + NODE_W - 10 && cy > oy + 10 && cy < oy + NODE_H - 10;
+        if (inside) {
+          const confirmed = window.confirm(
+            `Thêm "${node.data.label}" vào quy trình con của "${other.data.label}"?`
+          );
+          if (confirmed) {
+            const existing = childDataMap.get(other.id) ?? { nodes: [], edges: [] };
+            const childX = (existing.nodes.length % 3) * 260 + 40;
+            const childY = Math.floor(existing.nodes.length / 3) * 160 + 80;
+            const childNode = { ...node, position: { x: childX, y: childY } };
+            const newChildData = { nodes: [...existing.nodes, childNode], edges: existing.edges };
+            const newChildCount = newChildData.nodes.length;
+            setChildDataMap((prev) => new Map(prev).set(other.id, newChildData));
+            setNodes((ns) => ns
+              .filter((n) => n.id !== node.id)
+              .map((n) => n.id === other.id
+                ? { ...n, data: { ...n.data, childCount: newChildCount } satisfies WFNodeData }
+                : n
+              )
+            );
+            setEdges((es) => es.filter((e) => e.source !== node.id && e.target !== node.id));
+            setSelectedNodeId(null);
+            setDirty(true);
+          }
+          return;
+        }
+      }
+    }
+
     setDirty(true);
+  }
+
+  function handleNodeDrag(_: React.MouseEvent, node: Node) {
+    if (!canEdit || parentNodeId) return;
+    const NODE_W = 220, NODE_H = 120;
+    const cx = node.position.x + NODE_W / 2;
+    const cy = node.position.y + NODE_H / 2;
+    let target: string | null = null;
+    for (const other of nodes) {
+      if (other.id === node.id) continue;
+      const ox = other.position.x, oy = other.position.y;
+      if (cx > ox + 10 && cx < ox + NODE_W - 10 && cy > oy + 10 && cy < oy + NODE_H - 10) {
+        target = other.id; break;
+      }
+    }
+    setDropTargetId(target);
   }
   function handlePaneClick() { setSelectedNodeId(null); setSelectedEdgeId(null); }
   function handleEdgeClick(_: React.MouseEvent, edge: Edge) { setSelectedEdgeId(edge.id); setSelectedNodeId(null); }
@@ -1029,17 +1274,38 @@ export default function WorkflowBuilder({ workflow, allWorkflows, canEdit, canAp
     if (!selectedEdgeId) return;
     setEdges((eds) => eds.map((e) => {
       if (e.id !== selectedEdgeId) return e;
-      const d = e.data as { required: boolean; arrowType: ArrowType; lineType: LineType };
-      return buildEdge(e.id, e.source, e.target, !d.required, undefined, d.arrowType, d.lineType);
+      const d = e.data as { required: boolean; arrowType: ArrowType; lineType: LineType; arrowDirection?: ArrowDirection; sourceHandle?: string; targetHandle?: string };
+      return buildEdge(e.id, e.source, e.target, !d.required, undefined, d.arrowType, d.lineType, d.arrowDirection ?? "forward", d.sourceHandle, d.targetHandle);
     }));
     setDirty(true);
   }
-  function changeEdgeStyle(arrowType?: ArrowType, lineType?: LineType) {
+  function changeEdgeStyle(arrowType?: ArrowType, lineType?: LineType, arrowDirection?: ArrowDirection, srcHandle?: string | null, tgtHandle?: string | null) {
     if (!selectedEdgeId) return;
     setEdges((eds) => eds.map((e) => {
       if (e.id !== selectedEdgeId) return e;
-      const d = e.data as { required: boolean; arrowType: ArrowType; lineType: LineType };
-      return buildEdge(e.id, e.source, e.target, d.required, undefined, arrowType ?? d.arrowType, lineType ?? d.lineType);
+      const d = e.data as { required: boolean; arrowType: ArrowType; lineType: LineType; arrowDirection?: ArrowDirection; sourceHandle?: string | null; targetHandle?: string | null };
+      return buildEdge(
+        e.id, e.source, e.target, d.required, undefined,
+        arrowType ?? d.arrowType, lineType ?? d.lineType,
+        arrowDirection ?? d.arrowDirection ?? "forward",
+        srcHandle !== undefined ? srcHandle : d.sourceHandle,
+        tgtHandle !== undefined ? tgtHandle : d.targetHandle,
+      );
+    }));
+    setDirty(true);
+  }
+  function flipEdge() {
+    if (!selectedEdgeId) return;
+    setEdges((eds) => eds.map((e) => {
+      if (e.id !== selectedEdgeId) return e;
+      const d = e.data as { required: boolean; arrowType: ArrowType; lineType: LineType; arrowDirection?: ArrowDirection; sourceHandle?: string | null; targetHandle?: string | null };
+      return buildEdge(
+        e.id, e.target, e.source, d.required, undefined,
+        d.arrowType, d.lineType,
+        d.arrowDirection ?? "forward",
+        d.targetHandle ? FLIP_HANDLE[d.targetHandle] : null,
+        d.sourceHandle ? FLIP_HANDLE[d.sourceHandle] : null,
+      );
     }));
     setDirty(true);
   }
@@ -1091,8 +1357,20 @@ export default function WorkflowBuilder({ workflow, allWorkflows, canEdit, canAp
   function removeExtEdge(id: string)        { setExtEdges((es) => es.filter((e) => e.id !== id)); setDirty(true); }
 
   async function handleSave() {
+    const { nodes: wn, edges: we } = fromRF(nodes, edges, extEdges);
+    // Embed child data into nodes
+    const wfNodes: WorkflowNode[] = wn.map((n) => {
+      const childInfo = childDataMap.get(n.id);
+      if (!childInfo?.nodes.length) return n;
+      const { nodes: childWfNodes, edges: childWfEdges } = fromRF(childInfo.nodes, childInfo.edges, []);
+      return { ...n, childNodes: childWfNodes, childEdges: childWfEdges } as WorkflowNode;
+    });
+    if (onConfirm) {
+      onConfirm(wfNodes, we);
+      return;
+    }
     setSaving(true);
-    try { const { nodes: wn, edges: we } = fromRF(nodes, edges, extEdges); await onSave(wn, we); setDirty(false); }
+    try { await onSave(wfNodes, we); setDirty(false); }
     finally { setSaving(false); }
   }
 
@@ -1104,12 +1382,15 @@ export default function WorkflowBuilder({ workflow, allWorkflows, canEdit, canAp
           {viewMode === "zones" && <ZoneBandLayer vp={vp} />}
           <div style={{ position: "absolute", inset: 0 }}>
             <ReactFlow
-              nodes={nodes} edges={edges}
+              nodes={nodes.map((n) => dropTargetId === n.id ? { ...n, style: { ...(n.style ?? {}), outline: "3px solid #8B5CF6", borderRadius: 12 } } : n)}
+              edges={edges}
               onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
               onConnect={canEdit ? onConnect : undefined}
               onNodeClick={handleNodeClick}
+              onNodeDoubleClick={canEdit ? (_, node) => { if ((node.data as WFNodeData).childCount) enterSubWorkflow(node.id); } : undefined}
               onEdgeClick={canEdit ? handleEdgeClick : undefined}
               onPaneClick={handlePaneClick}
+              onNodeDrag={canEdit && !parentNodeId ? handleNodeDrag : undefined}
               onNodeDragStop={canEdit ? handleNodeDragStop : undefined}
               nodeTypes={NODE_TYPES}
               nodesDraggable={canEdit} nodesConnectable={canEdit} elementsSelectable
@@ -1121,6 +1402,20 @@ export default function WorkflowBuilder({ workflow, allWorkflows, canEdit, canAp
             >
               <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#e2e8f0" />
               <Controls />
+
+              {/* Breadcrumb — hiện khi đang sửa sub-workflow */}
+              {parentNodeId && (
+                <Panel position="top-center">
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: 10, padding: "6px 12px", boxShadow: "0 2px 10px rgba(0,0,0,.1)", fontSize: 12 }}>
+                    <button onClick={exitSubWorkflow} style={{ color: "#3B82F6", fontWeight: 700, border: "none", background: "transparent", cursor: "pointer", padding: 0 }}>← Quy trình chính</button>
+                    <span style={{ color: "#94a3b8" }}>›</span>
+                    <span style={{ fontWeight: 700, color: "#8B5CF6", display: "flex", alignItems: "center", gap: 4 }}>
+                      <GitBranch size={12} />⊞ {parentNodeName}
+                    </span>
+                    <span style={{ fontSize: 10, color: "#94a3b8" }}>({nodes.length} bước)</span>
+                  </div>
+                </Panel>
+              )}
 
               {canEdit && (
                 <Panel position="top-left">
@@ -1160,7 +1455,16 @@ export default function WorkflowBuilder({ workflow, allWorkflows, canEdit, canAp
                         </button>
                       )}
                     </div>
-                    {dirty && (
+                    {onConfirm ? (<>
+                      {onCancelDraft && (
+                        <button onClick={onCancelDraft} style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, border: "1px solid #e2e8f0", background: "#fff", color: "#64748b", cursor: "pointer" }}>
+                          <X size={14} /> Hủy
+                        </button>
+                      )}
+                      <button onClick={handleSave} style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, border: "none", background: "#6366F1", color: "#fff", cursor: "pointer", boxShadow: "0 2px 8px rgba(99,102,241,.3)" }}>
+                        <Check size={14} /> Xác nhận điều chỉnh
+                      </button>
+                    </>) : dirty && (
                       <button onClick={handleSave} disabled={saving} style={{
                         display: "flex", alignItems: "center", gap: 5, padding: "7px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600,
                         border: "none", background: saving ? "#86EFAC" : (canApprove ? "#22C55E" : "#F59E0B"),
@@ -1229,6 +1533,7 @@ export default function WorkflowBuilder({ workflow, allWorkflows, canEdit, canAp
               onClose={() => setSelectedNodeId(null)}
               onAddExtEdge={addExtEdge} onRemoveExtEdge={removeExtEdge}
               predecessors={predecessors}
+              onEditSubWorkflow={canEdit ? enterSubWorkflow : undefined}
             />
           )}
 
@@ -1237,6 +1542,7 @@ export default function WorkflowBuilder({ workflow, allWorkflows, canEdit, canAp
               edge={selectedEdge}
               onToggleRequired={toggleEdgeRequired}
               onChangeStyle={changeEdgeStyle}
+              onFlipEdge={flipEdge}
               onDeleteEdge={() => deleteEdge(selectedEdgeId!)}
               onClose={() => setSelectedEdgeId(null)}
             />

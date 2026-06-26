@@ -24,26 +24,71 @@ export function isStepDone(s: Pick<TaskStep, "status" | "progress">): boolean {
 // ─── Sắp xếp topo (Kahn) ──────────────────────────────────────
 
 /**
+ * Heuristic: nếu phần lớn cạnh nội bộ đi ngược chiều vị trí visual
+ * (source nằm BÊN PHẢI / BÊN DƯỚI target theo trục chính), quy trình đã
+ * được vẽ ngược — đổi chiều tất cả cạnh nội bộ để khớp thứ tự thực thi.
+ *
+ * Trả về edges đã chuẩn hóa (cạnh ngoại (ext::) giữ nguyên).
+ */
+export function normalizeEdgeDirection(nodes: WorkflowNode[], edges: WorkflowEdge[]): WorkflowEdge[] {
+  const ids = new Set(nodes.map((n) => n.id));
+  const internal = edges.filter((e) => ids.has(e.source) && ids.has(e.target));
+  if (internal.length === 0) return edges;
+
+  // Chọn trục có phân tán lớn nhất (ngang hoặc dọc)
+  const xVals = nodes.map((n) => n.position?.x ?? 0);
+  const yVals = nodes.map((n) => n.position?.y ?? 0);
+  const xRange = Math.max(...xVals) - Math.min(...xVals);
+  const yRange = Math.max(...yVals) - Math.min(...yVals);
+  const pos = new Map(nodes.map((n) => [
+    n.id,
+    xRange >= yRange ? (n.position?.x ?? 0) : (n.position?.y ?? 0),
+  ]));
+
+  // Đếm cạnh đi ngược chiều (source có vị trí lớn hơn target)
+  const backwardCount = internal.filter(
+    (e) => (pos.get(e.source) ?? 0) > (pos.get(e.target) ?? 0),
+  ).length;
+
+  if (backwardCount <= internal.length / 2) return edges; // đã đúng chiều
+
+  // Lật tất cả cạnh nội bộ
+  return edges.map((e) =>
+    ids.has(e.source) && ids.has(e.target)
+      ? { ...e, source: e.target, target: e.source }
+      : e,
+  );
+}
+
+/**
  * Sắp xếp các node theo thứ tự phụ thuộc (node nguồn trước node đích).
+ * Tự phát hiện quy trình vẽ ngược và chuẩn hóa chiều cạnh trước khi sort.
  * Bỏ qua các cạnh tới node ngoài (target dạng "ext::..."). Nếu có chu trình,
  * phần còn lại được nối vào cuối để không mất node nào.
  */
 export function topoSortNodeIds(nodes: WorkflowNode[], edges: WorkflowEdge[]): string[] {
-  const ids = new Set(nodes.map((n) => n.id));
+  const normalizedEdges = normalizeEdgeDirection(nodes, edges);
+
+  // Pre-sort by visual position (left→right, top→bottom) so diagram layout is preserved
+  // when multiple nodes share the same dependency level.
+  const sorted = [...nodes].sort((a, b) => {
+    const dx = (a.position?.x ?? 0) - (b.position?.x ?? 0);
+    return dx !== 0 ? dx : (a.position?.y ?? 0) - (b.position?.y ?? 0);
+  });
+
+  const ids = new Set(sorted.map((n) => n.id));
   const indeg = new Map<string, number>();
   const adj = new Map<string, string[]>();
   ids.forEach((id) => { indeg.set(id, 0); adj.set(id, []); });
 
-  for (const e of edges) {
-    // chỉ tính cạnh nội bộ (cả source & target đều là node trong quy trình này)
+  for (const e of normalizedEdges) {
     if (!ids.has(e.source) || !ids.has(e.target)) continue;
     adj.get(e.source)!.push(e.target);
     indeg.set(e.target, (indeg.get(e.target) ?? 0) + 1);
   }
 
   const queue: string[] = [];
-  // giữ thứ tự khai báo node cho ổn định
-  for (const n of nodes) if ((indeg.get(n.id) ?? 0) === 0) queue.push(n.id);
+  for (const n of sorted) if ((indeg.get(n.id) ?? 0) === 0) queue.push(n.id);
 
   const order: string[] = [];
   while (queue.length) {
@@ -55,20 +100,21 @@ export function topoSortNodeIds(nodes: WorkflowNode[], edges: WorkflowEdge[]): s
     }
   }
 
-  // node còn sót (do chu trình) — nối vào cuối theo thứ tự gốc
+  // node còn sót (do chu trình) — nối vào cuối theo thứ tự vị trí
   if (order.length < nodes.length) {
     const seen = new Set(order);
-    for (const n of nodes) if (!seen.has(n.id)) order.push(n.id);
+    for (const n of sorted) if (!seen.has(n.id)) order.push(n.id);
   }
   return order;
 }
 
 /** Map nodeId → id các node tiền nhiệm (đầu vào trực tiếp). */
 export function buildDependsOnMap(nodes: WorkflowNode[], edges: WorkflowEdge[]): Map<string, string[]> {
+  const normalizedEdges = normalizeEdgeDirection(nodes, edges);
   const ids = new Set(nodes.map((n) => n.id));
   const deps = new Map<string, string[]>();
   ids.forEach((id) => deps.set(id, []));
-  for (const e of edges) {
+  for (const e of normalizedEdges) {
     if (!ids.has(e.source) || !ids.has(e.target)) continue;
     deps.get(e.target)!.push(e.source);
   }
@@ -100,6 +146,11 @@ export function nodesToTaskSteps(
 
   return order.map((nodeId) => {
     const n = byId.get(nodeId)!;
+    // Đệ quy xử lý childNodes → childSteps
+    const childSteps = n.childNodes?.length
+      ? nodesToTaskSteps(n.childNodes, n.childEdges ?? [], opts)
+      : undefined;
+    const childEdges = n.childNodes?.length ? (n.childEdges ?? []) : undefined;
     return {
       id: n.id, // giữ id node để dependsOn khớp
       name: n.name,
@@ -117,6 +168,7 @@ export function nodesToTaskSteps(
       department: n.department,
       position: n.position,
       expectedOutput: n.output,
+      ...(childSteps ? { childSteps, childEdges } : {}),
     } satisfies TaskStep;
   });
 }
@@ -247,4 +299,41 @@ export const STEP_EVAL_LABEL: Record<StepEval3T, string> = {
 export function rollupProgress(steps: TaskStep[]): number {
   if (!steps.length) return 0;
   return Math.round(steps.reduce((sum, s) => sum + (s.progress ?? 0), 0) / steps.length);
+}
+
+/**
+ * Tiến độ hiệu dụng của một bước: nếu có childSteps thì rollup từ con,
+ * ngược lại trả về progress của chính bước đó.
+ */
+export function rollupStepProgress(step: TaskStep): number {
+  if (step.childSteps?.length) {
+    return rollupProgress(step.childSteps);
+  }
+  return step.progress ?? 0;
+}
+
+/**
+ * Cập nhật đệ quy progress của một bước theo id trong cây steps.
+ * Trả về mảng steps mới (immutable).
+ */
+export function updateStepById(steps: TaskStep[], stepId: string, patch: Partial<TaskStep>): TaskStep[] {
+  return steps.map((s) => {
+    if (s.id === stepId) return { ...s, ...patch };
+    if (s.childSteps?.length) {
+      return { ...s, childSteps: updateStepById(s.childSteps, stepId, patch) };
+    }
+    return s;
+  });
+}
+
+/** Tìm một bước theo id trong cây steps (bao gồm childSteps đệ quy). */
+export function findStepById(steps: TaskStep[], stepId: string): TaskStep | undefined {
+  for (const s of steps) {
+    if (s.id === stepId) return s;
+    if (s.childSteps?.length) {
+      const found = findStepById(s.childSteps, stepId);
+      if (found) return found;
+    }
+  }
+  return undefined;
 }

@@ -1,11 +1,22 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { X, Plus, Loader2, Calendar, User, Flag, Building2, GitBranch, Paperclip, Camera, Link2, FileText, Trash2, ClipboardList, ChevronDown, ChevronRight } from "lucide-react";
+import { X, Plus, Loader2, Calendar, User, Flag, Building2, GitBranch, Paperclip, Camera, Link2, FileText, Trash2, ClipboardList, ChevronDown, ChevronRight, Pencil, CheckCircle2, GripVertical, RotateCcw } from "lucide-react";
+import {
+  DndContext, closestCenter, KeyboardSensor, PointerSensor,
+  useSensor, useSensors, type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  arrayMove, SortableContext, sortableKeyboardCoordinates,
+  useSortable, verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { toast } from "sonner";
 import { cn, generateId } from "@/lib/utils";
-import { nodesToTaskSteps, linearStepsToTaskSteps, topoSortNodeIds } from "@/lib/workflow-engine";
+import { nodesToTaskSteps, linearStepsToTaskSteps, topoSortNodeIds, normalizeEdgeDirection } from "@/lib/workflow-engine";
 import { createTask, getWorkflows } from "@/lib/firebase/firestore";
+import WorkflowBuilder from "@/components/tasks/WorkflowBuilder";
+import type { WorkflowNode, WorkflowEdge } from "@/types";
 import { uploadFile } from "@/lib/firebase/storage";
 import { calcPhaseDeadlines } from "@/lib/deadline-calc";
 import { useAuthStore } from "@/stores/useAuthStore";
@@ -60,19 +71,54 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
 
   const selectedWorkflow = workflows.find((w) => w.id === selectedWorkflowId) ?? null;
 
-  // Quy trình mẫu dạng đồ thị (có sơ đồ node) → ưu tiên dùng nodes/edges.
-  const hasGraph = !!selectedWorkflow?.nodes?.length;
-  // Node theo thứ tự phụ thuộc, để hiển thị + gán người.
-  const orderedNodes = hasGraph
-    ? topoSortNodeIds(selectedWorkflow!.nodes!, selectedWorkflow!.edges ?? [])
-        .map((id) => selectedWorkflow!.nodes!.find((n) => n.id === id)!)
-        .filter(Boolean)
-    : [];
-
   // Người được gán cho từng node lúc tạo task (template để trống theo vai trò).
   const [nodeAssignees, setNodeAssignees] = useState<Record<string, string>>({});
-  // Reset gán người khi đổi quy trình.
-  useEffect(() => { setNodeAssignees({}); }, [selectedWorkflowId]);
+  // Draft workflow — nếu có, dùng thay vì template gốc (người dùng đã điều chỉnh).
+  const [draftNodes, setDraftNodes] = useState<WorkflowNode[] | null>(null);
+  const [draftEdges, setDraftEdges] = useState<WorkflowEdge[] | null>(null);
+  const [showWorkflowEditor, setShowWorkflowEditor] = useState(false);
+  // Thứ tự bước điều chỉnh tay bằng kéo thả (null = dùng topo sort tự động).
+  const [manualOrder, setManualOrder] = useState<string[] | null>(null);
+  // Reset gán người + draft + thứ tự khi đổi quy trình.
+  useEffect(() => {
+    setNodeAssignees({});
+    setDraftNodes(null);
+    setDraftEdges(null);
+    setManualOrder(null);
+  }, [selectedWorkflowId]);
+
+  const stepSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  function handleStepDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const currentIds = orderedNodes.map((n) => n.id);
+    const oldIdx = currentIds.indexOf(String(active.id));
+    const newIdx = currentIds.indexOf(String(over.id));
+    if (oldIdx === -1 || newIdx === -1) return;
+    setManualOrder(arrayMove(currentIds, oldIdx, newIdx));
+  }
+
+  // Effective nodes/edges: draft nếu có, ngược lại dùng template gốc.
+  const effectiveNodes = draftNodes ?? selectedWorkflow?.nodes ?? [];
+  const effectiveEdges = draftEdges ?? selectedWorkflow?.edges ?? [];
+  const isWorkflowModified = !!draftNodes;
+
+  // Quy trình mẫu dạng đồ thị (có sơ đồ node) → ưu tiên dùng nodes/edges (draft nếu có).
+  const hasGraph = effectiveNodes.length > 0;
+  // Normalize edge direction first (detect & flip if the workflow was drawn in reverse).
+  const normalizedEdges = hasGraph ? normalizeEdgeDirection(effectiveNodes, effectiveEdges) : effectiveEdges;
+  // Thứ tự auto (topo sort trên edges đã chuẩn hóa).
+  const autoOrderedIds = hasGraph ? topoSortNodeIds(effectiveNodes, normalizedEdges) : [];
+  // Node theo thứ tự: dùng manualOrder nếu có, ngược lại dùng auto topo sort.
+  const orderedNodes = hasGraph
+    ? (manualOrder ?? autoOrderedIds)
+        .map((id) => effectiveNodes.find((n) => n.id === id)!)
+        .filter(Boolean)
+    : [];
 
   // Form state
   const [name, setName] = useState("");
@@ -179,10 +225,19 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
         steps: !selectedWorkflow
           ? []
           : hasGraph
-          ? nodesToTaskSteps(selectedWorkflow.nodes!, selectedWorkflow.edges ?? [], {
-              assigneeByNode: nodeAssignees,
-              defaultKpiUnit: kpiUnit,
-            })
+          ? (() => {
+              const raw = nodesToTaskSteps(effectiveNodes, normalizedEdges, {
+                assigneeByNode: nodeAssignees,
+                defaultKpiUnit: kpiUnit,
+              });
+              if (!manualOrder) return raw;
+              // Giữ nguyên dependsOn (logic thực thi) nhưng sắp xếp theo thứ tự tay.
+              const byId = new Map(raw.map((s) => [s.id, s]));
+              return [
+                ...manualOrder.map((id) => byId.get(id)).filter(Boolean) as typeof raw,
+                ...raw.filter((s) => !manualOrder.includes(s.id)),
+              ];
+            })()
           : linearStepsToTaskSteps(selectedWorkflow.steps, { defaultKpiUnit: kpiUnit }),
         subtasks: [],
         kpi: { type: "custom", target: kpiTarget, current: 0, unit: kpiUnit },
@@ -317,7 +372,7 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">
                 <ClipboardList className="inline w-4 h-4 mr-1 text-indigo-500" />
-                Kế hoạch / Quy trình
+                Thuộc nhóm chỉ tiêu kế hoạch
               </label>
               <select
                 value={selectedPlanId}
@@ -389,54 +444,70 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
                     </option>
                   ))}
                 </select>
+
+                {/* Nút điều chỉnh sơ đồ — chỉ hiện khi template có graph */}
+                {selectedWorkflow && hasGraph && (
+                  <div className="flex items-center gap-2 mt-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowWorkflowEditor(true)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs border border-indigo-300 dark:border-indigo-700 text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/20 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 rounded-lg transition"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                      Điều chỉnh sơ đồ quy trình
+                    </button>
+                    {isWorkflowModified && (
+                      <span className="flex items-center gap-1 text-xs text-green-600 dark:text-green-400 font-medium">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        Đã điều chỉnh ({orderedNodes.length} bước)
+                      </span>
+                    )}
+                  </div>
+                )}
+
                 {/* Quy trình có sơ đồ → hiển thị chuỗi node + gán người phụ trách từng bước */}
                 {selectedWorkflow && hasGraph && (
                   <div className="mt-2 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl">
-                    <p className="text-xs font-medium text-blue-700 dark:text-blue-300 mb-2">
-                      {orderedNodes.length} bước theo quy trình — gán người phụ trách (đầu ra bước trước là đầu vào bước sau):
-                    </p>
-                    <ol className="space-y-2">
-                      {orderedNodes.map((n, i) => {
-                        const deps = (selectedWorkflow.edges ?? [])
-                          .filter((e) => e.target === n.id)
-                          .map((e) => orderedNodes.find((x) => x.id === e.source)?.name)
-                          .filter(Boolean);
-                        // Lọc theo vai trò yêu cầu nếu node có khai báo.
-                        const candidates = activeUsers.filter(
-                          (u) => !n.roleRequired || u.role === n.roleRequired
-                        );
-                        return (
-                          <li key={n.id} className="bg-white dark:bg-slate-800 rounded-lg p-2 border border-blue-100 dark:border-blue-900/40">
-                            <div className="flex items-center gap-2 text-xs text-blue-700 dark:text-blue-300 font-medium">
-                              <span className="w-4 h-4 shrink-0 bg-blue-200 dark:bg-blue-800 rounded-full flex items-center justify-center text-[10px] font-bold">
-                                {i + 1}
-                              </span>
-                              <span className="truncate">{n.name}</span>
-                              {n.roleRequired && (
-                                <span className="text-[10px] px-1.5 py-0.5 bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-300 rounded-full shrink-0">
-                                  {n.roleRequired}
-                                </span>
-                              )}
-                            </div>
-                            {deps.length > 0 && (
-                              <p className="text-[10px] text-slate-400 mt-0.5 ml-6">
-                                Đầu vào từ: {deps.join(", ")}
-                              </p>
-                            )}
-                            <select
-                              value={nodeAssignees[n.id] ?? ""}
-                              onChange={(e) => setNodeAssignees((m) => ({ ...m, [n.id]: e.target.value }))}
-                              className="mt-1.5 ml-6 w-[calc(100%-1.5rem)] px-2 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            >
-                              <option value="">— Chưa gán (phân công sau) —</option>
-                              {candidates.map((u) => (
-                                <option key={u.id} value={u.id}>{u.name}{u.department ? ` — ${u.department}` : ""}</option>
-                              ))}
-                            </select>
-                          </li>
-                        );
-                      })}
-                    </ol>
+                    <div className="flex items-center justify-between mb-2 gap-2">
+                      <p className="text-xs font-medium text-blue-700 dark:text-blue-300">
+                        {orderedNodes.length} bước theo quy trình — kéo <GripVertical className="w-3 h-3 inline" /> để đổi thứ tự, chọn người phụ trách:
+                      </p>
+                      {manualOrder && (
+                        <button
+                          type="button"
+                          onClick={() => setManualOrder(null)}
+                          className="flex items-center gap-1 text-[10px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 whitespace-nowrap shrink-0"
+                        >
+                          <RotateCcw className="w-3 h-3" /> Đặt lại
+                        </button>
+                      )}
+                    </div>
+                    <DndContext sensors={stepSensors} collisionDetection={closestCenter} onDragEnd={handleStepDragEnd}>
+                      <SortableContext items={orderedNodes.map((n) => n.id)} strategy={verticalListSortingStrategy}>
+                        <ol className="space-y-2">
+                          {orderedNodes.map((n, i) => {
+                            const deps = normalizedEdges
+                              .filter((e) => e.target === n.id)
+                              .map((e) => orderedNodes.find((x) => x.id === e.source)?.name)
+                              .filter(Boolean) as string[];
+                            const candidates = activeUsers.filter(
+                              (u) => !n.roleRequired || u.role === n.roleRequired
+                            );
+                            return (
+                              <SortableStepRow
+                                key={n.id}
+                                node={n}
+                                index={i}
+                                deps={deps}
+                                candidates={candidates}
+                                assigneeValue={nodeAssignees[n.id] ?? ""}
+                                onAssigneeChange={(nid, uid) => setNodeAssignees((m) => ({ ...m, [nid]: uid }))}
+                              />
+                            );
+                          })}
+                        </ol>
+                      </SortableContext>
+                    </DndContext>
                   </div>
                 )}
 
@@ -780,6 +851,117 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
           </div>
         </form>
       </div>
+
+      {/* ── Workflow Editor Overlay (draft mode, không lưu DB) ── */}
+      {showWorkflowEditor && selectedWorkflow && (
+        <div className="fixed inset-0 z-[60] flex flex-col bg-white dark:bg-slate-900">
+          {/* Header */}
+          <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shrink-0">
+            <div>
+              <h3 className="text-sm font-bold dark:text-white">
+                Điều chỉnh sơ đồ quy trình — {selectedWorkflow.name}
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Thay đổi chỉ áp dụng cho nhiệm vụ này, không ảnh hưởng quy trình mẫu gốc.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowWorkflowEditor(false)}
+              className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition"
+            >
+              <X className="w-5 h-5 text-slate-500" />
+            </button>
+          </div>
+          {/* Builder chiếm toàn bộ phần còn lại */}
+          <div className="flex-1 min-h-0">
+            <WorkflowBuilder
+              workflow={{
+                ...selectedWorkflow,
+                nodes: effectiveNodes,
+                edges: effectiveEdges,
+              }}
+              allWorkflows={[]}
+              canEdit
+              users={activeUsers.map((u) => ({ id: u.id, name: u.name, avatar: u.avatar, department: u.department }))}
+              onSave={async () => {}}
+              onConfirm={(nodes, edges) => {
+                setDraftNodes(nodes);
+                setDraftEdges(edges);
+                setShowWorkflowEditor(false);
+              }}
+              onCancelDraft={() => setShowWorkflowEditor(false)}
+            />
+          </div>
+        </div>
+      )}
     </div>
+  );
+}
+
+// ─── SortableStepRow ──────────────────────────────────────────────────────────
+
+interface SortableStepRowProps {
+  node: WorkflowNode;
+  index: number;
+  deps: string[];
+  candidates: { id: string; name: string; department?: string }[];
+  assigneeValue: string;
+  onAssigneeChange: (nodeId: string, userId: string) => void;
+}
+
+function SortableStepRow({ node, index, deps, candidates, assigneeValue, onAssigneeChange }: SortableStepRowProps) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: node.id });
+  const style = { transform: CSS.Transform.toString(transform), transition };
+
+  return (
+    <li
+      ref={setNodeRef}
+      style={style}
+      className={cn(
+        "bg-white dark:bg-slate-800 rounded-lg p-2 border border-blue-100 dark:border-blue-900/40 transition-shadow",
+        isDragging && "opacity-60 shadow-xl ring-2 ring-blue-400",
+      )}
+    >
+      <div className="flex items-center gap-1.5 text-xs text-blue-700 dark:text-blue-300 font-medium">
+        {/* Drag handle */}
+        <button
+          type="button"
+          {...attributes}
+          {...listeners}
+          className="cursor-grab active:cursor-grabbing touch-none text-slate-300 hover:text-slate-500 dark:hover:text-slate-400 shrink-0 p-0.5 -ml-0.5 rounded"
+          tabIndex={-1}
+          aria-label="Kéo để sắp xếp"
+        >
+          <GripVertical className="w-3.5 h-3.5" />
+        </button>
+        <span className="w-4 h-4 shrink-0 bg-blue-200 dark:bg-blue-800 rounded-full flex items-center justify-center text-[10px] font-bold select-none">
+          {index + 1}
+        </span>
+        <span className="truncate">{node.name}</span>
+        {node.roleRequired && (
+          <span className="text-[10px] px-1.5 py-0.5 bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-300 rounded-full shrink-0">
+            {node.roleRequired}
+          </span>
+        )}
+      </div>
+      {deps.length > 0 && (
+        <p className="text-[10px] text-slate-400 mt-0.5 ml-[1.625rem]">
+          Đầu vào từ: {deps.join(", ")}
+        </p>
+      )}
+      <select
+        value={assigneeValue}
+        onChange={(e) => onAssigneeChange(node.id, e.target.value)}
+        className="mt-1.5 ml-[1.625rem] w-[calc(100%-1.625rem)] px-2 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
+      >
+        <option value="">— Chưa gán (phân công sau) —</option>
+        {candidates.map((u) => (
+          <option key={u.id} value={u.id}>
+            {u.name}{u.department ? ` — ${u.department}` : ""}
+          </option>
+        ))}
+      </select>
+    </li>
   );
 }
