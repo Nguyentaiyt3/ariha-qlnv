@@ -1,4 +1,4 @@
-import type { UserRole } from "@/types";
+import type { UserRole, User, ResearchTopic, ResearchContributorRole, CouncilMemberRole } from "@/types";
 
 // ─── Permission definitions ───────────────────────────────────
 
@@ -10,6 +10,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "intranet:read",
     "document:read",
     "request:create",
+    "research:read",   // Chỉ xem đề tài của chính mình (lọc server-side)
+    "research:create", // Đăng ký đề tài mới
   ],
   staff: [
     "task:read",
@@ -25,6 +27,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "profile:edit",
     "evaluation:self",
     "kpi:read",
+    "plan:read",
     "request:create",
     "request:read",
     "template:create",
@@ -35,6 +38,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "intranet:comment",
     "workflow:read",
     "workflow:create",
+    "research:read",
+    "research:create",
     "finance:read",   // Thấy tab + thêm giao dịch/tạm ứng, KHÔNG duyệt
   ],
   teamLead: [
@@ -63,6 +68,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "report:read",
     "request:create",
     "request:read",
+    "plan:read",
+    "plan:manage",
     "request:approve",
     "template:create",
     "template:approve",
@@ -78,6 +85,12 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "workflow:read",
     "workflow:create",
     "workflow:approve",
+    "research:read",
+    "research:create",
+    "research:monitor",
+    "research:assignReviewer",   // Trưởng đơn vị có thể chỉ định phản biện
+    "research:assignCouncil",    // Trưởng đơn vị có thể thành lập hội đồng
+    "research:addContributor",   // Trưởng đơn vị có thể thêm thành viên đề tài
     "calendar:approve",
     "finance:read",
     "finance:approve",
@@ -116,6 +129,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "approval:level2",
     "request:create",
     "request:read",
+    "plan:read",
+    "plan:manage",
     "request:approve",
     "template:create",
     "template:approve",
@@ -132,12 +147,59 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "workflow:read",
     "workflow:create",
     "workflow:approve",
+    "research:read",
+    "research:create",
+    "research:monitor",
+    "research:assignReviewer",
+    "research:assignCouncil",
+    "research:addContributor",
+    "research:manage",
     "calendar:approve",
     "finance:read",
     "finance:approve",
     "finance:manage",
   ],
   hrAdmin: ["*"],
+
+  // ── Vai trò chuyên trách tài chính ──
+  // Theo dõi: chỉ xem toàn bộ tài chính + phân tích, không sửa/duyệt
+  financeViewer: [
+    "task:read",
+    "calendar:read",
+    "notification:read",
+    "profile:edit",
+    "finance:read",
+    "analytics:read",
+    "report:read",
+  ],
+  // Kiểm tra: xem + đối soát/đánh dấu kiểm tra + xuất báo cáo, không duyệt chi
+  financeAuditor: [
+    "task:read",
+    "calendar:read",
+    "notification:read",
+    "profile:edit",
+    "finance:read",
+    "finance:audit",
+    "analytics:read",
+    "report:read",
+    "report:export",
+  ],
+  // Giám sát: xem + kiểm tra + duyệt giao dịch + quản lý tài chính
+  financeSupervisor: [
+    "task:read",
+    "calendar:read",
+    "notification:read",
+    "notification:manage",
+    "profile:edit",
+    "finance:read",
+    "finance:audit",
+    "finance:approve",
+    "finance:manage",
+    "analytics:read",
+    "report:read",
+    "report:export",
+    "approval:level2",
+  ],
 };
 
 // ─── Runtime overrides (loaded from Firestore at startup) ─────
@@ -159,6 +221,25 @@ export function hasPermission(role: UserRole, action: string): boolean {
 
 export function getRolePermissions(role: UserRole): string[] {
   return (_permOverrides?.[role] ?? DEFAULT_ROLE_PERMISSIONS[role]) ?? [];
+}
+
+// ─── Cấp bậc vai trò (để giới hạn giao việc) ──────────────────
+// Quy tắc: chỉ giao cho người CÙNG CẤP hoặc THẤP HƠN, không giao cho cấp trên.
+
+export const ROLE_RANK: Record<UserRole, number> = {
+  guest: 0,
+  staff: 1,
+  financeViewer: 1,
+  financeAuditor: 1,
+  teamLead: 2,
+  financeSupervisor: 2,
+  director: 3,
+  hrAdmin: 4,
+};
+
+/** Người giao (actor) chỉ được giao cho người có cấp ≤ cấp của mình. */
+export function canAssignTo(actorRole: UserRole, targetRole: UserRole): boolean {
+  return (ROLE_RANK[targetRole] ?? 0) <= (ROLE_RANK[actorRole] ?? 0);
 }
 
 // ─── Permission groups for management UI ─────────────────────
@@ -219,6 +300,7 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
     id: "finance", label: "Tài chính",
     permissions: [
       { id: "finance:read",    label: "Xem tài chính" },
+      { id: "finance:audit",   label: "Kiểm tra / đối soát" },
       { id: "finance:approve", label: "Duyệt giao dịch" },
       { id: "finance:manage",  label: "Quản lý tài chính" },
     ],
@@ -269,6 +351,18 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
     ],
   },
   {
+    id: "research", label: "Nghiên cứu khoa học",
+    permissions: [
+      { id: "research:read",             label: "Xem đề tài (chỉ của mình)" },
+      { id: "research:create",           label: "Đăng ký đề tài mới" },
+      { id: "research:monitor",          label: "Giám sát & tiếp nhận đề cương" },
+      { id: "research:assignReviewer",   label: "Chỉ định phản biện kín" },
+      { id: "research:assignCouncil",    label: "Thành lập Hội đồng KHCN" },
+      { id: "research:addContributor",   label: "Thêm tác giả / thành viên đề tài" },
+      { id: "research:manage",           label: "Quản trị toàn bộ NCKH (chứng nhận, từ chối)" },
+    ],
+  },
+  {
     id: "analytics", label: "Phân tích & Báo cáo",
     permissions: [
       { id: "analytics:read",    label: "Xem phân tích" },
@@ -289,6 +383,13 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
     permissions: [
       { id: "template:create",  label: "Tạo biểu mẫu" },
       { id: "template:approve", label: "Duyệt biểu mẫu" },
+    ],
+  },
+  {
+    id: "plan", label: "Kế hoạch đơn vị",
+    permissions: [
+      { id: "plan:read",   label: "Xem kế hoạch" },
+      { id: "plan:manage", label: "Quản lý kế hoạch" },
     ],
   },
 ];
@@ -363,6 +464,23 @@ export const DEFAULT_DASHBOARD_LAYOUTS: Record<UserRole, DefaultWidgetLayout[]> 
     { type: "kpi_week",           x: 0, y: 4, w: 2, h: 1 },
     { type: "team_leaderboard",   x: 2, y: 4, w: 2, h: 2 },
   ],
+  financeViewer: [
+    { type: "financial_overview", x: 0, y: 0, w: 2, h: 2 },
+    { type: "analytics_summary",  x: 2, y: 0, w: 2, h: 2 },
+    { type: "calendar_mini",      x: 0, y: 2, w: 2, h: 1 },
+  ],
+  financeAuditor: [
+    { type: "financial_overview", x: 0, y: 0, w: 2, h: 2 },
+    { type: "analytics_summary",  x: 2, y: 0, w: 2, h: 2 },
+    { type: "deadline_alert",     x: 0, y: 2, w: 1, h: 2 },
+    { type: "calendar_mini",      x: 1, y: 2, w: 3, h: 1 },
+  ],
+  financeSupervisor: [
+    { type: "analytics_summary",  x: 0, y: 0, w: 3, h: 2 },
+    { type: "financial_overview", x: 3, y: 0, w: 1, h: 2 },
+    { type: "deadline_alert",     x: 0, y: 2, w: 1, h: 2 },
+    { type: "calendar_mini",      x: 1, y: 2, w: 3, h: 2 },
+  ],
 };
 
 // ─── Sidebar navigation items per role ────────────────────────
@@ -378,6 +496,7 @@ export interface NavItem {
 export const NAV_ITEMS: NavItem[] = [
   { label: "Dashboard", href: "/dashboard", icon: "LayoutDashboard" },
   { label: "Nhiệm vụ", href: "/tasks", icon: "CheckSquare", requiredPermission: "task:read" },
+  { label: "Kế hoạch", href: "/unit-plans", icon: "ClipboardList", requiredPermission: "plan:read" },
   { label: "Lịch biểu", href: "/calendar", icon: "Calendar", requiredPermission: "calendar:read" },
   { label: "Đơn từ", href: "/requests", icon: "FileText", requiredPermission: "request:read" },
   { label: "Tài liệu", href: "/documents", icon: "FolderOpen", requiredPermission: "document:read" },
@@ -385,6 +504,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Hiệu suất", href: "/performance", icon: "TrendingUp", requiredPermission: "kpi:read" },
   { label: "Nhân viên", href: "/employees", icon: "Users", requiredPermission: "user:read" },
   { label: "Quy trình", href: "/workflow", icon: "GitBranch", requiredPermission: "task:read" },
+  { label: "Nghiên cứu KH", href: "/research", icon: "Microscope", requiredPermission: "research:read" },
   { label: "Tài chính", href: "/finance", icon: "DollarSign", requiredPermission: "finance:read" },
   { label: "Phân tích", href: "/analytics", icon: "BarChart3", requiredPermission: "analytics:read" },
   { label: "Thông báo", href: "/notifications", icon: "Bell", requiredPermission: "notification:read" },
@@ -395,4 +515,135 @@ export function getVisibleNavItems(role: UserRole): NavItem[] {
   return NAV_ITEMS.filter(
     (item) => !item.requiredPermission || hasPermission(role, item.requiredPermission)
   );
+}
+
+// ─── Kiêm nhiệm — effective role & scope helpers ──────────────
+
+/**
+ * Trả về role cao nhất của user (xét cả positions[]).
+ * Dùng khi cần check quyền hệ thống toàn cơ quan.
+ */
+export function getEffectiveRole(user: Pick<User, "role" | "positions">): UserRole {
+  if (!user.positions?.length) return user.role;
+  const allRoles = [user.role, ...user.positions.map(p => p.role)];
+  return allRoles.reduce<UserRole>((best, r) =>
+    (ROLE_RANK[r] ?? 0) > (ROLE_RANK[best] ?? 0) ? r : best
+  , user.role);
+}
+
+/**
+ * Kiểm tra user có quyền quản lý đơn vị cụ thể không (theo ID).
+ * director/hrAdmin luôn trả về true (toàn cơ quan).
+ */
+export function canManageUnit(user: Pick<User, "role" | "positions">, unitId: string): boolean {
+  const effective = getEffectiveRole(user);
+  if (ROLE_RANK[effective] >= ROLE_RANK.director) return true;
+  if (!user.positions?.length) return false;
+  return user.positions.some(p => p.scopeUnitId === unitId);
+}
+
+/**
+ * Kiểm tra user có quyền quản lý đơn vị theo tên (department string).
+ * Dùng cho ResearchTopic.department vì chưa có unitId chuẩn hoá.
+ * director/hrAdmin luôn trả về true.
+ * teamLead không có positions[] cũng trả về true (chưa cấu hình scope → không giới hạn).
+ */
+export function canManageDepartment(
+  user: Pick<User, "role" | "positions">,
+  department: string | undefined
+): boolean {
+  const effective = getEffectiveRole(user);
+  if (ROLE_RANK[effective] >= ROLE_RANK.director) return true;
+  if (!department) return true; // topic chưa gán đơn vị → ai quản lý cũng được xem
+  if (!user.positions?.length) return true; // chưa cấu hình scope → không giới hạn
+  return user.positions.some(
+    p => p.unitName?.trim().toLowerCase() === department.trim().toLowerCase()
+  );
+}
+
+/**
+ * Kiểm tra user có quyền thực hiện action trên đề tài thuộc department cụ thể.
+ * Kết hợp: có quyền hệ thống + thuộc đơn vị quản lý.
+ */
+export function canDoResearchAction(
+  user: Pick<User, "role" | "positions">,
+  action: string,
+  department: string | undefined
+): boolean {
+  if (!hasPermission(getEffectiveRole(user), action)) return false;
+  return canManageDepartment(user, department);
+}
+
+/**
+ * Kiểm tra user có permission, xét cả positions[] (lấy role cao nhất).
+ */
+export function hasPermissionForUser(user: Pick<User, "role" | "positions">, action: string): boolean {
+  return hasPermission(getEffectiveRole(user), action);
+}
+
+/**
+ * Chỉ định phản biện kín: chỉ Trưởng VP (Văn phòng) hoặc Director/hrAdmin.
+ * teamLead thuộc đơn vị khác KHÔNG được phép, dù có permission research:assignReviewer.
+ */
+export function canUserAssignReviewer(
+  user: Pick<User, "role" | "positions">,
+  department?: string
+): boolean {
+  const role = getEffectiveRole(user);
+  if (ROLE_RANK[role] >= ROLE_RANK.director) return true;
+  if (role !== "teamLead") return false;
+  if (!hasPermission(role, "research:assignReviewer")) return false;
+  // Phải có ít nhất một vị trí thuộc đơn vị Văn phòng (VP)
+  const isVPHead = user.positions?.some(p => {
+    const unit = p.unitName?.trim().toLowerCase() ?? "";
+    return unit === "vp" || unit.includes("văn phòng");
+  }) ?? false;
+  if (!isVPHead) return false;
+  return canManageDepartment(user, department);
+}
+
+// ─── Research context roles ───────────────────────────────────
+
+/**
+ * Kiểm tra user có vai trò đóng góp trong đề tài không
+ * (tác giả / đồng tác giả / tham gia).
+ */
+export function getResearchContributorRole(
+  user: Pick<User, "id">,
+  topic: Pick<ResearchTopic, "principalInvestigatorId" | "contributors" | "memberIds">
+): ResearchContributorRole | null {
+  if (topic.principalInvestigatorId === user.id) return "author";
+  const fromContributors = topic.contributors?.find(c => c.userId === user.id);
+  if (fromContributors) return fromContributors.role;
+  if (topic.memberIds?.includes(user.id)) return "participant"; // legacy fallback
+  return null;
+}
+
+/**
+ * Kiểm tra user có phải phản biện của đề tài không (bất kỳ giai đoạn).
+ */
+export function isReviewerOf(
+  userId: string,
+  topic: Pick<ResearchTopic, "reviews">
+): boolean {
+  return topic.reviews.some(r => r.reviewerId === userId);
+}
+
+/**
+ * Kiểm tra user có thuộc hội đồng KHCN của đề tài không.
+ * Trả về vai trò hội đồng nếu có.
+ */
+export function getCouncilRole(
+  userId: string,
+  topic: Pick<ResearchTopic, "councilSessions">
+): CouncilMemberRole | null {
+  for (const session of topic.councilSessions) {
+    if (session.members) {
+      const m = session.members.find(m => m.userId === userId);
+      if (m) return m.role;
+    } else if (session.memberIds?.includes(userId)) {
+      return "member"; // legacy fallback
+    }
+  }
+  return null;
 }

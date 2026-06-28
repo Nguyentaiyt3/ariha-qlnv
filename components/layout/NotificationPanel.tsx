@@ -7,6 +7,7 @@ import {
   FileCheck, FileX, CreditCard, Lock, Star, XCircle, Trash2,
 } from "lucide-react";
 import { cn, formatRelativeTime } from "@/lib/utils";
+import { renderTextWithLinks } from "@/lib/renderLinks";
 import { useNotificationStore } from "@/stores/useNotificationStore";
 import { useAuthStore } from "@/stores/useAuthStore";
 import {
@@ -250,7 +251,7 @@ function NotifItem({
         <p className={cn("text-sm leading-snug dark:text-white pr-5", !notif.read && "font-semibold")}>
           {notif.title}
         </p>
-        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 line-clamp-2">{notif.body}</p>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 line-clamp-2">{renderTextWithLinks(notif.body)}</p>
         <div className="flex items-center gap-2 mt-1">
           <p className="text-[10px] text-slate-400">{formatRelativeTime(notif.createdAt)}</p>
           {notif.actionRequired && !notif.read && (

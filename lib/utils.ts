@@ -107,6 +107,9 @@ export function roleLabel(role: string) {
     teamLead: "Trưởng nhóm",
     director: "Giám đốc",
     hrAdmin: "HR/Admin",
+    financeViewer: "Theo dõi tài chính",
+    financeAuditor: "Kiểm tra tài chính",
+    financeSupervisor: "Giám sát tài chính",
   };
   return labels[role] ?? role;
 }
@@ -117,6 +120,7 @@ export function stakeholderRoleLabel(role: string) {
     collaborator: "Hỗ trợ",
     watcher: "Theo dõi",
     approver: "Phê duyệt",
+    supervisor: "Giám sát",
   };
   return labels[role] ?? role;
 }

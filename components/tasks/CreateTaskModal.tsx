@@ -1,16 +1,29 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { X, Plus, Loader2, Calendar, User, Flag, Building2, GitBranch, Paperclip, Camera, Link2, FileText, Trash2 } from "lucide-react";
+import { X, Plus, Loader2, Calendar, User, Flag, Building2, GitBranch, Paperclip, Camera, Link2, FileText, Trash2, ClipboardList, ChevronDown, ChevronRight, Pencil, CheckCircle2, GripVertical, RotateCcw } from "lucide-react";
+import {
+  DndContext, closestCenter, KeyboardSensor, PointerSensor,
+  useSensor, useSensors, type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  arrayMove, SortableContext, sortableKeyboardCoordinates,
+  useSortable, verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { toast } from "sonner";
 import { cn, generateId } from "@/lib/utils";
-import { createTask, getDefaultMilestoneConfig, getWorkflows } from "@/lib/firebase/firestore";
+import { nodesToTaskSteps, linearStepsToTaskSteps, topoSortNodeIds, normalizeEdgeDirection } from "@/lib/workflow-engine";
+import { createTask, getWorkflows } from "@/lib/firebase/firestore";
+import WorkflowBuilder from "@/components/tasks/WorkflowBuilder";
+import type { WorkflowNode, WorkflowEdge } from "@/types";
 import { uploadFile } from "@/lib/firebase/storage";
-import { calcPhaseDeadlines, DEFAULT_MILESTONE_CONFIG } from "@/lib/deadline-calc";
+import { calcPhaseDeadlines } from "@/lib/deadline-calc";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { hasPermission } from "@/lib/rbac/permissions";
-import type { Task, TaskPriority, TaskStatus, StakeholderRole, Workflow, TaskResource } from "@/types";
+import { SearchableSelect } from "@/components/common/SearchableSelect";
+import type { Task, TaskPriority, TaskStatus, StakeholderRole, TaskResource, UnitPlan, PlanItem, Workflow } from "@/types";
 
 // Pending attachment — file held in memory until submit; links stored directly
 type PendingFile = {
@@ -39,14 +52,74 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
   const { currentUser } = useAuthStore();
   const { users } = useTaskStore();
   const [loading, setLoading] = useState(false);
+
+  // Kế hoạch đơn vị
+  const [availablePlans, setAvailablePlans] = useState<UnitPlan[]>([]);
+  const [selectedPlanId, setSelectedPlanId] = useState<string>("");
+  const [selectedParentItemId, setSelectedParentItemId] = useState<string>("");
+
+  // Quy trình mẫu
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string>("");
 
   useEffect(() => {
+    fetch("/api/unit-plans")
+      .then((r) => r.json())
+      .then((data) => setAvailablePlans(data.plans ?? []))
+      .catch(console.error);
     getWorkflows().then(setWorkflows).catch(console.error);
   }, []);
 
   const selectedWorkflow = workflows.find((w) => w.id === selectedWorkflowId) ?? null;
+
+  // Người được gán cho từng node lúc tạo task (template để trống theo vai trò).
+  const [nodeAssignees, setNodeAssignees] = useState<Record<string, string>>({});
+  // Draft workflow — nếu có, dùng thay vì template gốc (người dùng đã điều chỉnh).
+  const [draftNodes, setDraftNodes] = useState<WorkflowNode[] | null>(null);
+  const [draftEdges, setDraftEdges] = useState<WorkflowEdge[] | null>(null);
+  const [showWorkflowEditor, setShowWorkflowEditor] = useState(false);
+  // Thứ tự bước điều chỉnh tay bằng kéo thả (null = dùng topo sort tự động).
+  const [manualOrder, setManualOrder] = useState<string[] | null>(null);
+  // Reset gán người + draft + thứ tự khi đổi quy trình.
+  useEffect(() => {
+    setNodeAssignees({});
+    setDraftNodes(null);
+    setDraftEdges(null);
+    setManualOrder(null);
+  }, [selectedWorkflowId]);
+
+  const stepSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  function handleStepDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const currentIds = orderedNodes.map((n) => n.id);
+    const oldIdx = currentIds.indexOf(String(active.id));
+    const newIdx = currentIds.indexOf(String(over.id));
+    if (oldIdx === -1 || newIdx === -1) return;
+    setManualOrder(arrayMove(currentIds, oldIdx, newIdx));
+  }
+
+  // Effective nodes/edges: draft nếu có, ngược lại dùng template gốc.
+  const effectiveNodes = draftNodes ?? selectedWorkflow?.nodes ?? [];
+  const effectiveEdges = draftEdges ?? selectedWorkflow?.edges ?? [];
+  const isWorkflowModified = !!draftNodes;
+
+  // Quy trình mẫu dạng đồ thị (có sơ đồ node) → ưu tiên dùng nodes/edges (draft nếu có).
+  const hasGraph = effectiveNodes.length > 0;
+  // Normalize edge direction first (detect & flip if the workflow was drawn in reverse).
+  const normalizedEdges = hasGraph ? normalizeEdgeDirection(effectiveNodes, effectiveEdges) : effectiveEdges;
+  // Thứ tự auto (topo sort trên edges đã chuẩn hóa).
+  const autoOrderedIds = hasGraph ? topoSortNodeIds(effectiveNodes, normalizedEdges) : [];
+  // Node theo thứ tự: dùng manualOrder nếu có, ngược lại dùng auto topo sort.
+  const orderedNodes = hasGraph
+    ? (manualOrder ?? autoOrderedIds)
+        .map((id) => effectiveNodes.find((n) => n.id === id)!)
+        .filter(Boolean)
+    : [];
 
   // Form state
   const [name, setName] = useState("");
@@ -60,6 +133,8 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
   });
   const [department, setDepartment] = useState(currentUser?.department ?? "");
   const [stakeholders, setStakeholders] = useState<{ userId: string; role: StakeholderRole }[]>([]);
+  const [stakeholderUserId, setStakeholderUserId] = useState("");
+  const [stakeholderRole, setStakeholderRole] = useState<StakeholderRole>("collaborator");
   const [kpiTarget, setKpiTarget] = useState(100);
   const [kpiUnit, setKpiUnit] = useState("điểm");
   const [tags, setTags] = useState("");
@@ -105,21 +180,32 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
         }
       }
 
-      // Get milestone config for 3-phase deadlines
-      let milestoneConfig = await getDefaultMilestoneConfig();
-      const configData = milestoneConfig ?? DEFAULT_MILESTONE_CONFIG;
+      // 3-phase deadlines: prepare = base - 3 ngày, finalize = base + 30 ngày
       const phases = calcPhaseDeadlines(
         new Date(deadlineBase).toISOString(),
-        { daysBeforeForPrepare: configData.daysBeforeForPrepare, daysAfterForFinalize: configData.daysAfterForFinalize }
+        { daysBeforeForPrepare: 3, daysAfterForFinalize: 30 }
       );
 
       const canAutoApprove = hasPermission(currentUser.role, "task:approve");
 
-      // Build stakeholders list (ensure assignee is in the list)
-      const allStakeholders = [
-        { userId: mainPerformerId, role: "assignee" as StakeholderRole },
-        ...stakeholders.filter((s) => s.userId !== mainPerformerId),
+      // Build stakeholders list (ensure assignee + người phụ trách node đều có mặt)
+      const nodeAssigneeIds = Object.values(nodeAssignees).filter(Boolean);
+      const seen = new Set<string>([mainPerformerId]);
+      const allStakeholders: { userId: string; role: StakeholderRole }[] = [
+        { userId: mainPerformerId, role: "assignee" },
       ];
+      for (const s of stakeholders) {
+        if (s.userId !== mainPerformerId && !seen.has(s.userId)) {
+          seen.add(s.userId);
+          allStakeholders.push(s);
+        }
+      }
+      for (const uid of nodeAssigneeIds) {
+        if (!seen.has(uid)) {
+          seen.add(uid);
+          allStakeholders.push({ userId: uid, role: "assignee" });
+        }
+      }
 
       const newTask: Omit<Task, "id"> = {
         name: name.trim(),
@@ -137,20 +223,25 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
         dependencies: [],
         workflowId: selectedWorkflow?.id,
         workflowName: selectedWorkflow?.name,
-        steps: selectedWorkflow
-          ? selectedWorkflow.steps.map((ws) => ({
-              id: generateId("step"),
-              name: ws.name,
-              assigneeId: "",
-              status: "pending" as const,
-              progress: 0,
-              kpiTarget: 0,
-              kpiCurrent: 0,
-              kpiUnit: "điểm",
-              proofs: [],
-              durationDays: ws.durationDays,
-            }))
-          : [],
+        // Quy trình có sơ đồ → copy đầy đủ đồ thị (node + phụ thuộc + người gán).
+        // Chỉ có danh sách phẳng → tạo chuỗi tuyến tính tương thích ngược.
+        steps: !selectedWorkflow
+          ? []
+          : hasGraph
+          ? (() => {
+              const raw = nodesToTaskSteps(effectiveNodes, normalizedEdges, {
+                assigneeByNode: nodeAssignees,
+                defaultKpiUnit: kpiUnit,
+              });
+              if (!manualOrder) return raw;
+              // Giữ nguyên dependsOn (logic thực thi) nhưng sắp xếp theo thứ tự tay.
+              const byId = new Map(raw.map((s) => [s.id, s]));
+              return [
+                ...manualOrder.map((id) => byId.get(id)).filter(Boolean) as typeof raw,
+                ...raw.filter((s) => !manualOrder.includes(s.id)),
+              ];
+            })()
+          : linearStepsToTaskSteps(selectedWorkflow.steps, { defaultKpiUnit: kpiUnit }),
         subtasks: [],
         kpi: { type: "custom", target: kpiTarget, current: 0, unit: kpiUnit },
         progress: 0,
@@ -160,6 +251,8 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
         department: department.trim(),
         tags: tags.split(",").map((t) => t.trim()).filter(Boolean),
         resources: uploadedResources.length > 0 ? uploadedResources : undefined,
+        planId: selectedPlanId || undefined,
+        planItemParentId: (selectedPlanId && selectedParentItemId) ? selectedParentItemId : undefined,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -278,45 +371,170 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
               />
             </div>
 
-            {/* Workflow selector */}
+            {/* Kế hoạch / Quy trình */}
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                <GitBranch className="inline w-4 h-4 mr-1" />
-                Quy trình
+                <ClipboardList className="inline w-4 h-4 mr-1 text-indigo-500" />
+                Thuộc nhóm chỉ tiêu kế hoạch
               </label>
               <select
-                value={selectedWorkflowId}
-                onChange={(e) => setSelectedWorkflowId(e.target.value)}
-                className="w-full px-3 py-2.5 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-slate-800 dark:text-white"
+                value={selectedPlanId}
+                onChange={(e) => {
+                  const planId = e.target.value;
+                  setSelectedPlanId(planId);
+                  setSelectedParentItemId("");
+                  const plan = availablePlans.find((p) => p.id === planId);
+                  if (plan) { setKpiTarget(plan.target); setKpiUnit(plan.unit); }
+                }}
+                className="w-full px-3 py-2.5 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:bg-slate-800 dark:text-white"
               >
-                <option value="">-- Không dùng quy trình --</option>
-                {workflows.map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.name}{w.department ? ` (${w.department})` : ""}
-                  </option>
+                <option value="">-- Không thuộc kế hoạch nào --</option>
+                {availablePlans.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name} ({p.year})</option>
                 ))}
               </select>
-              {selectedWorkflow && selectedWorkflow.steps.length > 0 && (
-                <div className="mt-2 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl">
-                  <p className="text-xs font-medium text-blue-700 dark:text-blue-300 mb-1.5">
-                    Quy trình gồm {selectedWorkflow.steps.length} bước:
-                  </p>
-                  <ol className="space-y-1">
-                    {selectedWorkflow.steps.map((s, i) => (
-                      <li key={s.id} className="flex items-center gap-2 text-xs text-blue-600 dark:text-blue-400">
-                        <span className="w-4 h-4 shrink-0 bg-blue-200 dark:bg-blue-800 rounded-full flex items-center justify-center text-[10px] font-bold">
-                          {i + 1}
-                        </span>
-                        {s.name}
-                        {s.durationDays && (
-                          <span className="text-blue-400">({s.durationDays}d)</span>
-                        )}
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-              )}
+
+              {/* Chọn cấp cha/con/cháu trong kế hoạch */}
+              {selectedPlanId && (() => {
+                const plan = availablePlans.find((p) => p.id === selectedPlanId);
+                if (!plan || plan.items.length === 0) return (
+                  <p className="mt-1.5 text-[10px] text-slate-400">Kế hoạch chưa có mục nào. Nhiệm vụ sẽ ở cấp 1.</p>
+                );
+                const buildTree = (items: PlanItem[], parentId: string | null, depth: number): { item: PlanItem; depth: number }[] =>
+                  items
+                    .filter((i) => i.parentId === parentId)
+                    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+                    .flatMap((item) => [{ item, depth }, ...buildTree(items, item.id, depth + 1)]);
+                const flatItems = buildTree(plan.items, null, 0);
+                return (
+                  <div className="mt-2">
+                    <select
+                      value={selectedParentItemId}
+                      onChange={(e) => setSelectedParentItemId(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:bg-slate-800 dark:text-white"
+                    >
+                      <option value="">— Cấp 1 (nhiệm vụ cha) —</option>
+                      {flatItems.map(({ item, depth }) => (
+                        <option key={item.id} value={item.id}>
+                          {"　".repeat(depth)}{depth > 0 ? "└ " : ""}{item.name}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      Chọn cấp cha để nhiệm vụ này trở thành con/cháu trong kế hoạch.
+                    </p>
+                  </div>
+                );
+              })()}
             </div>
+
+            {/* Quy trình mẫu */}
+            {workflows.length > 0 && (
+              <div>
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">
+                  <GitBranch className="inline w-4 h-4 mr-1 text-blue-500" />
+                  Quy trình mẫu
+                </label>
+                <select
+                  value={selectedWorkflowId}
+                  onChange={(e) => setSelectedWorkflowId(e.target.value)}
+                  className="w-full px-3 py-2.5 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-slate-800 dark:text-white"
+                >
+                  <option value="">-- Không áp dụng quy trình mẫu --</option>
+                  {workflows.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.name}{w.department ? ` (${w.department})` : ""}
+                    </option>
+                  ))}
+                </select>
+
+                {/* Nút điều chỉnh sơ đồ — chỉ hiện khi template có graph */}
+                {selectedWorkflow && hasGraph && (
+                  <div className="flex items-center gap-2 mt-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowWorkflowEditor(true)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs border border-indigo-300 dark:border-indigo-700 text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/20 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 rounded-lg transition"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                      Điều chỉnh sơ đồ quy trình
+                    </button>
+                    {isWorkflowModified && (
+                      <span className="flex items-center gap-1 text-xs text-green-600 dark:text-green-400 font-medium">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        Đã điều chỉnh ({orderedNodes.length} bước)
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {/* Quy trình có sơ đồ → hiển thị chuỗi node + gán người phụ trách từng bước */}
+                {selectedWorkflow && hasGraph && (
+                  <div className="mt-2 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl">
+                    <div className="flex items-center justify-between mb-2 gap-2">
+                      <p className="text-xs font-medium text-blue-700 dark:text-blue-300">
+                        {orderedNodes.length} bước theo quy trình — kéo <GripVertical className="w-3 h-3 inline" /> để đổi thứ tự, chọn người phụ trách:
+                      </p>
+                      {manualOrder && (
+                        <button
+                          type="button"
+                          onClick={() => setManualOrder(null)}
+                          className="flex items-center gap-1 text-[10px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 whitespace-nowrap shrink-0"
+                        >
+                          <RotateCcw className="w-3 h-3" /> Đặt lại
+                        </button>
+                      )}
+                    </div>
+                    <DndContext sensors={stepSensors} collisionDetection={closestCenter} onDragEnd={handleStepDragEnd}>
+                      <SortableContext items={orderedNodes.map((n) => n.id)} strategy={verticalListSortingStrategy}>
+                        <ol className="space-y-2">
+                          {orderedNodes.map((n, i) => {
+                            const deps = normalizedEdges
+                              .filter((e) => e.target === n.id)
+                              .map((e) => orderedNodes.find((x) => x.id === e.source)?.name)
+                              .filter(Boolean) as string[];
+                            const candidates = activeUsers.filter(
+                              (u) => !n.roleRequired || u.role === n.roleRequired
+                            );
+                            return (
+                              <SortableStepRow
+                                key={n.id}
+                                node={n}
+                                index={i}
+                                deps={deps}
+                                candidates={candidates}
+                                assigneeValue={nodeAssignees[n.id] ?? ""}
+                                onAssigneeChange={(nid, uid) => setNodeAssignees((m) => ({ ...m, [nid]: uid }))}
+                              />
+                            );
+                          })}
+                        </ol>
+                      </SortableContext>
+                    </DndContext>
+                  </div>
+                )}
+
+                {/* Quy trình chỉ có danh sách phẳng (chưa vẽ sơ đồ) */}
+                {selectedWorkflow && !hasGraph && selectedWorkflow.steps.length > 0 && (
+                  <div className="mt-2 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl">
+                    <p className="text-xs font-medium text-blue-700 dark:text-blue-300 mb-1.5">
+                      {selectedWorkflow.steps.length} bước sẽ được tạo tự động (chuỗi tuần tự):
+                    </p>
+                    <ol className="space-y-1">
+                      {selectedWorkflow.steps.map((s, i) => (
+                        <li key={s.id} className="flex items-center gap-2 text-xs text-blue-600 dark:text-blue-400">
+                          <span className="w-4 h-4 shrink-0 bg-blue-200 dark:bg-blue-800 rounded-full flex items-center justify-center text-[10px] font-bold">
+                            {i + 1}
+                          </span>
+                          {s.name}
+                          {s.durationDays && <span className="text-blue-400">({s.durationDays}d)</span>}
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* 2-column grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -326,17 +544,13 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
                   <User className="inline w-4 h-4 mr-1" />
                   Người thực hiện chính <span className="text-red-500">*</span>
                 </label>
-                <select
+                <SearchableSelect
                   value={mainPerformerId}
-                  onChange={(e) => setMainPerformerId(e.target.value)}
-                  className="w-full px-3 py-2.5 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-slate-800 dark:text-white"
-                  required
-                >
-                  <option value="">Chọn nhân viên...</option>
-                  {activeUsers.map((u) => (
-                    <option key={u.id} value={u.id}>{u.name} ({u.department ?? "—"})</option>
-                  ))}
-                </select>
+                  onChange={setMainPerformerId}
+                  options={activeUsers.map((u) => ({ id: u.id, label: u.name, sub: u.department ?? undefined }))}
+                  placeholder="Chọn nhân viên..."
+                  emptyText="Không tìm thấy nhân viên"
+                />
               </div>
 
               {/* Priority */}
@@ -370,7 +584,7 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
                   className="w-full px-3 py-2.5 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-slate-800 dark:text-white"
                 />
                 <p className="text-[10px] text-slate-400 mt-1">
-                  Deadline 3 giai đoạn sẽ tự động tính từ cấu hình mốc quy trình.
+                  Kết thúc chuẩn bị = trước 3 ngày · Kết thúc nhiệm vụ = sau 30 ngày
                 </p>
               </div>
 
@@ -427,30 +641,32 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
                 Người liên quan
               </label>
               <div className="flex gap-2 mb-2">
+                <SearchableSelect
+                  value={stakeholderUserId}
+                  onChange={setStakeholderUserId}
+                  options={activeUsers
+                    .filter((u) => u.id !== mainPerformerId && !stakeholders.some((s) => s.userId === u.id))
+                    .map((u) => ({ id: u.id, label: u.name, sub: u.department ?? undefined }))}
+                  placeholder="Chọn người..."
+                  emptyText="Không tìm thấy"
+                  className="flex-1"
+                />
                 <select
-                  id="stakeholder-user"
-                  className="flex-1 px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-slate-800 dark:text-white"
-                >
-                  <option value="">Chọn người...</option>
-                  {activeUsers.filter(u => u.id !== mainPerformerId).map((u) => (
-                    <option key={u.id} value={u.id}>{u.name}</option>
-                  ))}
-                </select>
-                <select
-                  id="stakeholder-role"
+                  value={stakeholderRole}
+                  onChange={(e) => setStakeholderRole(e.target.value as StakeholderRole)}
                   className="px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-slate-800 dark:text-white"
                 >
                   <option value="collaborator">Hỗ trợ</option>
+                  <option value="supervisor">Giám sát</option>
                   <option value="watcher">Theo dõi</option>
                   <option value="approver">Phê duyệt</option>
                 </select>
                 <button
                   type="button"
                   onClick={() => {
-                    const userSel = document.getElementById("stakeholder-user") as HTMLSelectElement;
-                    const roleSel = document.getElementById("stakeholder-role") as HTMLSelectElement;
-                    addStakeholder(userSel.value, roleSel.value as StakeholderRole);
-                    userSel.value = "";
+                    if (!stakeholderUserId) return;
+                    addStakeholder(stakeholderUserId, stakeholderRole);
+                    setStakeholderUserId("");
                   }}
                   className="px-3 py-2 bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-600 dark:text-slate-300 rounded-xl transition"
                 >
@@ -635,6 +851,116 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
           </div>
         </form>
       </div>
+
+      {/* ── Workflow Editor Overlay (draft mode, không lưu DB) ── */}
+      {showWorkflowEditor && selectedWorkflow && (
+        <div className="fixed inset-0 z-[60] flex flex-col bg-white dark:bg-slate-900">
+          {/* Header */}
+          <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shrink-0">
+            <div>
+              <h3 className="text-sm font-bold dark:text-white">
+                Điều chỉnh sơ đồ quy trình — {selectedWorkflow.name}
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Thay đổi chỉ áp dụng cho nhiệm vụ này, không ảnh hưởng quy trình mẫu gốc.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowWorkflowEditor(false)}
+              className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition"
+            >
+              <X className="w-5 h-5 text-slate-500" />
+            </button>
+          </div>
+          {/* Builder chiếm toàn bộ phần còn lại */}
+          <div className="flex-1 min-h-0">
+            <WorkflowBuilder
+              workflow={{
+                ...selectedWorkflow,
+                nodes: effectiveNodes,
+                edges: effectiveEdges,
+              }}
+              allWorkflows={[]}
+              canEdit
+              users={activeUsers.map((u) => ({ id: u.id, name: u.name, avatar: u.avatar, department: u.department }))}
+              onSave={async () => {}}
+              onConfirm={(nodes, edges) => {
+                setDraftNodes(nodes);
+                setDraftEdges(edges);
+                setShowWorkflowEditor(false);
+              }}
+              onCancelDraft={() => setShowWorkflowEditor(false)}
+            />
+          </div>
+        </div>
+      )}
     </div>
+  );
+}
+
+// ─── SortableStepRow ──────────────────────────────────────────────────────────
+
+interface SortableStepRowProps {
+  node: WorkflowNode;
+  index: number;
+  deps: string[];
+  candidates: { id: string; name: string; department?: string }[];
+  assigneeValue: string;
+  onAssigneeChange: (nodeId: string, userId: string) => void;
+}
+
+function SortableStepRow({ node, index, deps, candidates, assigneeValue, onAssigneeChange }: SortableStepRowProps) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: node.id });
+  const style = { transform: CSS.Transform.toString(transform), transition };
+
+  return (
+    <li
+      ref={setNodeRef}
+      style={style}
+      className={cn(
+        "bg-white dark:bg-slate-800 rounded-lg p-2 border border-blue-100 dark:border-blue-900/40 transition-shadow",
+        isDragging && "opacity-60 shadow-xl ring-2 ring-blue-400",
+      )}
+    >
+      <div className="flex items-center gap-1.5 text-xs text-blue-700 dark:text-blue-300 font-medium">
+        {/* Drag handle */}
+        <button
+          type="button"
+          {...attributes}
+          {...listeners}
+          className="cursor-grab active:cursor-grabbing touch-none text-slate-300 hover:text-slate-500 dark:hover:text-slate-400 shrink-0 p-0.5 -ml-0.5 rounded"
+          tabIndex={-1}
+          aria-label="Kéo để sắp xếp"
+        >
+          <GripVertical className="w-3.5 h-3.5" />
+        </button>
+        <span className="w-4 h-4 shrink-0 bg-blue-200 dark:bg-blue-800 rounded-full flex items-center justify-center text-[10px] font-bold select-none">
+          {index + 1}
+        </span>
+        <span className="truncate">{node.name}</span>
+        {node.roleRequired && (
+          <span className="text-[10px] px-1.5 py-0.5 bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-300 rounded-full shrink-0">
+            {node.roleRequired}
+          </span>
+        )}
+      </div>
+      {deps.length > 0 && (
+        <p className="text-[10px] text-slate-400 mt-0.5 ml-[1.625rem]">
+          Đầu vào từ: {deps.join(", ")}
+        </p>
+      )}
+      <div className="mt-1.5 ml-[1.625rem] w-[calc(100%-1.625rem)]">
+        <SearchableSelect
+          value={assigneeValue}
+          onChange={(uid) => onAssigneeChange(node.id, uid)}
+          options={candidates.map((u) => ({ id: u.id, label: u.name, sub: u.department ?? undefined }))}
+          placeholder="— Chưa gán (phân công sau) —"
+          emptyText="Không tìm thấy"
+          listHeight="max-h-36"
+          compact
+        />
+      </div>
+    </li>
   );
 }

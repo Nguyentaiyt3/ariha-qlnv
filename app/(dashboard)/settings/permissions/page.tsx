@@ -12,12 +12,15 @@ import { getPermissionConfig, savePermissionConfig } from "@/lib/firebase/firest
 import type { UserRole } from "@/types";
 import { toast } from "sonner";
 
-const ROLES: { id: UserRole; label: string; color: string }[] = [
-  { id: "guest",    label: "Khách",          color: "text-slate-500" },
-  { id: "staff",    label: "Nhân viên",      color: "text-blue-600"  },
-  { id: "teamLead", label: "Trưởng nhóm",    color: "text-purple-600"},
-  { id: "director", label: "Giám đốc",       color: "text-amber-600" },
-  { id: "hrAdmin",  label: "HR/Admin",       color: "text-red-600"   },
+const ROLES: { id: UserRole; label: string; sublabel: string; color: string }[] = [
+  { id: "guest",    label: "Khách",          sublabel: "Chưa phân quyền",                          color: "text-slate-500" },
+  { id: "staff",    label: "Nhân viên",      sublabel: "Chuyên viên, NCV...",                       color: "text-blue-600"  },
+  { id: "teamLead", label: "Trưởng đơn vị",  sublabel: "Trưởng/Phó phòng, khoa, viện, TT",         color: "text-purple-600"},
+  { id: "director", label: "Ban Giám đốc",   sublabel: "Phó Giám đốc, Giám đốc",                   color: "text-amber-600" },
+  { id: "hrAdmin",  label: "HR/Admin",       sublabel: "Toàn quyền hệ thống",                       color: "text-red-600"   },
+  { id: "financeViewer",     label: "Tài chính (Xem)",    sublabel: "Theo dõi tài chính",           color: "text-emerald-600" },
+  { id: "financeAuditor",    label: "Tài chính (Kiểm)",   sublabel: "Kiểm tra / đối soát",          color: "text-teal-600"    },
+  { id: "financeSupervisor", label: "Tài chính (Giám sát)", sublabel: "Duyệt chi, quản lý",        color: "text-cyan-600"    },
 ];
 
 type PermConfig = Record<UserRole, string[]>;
@@ -35,7 +38,7 @@ export default function PermissionsPage() {
   const [config, setConfig] = useState<PermConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [activeTab, setActiveTab] = useState<"matrix" | "modules">("matrix");
+  const [activeTab, setActiveTab] = useState<"matrix" | "modules" | "context">("matrix");
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set(["task"]));
 
   const isAdmin = !!(currentUser && (hasPermission(currentUser.role, "*") || currentUser.role === "hrAdmin"));
@@ -188,7 +191,7 @@ export default function PermissionsPage() {
 
       {/* Sub-tabs */}
       <div className="flex gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl w-fit">
-        {(["matrix", "modules"] as const).map((tab) => (
+        {(["matrix", "modules", "context"] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -199,7 +202,7 @@ export default function PermissionsPage() {
                 : "text-slate-500 dark:text-slate-400 hover:text-[var(--foreground)]"
             )}
           >
-            {tab === "matrix" ? "Phân quyền hệ thống" : "Phân quyền chức năng"}
+            {tab === "matrix" ? "Quyền hệ thống" : tab === "modules" ? "Quyền chức năng" : "Vai trò NCKH"}
           </button>
         ))}
       </div>
@@ -218,6 +221,7 @@ export default function PermissionsPage() {
                   {ROLES.map((r) => (
                     <th key={r.id} className="px-3 py-3 text-center min-w-[110px]">
                       <div className={cn("font-bold text-sm", r.color)}>{r.label}</div>
+                      <div className="text-[10px] text-slate-400 mt-0.5 font-normal">{r.sublabel}</div>
                       {r.id !== "hrAdmin" && (
                         <button
                           onClick={() => resetToDefault(r.id)}
@@ -387,6 +391,106 @@ export default function PermissionsPage() {
               Để cấu hình chi tiết từng quyền con, dùng tab <strong>Phân quyền hệ thống</strong>.
             </p>
           </div>
+        </div>
+      )}
+
+      {/* ── Tab 3: Research context roles ── */}
+      {activeTab === "context" && (
+        <div className="space-y-4">
+          <div className="flex items-start gap-2.5 p-3 bg-violet-50 dark:bg-violet-900/20 border border-violet-200 dark:border-violet-800 rounded-xl">
+            <Info className="w-4 h-4 text-violet-500 shrink-0 mt-0.5" />
+            <p className="text-xs text-violet-700 dark:text-violet-300">
+              Vai trò NCKH gắn với <strong>từng đề tài cụ thể</strong>, không phải toàn hệ thống.
+              Một người có thể là Tác giả đề tài A, Phản biện đề tài B, Hội đồng đề tài C — cùng lúc.
+              Quyền chỉ định được cấu hình qua tab <strong>Quyền hệ thống</strong> nhóm "Nghiên cứu khoa học".
+            </p>
+          </div>
+
+          {[
+            {
+              role: "Tác giả (author)",
+              color: "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300",
+              who: "Chủ nhiệm đề tài — người đăng ký và chịu trách nhiệm chính",
+              canDo: ["Xem toàn bộ tiến trình đề tài của mình", "Nộp báo cáo, đề cương", "Xem phiếu phản biện (sau khi kết thúc phản biện kín)"],
+              assignedBy: "Tự đăng ký khi tạo đề tài",
+              systemPerm: null,
+            },
+            {
+              role: "Đồng tác giả (coAuthor)",
+              color: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300",
+              who: "Tác giả phụ — cùng thực hiện nghiên cứu, được ghi nhận tín chỉ",
+              canDo: ["Xem tiến trình đề tài", "Nộp tài liệu theo yêu cầu"],
+              assignedBy: "Tác giả chính hoặc người có quyền research:addContributor",
+              systemPerm: "research:addContributor",
+            },
+            {
+              role: "Tham gia (participant)",
+              color: "bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300",
+              who: "Thành viên hỗ trợ — được ghi nhận tham gia nhưng không phải tác giả",
+              canDo: ["Xem tiến trình đề tài"],
+              assignedBy: "Người có quyền research:addContributor",
+              systemPerm: "research:addContributor",
+            },
+            {
+              role: "Phản biện (reviewer)",
+              color: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
+              who: "Thẩm định viên — đánh giá đề cương / kết quả theo phiếu 7 tiêu chí (phản biện kín)",
+              canDo: ["Xem file đề cương được giao (không biết tác giả)", "Nộp phiếu nhận xét với điểm và kết luận"],
+              assignedBy: "Người có quyền research:assignReviewer",
+              systemPerm: "research:assignReviewer",
+            },
+            {
+              role: "Hội đồng — Chủ tịch (chair)",
+              color: "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300",
+              who: "Chủ trì phiên họp Hội đồng KHCN, ký biên bản kết luận",
+              canDo: ["Bỏ phiếu (họp online)", "Xem kết quả phiếu biểu quyết", "Ký biên bản họp"],
+              assignedBy: "Người có quyền research:assignCouncil",
+              systemPerm: "research:assignCouncil",
+            },
+            {
+              role: "Hội đồng — Thành viên (member)",
+              color: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300",
+              who: "Thành viên biểu quyết trong phiên họp Hội đồng KHCN",
+              canDo: ["Bỏ phiếu Tán thành / Phản đối / Trắng (họp online)"],
+              assignedBy: "Người có quyền research:assignCouncil",
+              systemPerm: "research:assignCouncil",
+            },
+            {
+              role: "Hội đồng — Thư ký (secretary)",
+              color: "bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300",
+              who: "Ghi biên bản, tổng hợp kết quả phiên họp",
+              canDo: ["Xem danh sách thành viên và biểu quyết", "Đính kèm biên bản họp"],
+              assignedBy: "Người có quyền research:assignCouncil",
+              systemPerm: "research:assignCouncil",
+            },
+          ].map(item => (
+            <div key={item.role} className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 space-y-2">
+              <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <span className={cn("text-xs font-semibold px-2.5 py-1 rounded-full", item.color)}>
+                    {item.role}
+                  </span>
+                </div>
+                {item.systemPerm && (
+                  <span className="text-[10px] font-mono bg-slate-100 dark:bg-slate-800 text-slate-500 px-2 py-0.5 rounded">
+                    Cần quyền: {item.systemPerm}
+                  </span>
+                )}
+              </div>
+              <p className="text-sm text-[var(--foreground)]">{item.who}</p>
+              <div className="space-y-0.5">
+                {item.canDo.map((d, i) => (
+                  <div key={i} className="flex items-start gap-1.5 text-xs text-slate-600 dark:text-slate-400">
+                    <Check className="w-3 h-3 text-green-500 shrink-0 mt-0.5" />
+                    {d}
+                  </div>
+                ))}
+              </div>
+              <p className="text-[11px] text-slate-400 pt-1 border-t border-[var(--border)]">
+                Được chỉ định bởi: {item.assignedBy}
+              </p>
+            </div>
+          ))}
         </div>
       )}
 

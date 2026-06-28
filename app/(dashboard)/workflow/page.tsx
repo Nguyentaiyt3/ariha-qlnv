@@ -12,6 +12,7 @@ import {
 import type { Workflow, WorkflowStep, WorkflowNode, WorkflowEdge } from "@/types";
 import { generateId } from "@/lib/utils";
 import { useAuthStore } from "@/stores/useAuthStore";
+import { useTaskStore } from "@/stores/useTaskStore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { toast } from "sonner";
 import dynamic from "next/dynamic";
@@ -33,6 +34,7 @@ type PageView = "list" | "form" | "visual";
 
 export default function WorkflowPage() {
   const { currentUser } = useAuthStore();
+  const { users } = useTaskStore();
 
   // Data
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
@@ -131,6 +133,27 @@ export default function WorkflowPage() {
     setSteps(arr.map((s, i) => ({ ...s, order: i + 1 })));
   }
 
+  // ── Notify managers that a workflow needs approval ──────────
+  async function notifyManagersPending(wf: Workflow, isUpdate: boolean) {
+    if (!currentUser) return;
+    const managers = users.filter(
+      (u) => ["teamLead", "director", "hrAdmin"].includes(u.role) && u.isActive && u.id !== currentUser.id
+    );
+    await Promise.all(managers.map((u) =>
+      addNotification({
+        userId: u.id,
+        type: "node_submitted",
+        title: "Quy trình chờ phê duyệt",
+        body: `${currentUser.name} ${isUpdate ? "đề xuất sửa" : "gửi"} quy trình "${wf.name}"${wf.department ? ` (${wf.department})` : ""} — cần phê duyệt.`,
+        link: "/workflow",
+        read: false,
+        priority: "urgent",
+        actionRequired: true,
+        createdAt: new Date().toISOString(),
+      })
+    )).catch(console.error);
+  }
+
   // ── Save form (list-based editor) ───────────────────────────
   async function handleSaveForm() {
     if (!currentUser || !name.trim()) return;
@@ -146,15 +169,14 @@ export default function WorkflowPage() {
         steps: steps.map((s, i) => ({ ...s, order: i + 1 })),
         nodes: existing?.nodes,
         edges: existing?.edges,
-        status: existing?.status === "published"
-          ? "published"
-          : canApprove ? "published" : "pending",
+        status: canApprove ? "published" : "pending",
         createdBy: existing?.createdBy ?? currentUser.id,
         createdByName: existing?.createdByName ?? currentUser.name,
         createdAt: existing?.createdAt ?? new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
       await saveWorkflow(wf);
+      if (wf.status === "pending") await notifyManagersPending(wf, !isNew);
       if (isNew) {
         setWorkflows((ws) => [wf, ...ws]);
         setSelectedId(wf.id);
@@ -163,7 +185,9 @@ export default function WorkflowPage() {
         );
       } else {
         setWorkflows((ws) => ws.map((w) => (w.id === selectedId ? wf : w)));
-        toast.success("Đã cập nhật quy trình.");
+        toast.success(
+          canApprove ? "Đã cập nhật quy trình." : "Đã gửi đề nghị sửa. Chờ quản lý duyệt."
+        );
       }
     } catch {
       toast.error("Lưu thất bại.");
@@ -189,9 +213,9 @@ export default function WorkflowPage() {
       steps: existing?.steps ?? [],
       nodes,
       edges,
-      status: existing?.status === "published"
-        ? "published"
-        : canApprove ? "published" : "pending",
+      // Người không có quyền duyệt: mọi thay đổi (kể cả quy trình con) đều phải
+      // chuyển sang "pending" để quản lý phê duyệt — không giữ "published".
+      status: canApprove ? "published" : "pending",
       createdBy: existing?.createdBy ?? currentUser.id,
       createdByName: existing?.createdByName ?? currentUser.name,
       createdAt: existing?.createdAt ?? new Date().toISOString(),
@@ -199,6 +223,7 @@ export default function WorkflowPage() {
     };
 
     await saveWorkflow(wf);
+    if (wf.status === "pending") await notifyManagersPending(wf, !isNew);
 
     if (isNew) {
       setWorkflows((ws) => [wf, ...ws]);
@@ -208,7 +233,9 @@ export default function WorkflowPage() {
       );
     } else {
       setWorkflows((ws) => ws.map((w) => (w.id === id ? wf : w)));
-      toast.success("Đã lưu sơ đồ quy trình.");
+      toast.success(
+        canApprove ? "Đã lưu sơ đồ quy trình." : "Đã gửi đề nghị sửa. Chờ quản lý duyệt."
+      );
     }
   }
 

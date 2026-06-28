@@ -1,17 +1,19 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
-  LineChart, Line, PieChart, Pie, Cell, Sector,
+  LineChart, Line, PieChart, Pie, Cell,
 } from "recharts";
-import { BarChart3, Download, FileSpreadsheet, FileText, TrendingUp, Users, CheckCircle, AlertTriangle } from "lucide-react";
+import { BarChart3, FileSpreadsheet, FileText, TrendingUp, CheckCircle, AlertTriangle, X, ChevronRight, MousePointerClick } from "lucide-react";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { isOverdue } from "@/lib/utils";
 import { format, subMonths, startOfMonth, endOfMonth } from "date-fns";
 import { toast } from "sonner";
+import type { Task } from "@/types";
 
 const COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"];
 
@@ -58,7 +60,10 @@ export default function AnalyticsPage() {
       const done = inPeriod.filter((t) => t.status === "done").length;
       const overdue = inPeriod.filter((t) => isOverdue(t.deadlineBase) && t.status !== "done").length;
 
-      return { month, "Hoàn thành": done, "Quá hạn": overdue, "Tổng": inPeriod.length };
+      return {
+        month, "Hoàn thành": done, "Quá hạn": overdue, "Tổng": inPeriod.length,
+        _startMs: start.getTime(), _endMs: end.getTime(),
+      };
     });
   }, [tasks, periodMonths]);
 
@@ -72,6 +77,7 @@ export default function AnalyticsPage() {
       name: STATUS_LABELS[status] ?? status,
       value: count,
       color: STATUS_COLORS[status] ?? "#94a3b8",
+      status,
     }));
   }, [tasks]);
 
@@ -87,6 +93,7 @@ export default function AnalyticsPage() {
     return Object.entries(depts)
       .map(([dept, { done, total }]) => ({
         dept: dept.length > 10 ? dept.slice(0, 10) + "..." : dept,
+        fullDept: dept,
         "Hoàn thành": done,
         "Còn lại": total - done,
         rate: total > 0 ? Math.round((done / total) * 100) : 0,
@@ -103,6 +110,45 @@ export default function AnalyticsPage() {
     const rate = total > 0 ? Math.round((done / total) * 100) : 0;
     return { total, done, overdue, risk, rate };
   }, [tasks]);
+
+  // ── Drill-down: click any chart/KPI to see the underlying tasks ──
+  const [drill, setDrill] = useState<{ title: string; tasks: Task[] } | null>(null);
+
+  const openDrillStatus = (entry: { status?: string } | null) => {
+    if (!entry?.status) return;
+    setDrill({
+      title: `Trạng thái: ${STATUS_LABELS[entry.status] ?? entry.status}`,
+      tasks: tasks.filter((t) => t.status === entry.status),
+    });
+  };
+  const openDrillDept = (payload: { fullDept?: string } | null) => {
+    if (!payload?.fullDept) return;
+    setDrill({
+      title: `Phòng ban: ${payload.fullDept}`,
+      tasks: tasks.filter((t) => (t.department ?? "Khác") === payload.fullDept),
+    });
+  };
+  const openDrillMonth = (label?: string) => {
+    const entry = trendData.find((d) => d.month === label);
+    if (!entry) return;
+    setDrill({
+      title: `Tháng ${label}`,
+      tasks: tasks.filter(
+        (t) => t.deadlineBase &&
+          new Date(t.deadlineBase).getTime() >= entry._startMs &&
+          new Date(t.deadlineBase).getTime() <= entry._endMs,
+      ),
+    });
+  };
+  const openDrillKpi = (kind: "total" | "done" | "overdue" | "risk") => {
+    const map: Record<typeof kind, { title: string; tasks: Task[] }> = {
+      total:   { title: "Tất cả nhiệm vụ", tasks },
+      done:    { title: "Nhiệm vụ hoàn thành", tasks: tasks.filter((t) => t.status === "done") },
+      overdue: { title: "Nhiệm vụ quá hạn", tasks: tasks.filter((t) => isOverdue(t.deadlineBase) && t.status !== "done") },
+      risk:    { title: "Nhiệm vụ rủi ro", tasks: tasks.filter((t) => t.riskFlag) },
+    };
+    setDrill(map[kind]);
+  };
 
   const exportExcel = async () => {
     setExportLoading(true);
@@ -192,21 +238,31 @@ export default function AnalyticsPage() {
         </div>
       </div>
 
+      {/* Hint */}
+      <p className="flex items-center gap-1.5 text-xs text-[var(--muted-foreground)] mb-3">
+        <MousePointerClick className="w-3.5 h-3.5" />
+        Nhấn vào thẻ chỉ số hoặc bất kỳ phần nào của biểu đồ để xem danh sách nhiệm vụ chi tiết.
+      </p>
+
       {/* Summary KPIs */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-        {[
-          { label: "Tổng nhiệm vụ", value: summary.total, icon: <BarChart3 className="w-5 h-5" />, color: "text-blue-600 bg-blue-50" },
-          { label: "Hoàn thành", value: `${summary.done} (${summary.rate}%)`, icon: <CheckCircle className="w-5 h-5" />, color: "text-green-600 bg-green-50" },
-          { label: "Quá hạn", value: summary.overdue, icon: <AlertTriangle className="w-5 h-5" />, color: "text-red-600 bg-red-50" },
-          { label: "Rủi ro", value: summary.risk, icon: <TrendingUp className="w-5 h-5" />, color: "text-amber-600 bg-amber-50" },
-        ].map((item) => (
-          <div key={item.label} className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-4">
+        {([
+          { kind: "total" as const,   label: "Tổng nhiệm vụ", value: summary.total, icon: <BarChart3 className="w-5 h-5" />, color: "text-blue-600 bg-blue-50" },
+          { kind: "done" as const,    label: "Hoàn thành", value: `${summary.done} (${summary.rate}%)`, icon: <CheckCircle className="w-5 h-5" />, color: "text-green-600 bg-green-50" },
+          { kind: "overdue" as const, label: "Quá hạn", value: summary.overdue, icon: <AlertTriangle className="w-5 h-5" />, color: "text-red-600 bg-red-50" },
+          { kind: "risk" as const,    label: "Rủi ro", value: summary.risk, icon: <TrendingUp className="w-5 h-5" />, color: "text-amber-600 bg-amber-50" },
+        ]).map((item) => (
+          <button
+            key={item.label}
+            onClick={() => openDrillKpi(item.kind)}
+            className="text-left bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 hover:border-blue-400 hover:shadow-md transition-all cursor-pointer"
+          >
             <div className={`w-9 h-9 rounded-lg flex items-center justify-center mb-2 ${item.color}`}>
               {item.icon}
             </div>
             <p className="text-xl font-bold text-[var(--foreground)]">{item.value}</p>
             <p className="text-xs text-[var(--muted-foreground)]">{item.label}</p>
-          </div>
+          </button>
         ))}
       </div>
 
@@ -215,15 +271,19 @@ export default function AnalyticsPage() {
         {/* Trend */}
         <div className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-5">
           <h3 className="font-semibold text-[var(--foreground)] mb-4">Xu hướng hoàn thành theo tháng</h3>
-          <ResponsiveContainer width="100%" height={220}>
-            <LineChart data={trendData}>
+          <ResponsiveContainer width="100%" height={240}>
+            <LineChart
+              data={trendData}
+              onClick={(s) => openDrillMonth((s as { activeLabel?: string })?.activeLabel)}
+              style={{ cursor: "pointer" }}
+            >
               <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
               <XAxis dataKey="month" tick={{ fontSize: 12, fill: "var(--muted-foreground)" }} />
-              <YAxis tick={{ fontSize: 12, fill: "var(--muted-foreground)" }} />
+              <YAxis allowDecimals={false} tick={{ fontSize: 12, fill: "var(--muted-foreground)" }} />
               <Tooltip contentStyle={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }} />
               <Legend wrapperStyle={{ fontSize: 12 }} />
-              <Line type="monotone" dataKey="Hoàn thành" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} />
-              <Line type="monotone" dataKey="Quá hạn" stroke="#ef4444" strokeWidth={2} dot={{ r: 3 }} />
+              <Line type="monotone" dataKey="Hoàn thành" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 6 }} />
+              <Line type="monotone" dataKey="Quá hạn" stroke="#ef4444" strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 6 }} />
               <Line type="monotone" dataKey="Tổng" stroke="#94a3b8" strokeWidth={1.5} strokeDasharray="4 2" dot={false} />
             </LineChart>
           </ResponsiveContainer>
@@ -244,6 +304,8 @@ export default function AnalyticsPage() {
                   outerRadius={75}
                   label={({ name, percent }) => `${name} ${Math.round((percent ?? 0) * 100)}%`}
                   labelLine={false}
+                  onClick={(d) => openDrillStatus(d as { status?: string })}
+                  style={{ cursor: "pointer" }}
                 >
                   {statusData.map((entry, i) => (
                     <Cell key={i} fill={entry.color} />
@@ -262,15 +324,66 @@ export default function AnalyticsPage() {
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" horizontal={false} />
                 <XAxis type="number" tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} />
                 <YAxis type="category" dataKey="dept" tick={{ fontSize: 11, fill: "var(--muted-foreground)" }} width={70} />
-                <Tooltip contentStyle={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }} />
+                <Tooltip cursor={{ fill: "var(--muted)", opacity: 0.4 }} contentStyle={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }} />
                 <Legend wrapperStyle={{ fontSize: 11 }} />
-                <Bar dataKey="Hoàn thành" stackId="a" fill="#10b981" radius={[0, 0, 0, 0]} />
-                <Bar dataKey="Còn lại" stackId="a" fill="#e2e8f0" radius={[0, 4, 4, 0]} />
+                <Bar dataKey="Hoàn thành" stackId="a" fill="#10b981" radius={[0, 0, 0, 0]} onClick={(d) => openDrillDept(d as { fullDept?: string })} style={{ cursor: "pointer" }} />
+                <Bar dataKey="Còn lại" stackId="a" fill="#e2e8f0" radius={[0, 4, 4, 0]} onClick={(d) => openDrillDept(d as { fullDept?: string })} style={{ cursor: "pointer" }} />
               </BarChart>
             </ResponsiveContainer>
           </div>
         </div>
       </div>
+
+      {/* Drill-down slide-over — links each task to its source detail page */}
+      {drill && (
+        <>
+          <div className="fixed inset-0 bg-black/40 z-40" onClick={() => setDrill(null)} />
+          <div className="fixed right-0 top-0 h-full w-full max-w-md bg-[var(--card)] border-l border-[var(--border)] z-50 shadow-2xl flex flex-col">
+            <div className="flex items-center justify-between p-4 border-b border-[var(--border)]">
+              <div className="min-w-0">
+                <h3 className="font-semibold text-[var(--foreground)] truncate">{drill.title}</h3>
+                <p className="text-xs text-[var(--muted-foreground)]">{drill.tasks.length} nhiệm vụ</p>
+              </div>
+              <button onClick={() => setDrill(null)} className="p-1.5 hover:bg-[var(--muted)] rounded-lg flex-shrink-0">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-3 space-y-2">
+              {drill.tasks.length === 0 && (
+                <p className="text-center text-sm text-[var(--muted-foreground)] py-10">Không có nhiệm vụ nào.</p>
+              )}
+              {drill.tasks.map((t) => (
+                <Link
+                  key={t.id}
+                  href={`/tasks/${t.id}`}
+                  onClick={() => setDrill(null)}
+                  className="flex items-center gap-3 p-3 rounded-lg border border-[var(--border)] hover:border-blue-400 hover:bg-[var(--muted)] transition-colors"
+                >
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-[var(--foreground)] truncate">{t.name}</p>
+                    <div className="flex items-center gap-2 mt-1">
+                      <span
+                        className="text-[10px] px-1.5 py-0.5 rounded-full font-medium"
+                        style={{
+                          background: (STATUS_COLORS[t.status] ?? "#94a3b8") + "22",
+                          color: STATUS_COLORS[t.status] ?? "#64748b",
+                        }}
+                      >
+                        {STATUS_LABELS[t.status] ?? t.status}
+                      </span>
+                      <span className="text-[10px] text-[var(--muted-foreground)]">{t.progress}%</span>
+                      {t.department && (
+                        <span className="text-[10px] text-[var(--muted-foreground)] truncate">· {t.department}</span>
+                      )}
+                    </div>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-[var(--muted-foreground)] flex-shrink-0" />
+                </Link>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
