@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Loader2, FileText, Download, MessageSquarePlus, Trash2, Check, X, StickyNote } from "lucide-react";
+import { Loader2, FileText, Download, MessageSquarePlus, Trash2, Check, X, StickyNote, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { researchFileUrl } from "@/lib/researchFileUrl";
 import type { ResearchAnnotation } from "@/types";
@@ -140,6 +140,7 @@ export function DocxAnnotator({
   const [rendered, setRendered] = useState(false);
 
   const [items, setItems] = useState<ResearchAnnotation[]>(annotations);
+  const [showNotes, setShowNotes] = useState(true);
   const [toolbar, setToolbar] = useState<Toolbar | null>(null);
   const [popover, setPopover] = useState<ActivePopover | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
@@ -435,11 +436,26 @@ export function DocxAnnotator({
         )}
       </div>
 
-      {/* ── Notes panel ── */}
+      {/* ── Notes panel (collapsible) ── */}
+      {!showNotes ? (
+        <button
+          type="button"
+          onClick={() => setShowNotes(true)}
+          title="Hiện ghi chú"
+          className="shrink-0 w-9 border-l border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex flex-col items-center gap-2 py-3 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+        >
+          <PanelRightOpen className="w-4 h-4 text-slate-400" />
+          <span className="text-[10px] font-semibold text-slate-500 [writing-mode:vertical-rl] rotate-180">Ghi chú ({fileItems.length})</span>
+        </button>
+      ) : (
       <div className="w-60 shrink-0 border-l border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex flex-col">
         <div className="px-3 py-2 border-b border-slate-200 dark:border-slate-700 flex items-center gap-1.5">
           <StickyNote className="w-3.5 h-3.5 text-amber-500" />
           <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">Ghi chú ({fileItems.length})</span>
+          <button type="button" onClick={() => setShowNotes(false)} title="Ẩn ghi chú"
+            className="ml-auto p-0.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 rounded transition">
+            <PanelRightClose className="w-4 h-4" />
+          </button>
         </div>
         <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
           {fileItems.length === 0 && (
@@ -465,6 +481,7 @@ export function DocxAnnotator({
           ))}
         </div>
       </div>
+      )}
     </div>
   );
 }

@@ -1090,6 +1090,25 @@ function MonitorTab({
     finally { setActioning(null); }
   }
 
+  /** Lưu phân loại nhiệm vụ độc lập (không đổi intakeStatus). */
+  async function handleLinkTask(topic: ResearchTopic, linkedTaskId: string) {
+    const resolvedTaskId = linkedTaskId.trim();
+    if (!resolvedTaskId) return;
+    const updates: Partial<ResearchTopic> = {
+      taskId: resolvedTaskId,
+      updatedAt: new Date().toISOString(),
+    };
+    const res = await fetch(`/api/research/${topic.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updates),
+    });
+    if (!res.ok) { toast.error("Lưu phân loại thất bại"); throw new Error("link failed"); }
+    onTopicUpdate(topic.id, updates);
+    setIntakeReviewTopic(prev => prev && prev.id === topic.id ? { ...prev, ...updates } : prev);
+    toast.success("Đã lưu phân loại nhiệm vụ");
+  }
+
   async function handleIntakeRevise(
     topic: ResearchTopic,
     reason: string,
@@ -1621,6 +1640,7 @@ function MonitorTab({
           onAccept={(note, linkedTaskId, logs, matchedUserId) => handleIntakeAccept(intakeReviewTopic, note, linkedTaskId, logs, matchedUserId)}
           onRevise={(reason, logs) => handleIntakeRevise(intakeReviewTopic, reason, logs)}
           onReject={(reason, logs) => handleIntakeReject(intakeReviewTopic, reason, logs)}
+          onLinkTask={(linkedTaskId) => handleLinkTask(intakeReviewTopic, linkedTaskId)}
           onClose={() => setIntakeReviewTopic(null)}
         />
       )}

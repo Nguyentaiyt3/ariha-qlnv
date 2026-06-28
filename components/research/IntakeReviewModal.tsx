@@ -2,14 +2,14 @@
 
 import { useState, useMemo } from "react";
 import {
-  Loader2, FileText, ExternalLink, Check, X,
+  Loader2, FileText, Check, X,
   AlertCircle, User as UserIcon, RotateCcw,
   ShieldCheck, UserCheck, MailPlus,
+  Maximize2, Minimize2, ChevronDown, ChevronUp, Save,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn, generateId } from "@/lib/utils";
 import { normText, jaccardWords } from "@/lib/researchUtils";
-import { researchFileUrl } from "@/lib/researchFileUrl";
 import { DocxAnnotator } from "./DocxAnnotator";
 import { addAnnotation, updateAnnotation, deleteAnnotation } from "@/lib/researchAnnotations";
 import type { ResearchTopic, Task } from "@/types";
@@ -76,6 +76,7 @@ export function IntakeReviewModal({
   onAccept,
   onRevise,
   onReject,
+  onLinkTask,
   onClose,
 }: {
   topic: ResearchTopic;
@@ -90,6 +91,8 @@ export function IntakeReviewModal({
   onAccept: (note: string, linkedTaskId: string, intakeLogs: ResearchTopic["intakeLogs"], matchedUserId?: string) => Promise<void>;
   onRevise: (reason: string, intakeLogs: ResearchTopic["intakeLogs"]) => Promise<void>;
   onReject: (reason: string, intakeLogs: ResearchTopic["intakeLogs"]) => Promise<void>;
+  /** Lưu phân loại nhiệm vụ độc lập (không cần tiếp nhận). */
+  onLinkTask?: (linkedTaskId: string) => Promise<void>;
   onClose: () => void;
 }) {
   const [checks, setChecks] = useState<Record<CheckKey, boolean>>({
@@ -100,6 +103,13 @@ export function IntakeReviewModal({
   const [verdict,      setVerdict]      = useState<"accept" | "revise" | "reject" | null>(null);
   const [linkedTaskId, setLinkedTaskId] = useState(taskId);
   const [submitting,   setSubmitting]   = useState(false);
+
+  // ── Layout toggles ──
+  const [fullscreen,   setFullscreen]   = useState(false);
+  const [showInfo,     setShowInfo]     = useState(true);   // "Thông tin đề tài" section
+  const [showAnalysis, setShowAnalysis] = useState(true);   // "Phân tích tự động" section
+  const [savingLink,   setSavingLink]   = useState(false);
+  const [linkSaved,    setLinkSaved]    = useState(false);
 
   // Capture the moment the modal was opened
   const reviewedAt = useMemo(() => new Date(), []);
@@ -114,8 +124,6 @@ export function IntakeReviewModal({
   const isNoTask = !topic.taskId;
 
   const fileUrl = topic.proposalFileUrl;
-  // Proxy route for open/download links (Vietnamese filenames + runtime-uploaded files)
-  const absoluteFileUrl = useMemo(() => researchFileUrl(fileUrl), [fileUrl]);
 
   // Smart-sort NCKH tasks: tasks matching topic's year + quarter come first
   const sortedNckhTasks = useMemo(() => {
@@ -252,6 +260,19 @@ export function IntakeReviewModal({
     }
   }
 
+  async function handleSaveLink() {
+    if (!onLinkTask || !linkedTaskId.trim() || savingLink) return;
+    setSavingLink(true);
+    setLinkSaved(false);
+    try {
+      await onLinkTask(linkedTaskId.trim());
+      setLinkSaved(true);
+      setTimeout(() => setLinkSaved(false), 2500);
+    } finally {
+      setSavingLink(false);
+    }
+  }
+
   async function handleSubmit() {
     if (!verdict || !canSubmit) return;
     setSubmitting(true);
@@ -269,10 +290,13 @@ export function IntakeReviewModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3">
+    <div className={cn("fixed inset-0 z-50 flex items-center justify-center bg-black/70", fullscreen ? "p-0" : "p-3")}>
       <div
-        className="w-full max-w-6xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-2xl shadow-2xl flex flex-col"
-        style={{ height: "min(94vh, 860px)" }}
+        className={cn(
+          "w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-2xl flex flex-col",
+          fullscreen ? "max-w-none h-full rounded-none" : "max-w-6xl rounded-2xl",
+        )}
+        style={fullscreen ? { height: "100vh" } : { height: "min(94vh, 860px)" }}
       >
         {/* ── Header ── */}
         <div className="px-5 py-3.5 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between shrink-0">
@@ -283,9 +307,18 @@ export function IntakeReviewModal({
             </h2>
             <p className="text-[11px] text-slate-400 truncate">{topic.title}</p>
           </div>
-          <button onClick={onClose} className="shrink-0 p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-600 transition ml-3">
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-1 shrink-0 ml-3">
+            <button
+              onClick={() => setFullscreen(f => !f)}
+              title={fullscreen ? "Thu nhỏ" : "Phóng to toàn màn hình"}
+              className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-600 transition"
+            >
+              {fullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+            </button>
+            <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-600 transition">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* ── 2-column body (2/3 + 1/3) ── */}
@@ -297,16 +330,6 @@ export function IntakeReviewModal({
           <div className="flex flex-col overflow-hidden bg-slate-100 dark:bg-slate-950">
             <div className="px-4 py-2 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex items-center gap-3 shrink-0">
               <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">File đề cương</p>
-              {topic.proposalFileUrl && (
-                <a
-                  href={absoluteFileUrl || topic.proposalFileUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="ml-auto inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/20 transition"
-                >
-                  <ExternalLink className="w-3 h-3" /> Mở tab mới
-                </a>
-              )}
             </div>
             <div className="flex-1 overflow-hidden">
               {fileUrl ? (
@@ -336,11 +359,16 @@ export function IntakeReviewModal({
           <div className="overflow-y-auto bg-white dark:bg-slate-900 flex flex-col">
 
             {/* ══════════ SECTION 1: THÔNG TIN ĐỀ TÀI ══════════ */}
-            <div className="px-4 py-2.5 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 sticky top-0 z-10">
-              <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Thông tin đề tài</p>
-            </div>
+            <button
+              type="button"
+              onClick={() => setShowInfo(v => !v)}
+              className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 sticky top-0 z-10 flex items-center justify-between hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+            >
+              <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Thông tin đề tài</span>
+              {showInfo ? <ChevronUp className="w-3.5 h-3.5 text-slate-400" /> : <ChevronDown className="w-3.5 h-3.5 text-slate-400" />}
+            </button>
 
-            <div className="p-4 space-y-2.5 border-b-4 border-slate-100 dark:border-slate-800">
+            <div className={cn("p-4 space-y-2.5 border-b-4 border-slate-100 dark:border-slate-800", !showInfo && "hidden")}>
               {/* Title */}
               <div className="text-[11px] space-y-0.5">
                 <p className="text-slate-400">Tên đề tài</p>
@@ -401,13 +429,18 @@ export function IntakeReviewModal({
             </div>
 
             {/* ══════════ SECTION 1.5: PHÂN TÍCH TỰ ĐỘNG ══════════ */}
-            <div className="px-4 py-2.5 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 sticky top-0 z-10">
-              <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setShowAnalysis(v => !v)}
+              className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 sticky top-0 z-10 flex items-center justify-between hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+            >
+              <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
                 <ShieldCheck className="w-3 h-3" /> Phân tích tự động
-              </p>
-            </div>
+              </span>
+              {showAnalysis ? <ChevronUp className="w-3.5 h-3.5 text-slate-400" /> : <ChevronDown className="w-3.5 h-3.5 text-slate-400" />}
+            </button>
 
-            <div className="p-4 space-y-3 border-b-4 border-slate-100 dark:border-slate-800">
+            <div className={cn("p-4 space-y-3 border-b-4 border-slate-100 dark:border-slate-800", !showAnalysis && "hidden")}>
               {/* Trùng lặp */}
               <div>
                 <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Trùng lặp đề tài</p>
@@ -636,6 +669,21 @@ export function IntakeReviewModal({
                   )}
                   {taskName && linkedTaskId === taskId && (
                     <p className="text-[11px] text-amber-600 dark:text-amber-400">→ {taskName}</p>
+                  )}
+                  {onLinkTask && (
+                    <button
+                      type="button"
+                      onClick={handleSaveLink}
+                      disabled={!linkedTaskId.trim() || savingLink || linkedTaskId === topic.taskId}
+                      className={cn(
+                        "w-full mt-1 py-1.5 text-[11px] font-semibold rounded-lg flex items-center justify-center gap-1.5 transition disabled:opacity-40 disabled:cursor-not-allowed",
+                        linkSaved ? "bg-emerald-500 text-white" : "bg-amber-500 hover:bg-amber-600 text-white",
+                      )}
+                    >
+                      {savingLink ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        : linkSaved ? <><Check className="w-3.5 h-3.5" /> Đã lưu phân loại</>
+                        : <><Save className="w-3.5 h-3.5" /> Lưu phân loại</>}
+                    </button>
                   )}
                 </div>
               )}
