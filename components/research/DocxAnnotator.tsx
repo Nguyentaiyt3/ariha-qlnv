@@ -97,6 +97,8 @@ function wrapRange(root: HTMLElement, start: number, end: number, aid: string, h
       mark.style.borderRadius = "2px";
       mark.style.cursor = "pointer";
       mark.style.padding = "0 1px";
+      // multiply so highlight shows over the PDF canvas glyphs (and stays readable on docx)
+      mark.style.mixBlendMode = "multiply";
       range.surroundContents(mark);
     } catch { /* skip un-wrappable fragment */ }
   }
@@ -153,37 +155,72 @@ export function DocxAnnotator({
 
   useEffect(() => setItems(annotations), [annotations]);
 
-  // ── Render the docx ──────────────────────────────────────────────────────────
+  // ── Render docx OR pdf into the same container (both annotatable) ─────────────
   useEffect(() => {
-    if (!isDocx) { setState(isPdf ? "done" : "unsupported"); return; }
+    if (isDoc) { setState("unsupported"); return; }
+    if (!isDocx && !isPdf) { setState("unsupported"); return; }
     if (!containerRef.current) return;
     let cancelled = false;
     setState("loading");
     setRendered(false);
 
-    import("docx-preview").then(({ renderAsync }) =>
-      fetch(proxied)
-        .then(r => {
-          if (r.status === 404) throw Object.assign(new Error("not_found"), { code: "not_found" });
-          if (!r.ok) throw new Error(`Không tải được file (HTTP ${r.status})`);
-          return r.arrayBuffer();
-        })
-        .then(buf => {
+    const run = async () => {
+      const res = await fetch(proxied);
+      if (res.status === 404) throw Object.assign(new Error("not_found"), { code: "not_found" });
+      if (!res.ok) throw new Error(`Không tải được file (HTTP ${res.status})`);
+      const buf = await res.arrayBuffer();
+      const root = containerRef.current;
+      if (cancelled || !root) return;
+      root.innerHTML = "";
+
+      if (isDocx) {
+        const { renderAsync } = await import("docx-preview");
+        if (cancelled || !containerRef.current) return;
+        await renderAsync(buf, containerRef.current, undefined, {
+          className: "docx-preview-body", inWrapper: true, ignoreWidth: true,
+        });
+      } else {
+        // PDF → canvas + selectable text layer per page
+        const pdfjs = await import("pdfjs-dist");
+        pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+        const pdf = await pdfjs.getDocument({ data: buf }).promise;
+        const scale = 1.35;
+        for (let i = 1; i <= pdf.numPages; i++) {
           if (cancelled || !containerRef.current) return;
-          containerRef.current.innerHTML = "";
-          return renderAsync(buf, containerRef.current, undefined, {
-            className: "docx-preview-body", inWrapper: true, ignoreWidth: true,
-          });
-        })
-        .then(() => { if (!cancelled) { setState("done"); setRendered(true); } })
-    ).catch((err: unknown) => {
+          const page = await pdf.getPage(i);
+          const viewport = page.getViewport({ scale });
+          const pageDiv = document.createElement("div");
+          pageDiv.className = "pdf-page";
+          pageDiv.style.width = `${Math.floor(viewport.width)}px`;
+          pageDiv.style.height = `${Math.floor(viewport.height)}px`;
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.floor(viewport.width);
+          canvas.height = Math.floor(viewport.height);
+          const ctx = canvas.getContext("2d");
+          if (!ctx) continue;
+          await page.render({ canvasContext: ctx, viewport }).promise;
+          const textDiv = document.createElement("div");
+          textDiv.className = "textLayer";
+          textDiv.style.setProperty("--scale-factor", String(scale));
+          const textContent = await page.getTextContent();
+          const textLayer = new pdfjs.TextLayer({ textContentSource: textContent, container: textDiv, viewport });
+          await textLayer.render();
+          pageDiv.appendChild(canvas);
+          pageDiv.appendChild(textDiv);
+          containerRef.current.appendChild(pageDiv);
+        }
+      }
+      if (!cancelled) { setState("done"); setRendered(true); }
+    };
+
+    run().catch((err: unknown) => {
       if (cancelled) return;
       if ((err as { code?: string }).code === "not_found") setState("not_found");
       else { setErrorDetail(err instanceof Error ? err.message : String(err)); setState("error"); }
     });
 
     return () => { cancelled = true; };
-  }, [proxied, isDocx, isPdf]);
+  }, [proxied, isDocx, isPdf, isDoc]);
 
   // ── Apply highlights whenever items or render changes ────────────────────────
   const applyHighlights = useCallback(() => {
@@ -350,15 +387,12 @@ export function DocxAnnotator({
           </div>
         )}
 
-        {/* PDF: native viewer (annotation only on docx) */}
-        {isPdf ? (
-          <iframe src={proxied} className="flex-1 w-full border-0" title="File đề cương" />
-        ) : (
-          <div className="relative flex-1 overflow-y-auto" onClick={handleContainerClick}>
+        {/* Annotatable viewer — docx (HTML) or pdf (canvas + text layer) */}
+        <div className="relative flex-1 overflow-auto" onClick={handleContainerClick}>
             <div
               ref={containerRef}
               onMouseUp={handleMouseUp}
-              className="p-4 select-text"
+              className={cn("select-text", isPdf ? "py-4" : "p-4")}
               style={{ visibility: state === "done" ? "visible" : "hidden" }}
             />
 
@@ -433,7 +467,6 @@ export function DocxAnnotator({
               </div>
             )}
           </div>
-        )}
       </div>
 
       {/* ── Notes panel (collapsible) ── */}

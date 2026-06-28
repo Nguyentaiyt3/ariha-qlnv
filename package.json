@@ -52,6 +52,7 @@
     "next-auth": "^4.24.7",
     "node-cron": "^3.0.3",
     "nodemailer": "^6.9.14",
+    "pdfjs-dist": "^4.10.38",
     "react": "^18.3.0",
     "react-big-calendar": "^1.13.0",
     "react-dom": "^18.3.0",
