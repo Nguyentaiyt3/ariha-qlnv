@@ -284,6 +284,25 @@ export interface ResearchReview {
   status: "assigned" | "submitted";
 }
 
+/**
+ * Highlight + ghi chú trên file đề cương (Word/PDF render). Neo theo nội dung
+ * văn bản (text-quote anchoring) để bám đúng vị trí qua mỗi lần render lại.
+ */
+export interface ResearchAnnotation {
+  id: string;
+  fileUrl: string;            // file mà annotation này gắn vào
+  color: "yellow" | "green" | "pink" | "blue";
+  quote: string;              // đoạn văn bản được bôi
+  prefix?: string;            // ~40 ký tự ngay trước (để neo chính xác)
+  suffix?: string;            // ~40 ký tự ngay sau
+  occurrence?: number;        // lần xuất hiện thứ mấy của quote (0-based) khi trùng
+  note?: string;              // ghi chú kèm theo (có thể rỗng = chỉ highlight)
+  authorId: string;
+  authorName: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 export interface ResearchCouncilVote {
   memberId: string;
   vote: "approve" | "reject" | "abstain";
@@ -418,6 +437,7 @@ export interface ResearchTopic {
   councilSessions: ResearchCouncilSession[];
   certificates: ResearchCertificate[];
   documents: TaskResource[];
+  annotations?: ResearchAnnotation[];  // highlight + ghi chú trên file đề cương
 
   taskId?: string;                     // Task liên kết (theo dõi tiến độ + đánh giá 3T)
   planId?: string;                     // Kế hoạch NCKH liên kết (roll-up khi công nhận)

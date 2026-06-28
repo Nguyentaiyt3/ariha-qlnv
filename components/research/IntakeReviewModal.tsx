@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useMemo } from "react";
 import {
-  Loader2, FileText, Download, ExternalLink, Check, X,
+  Loader2, FileText, ExternalLink, Check, X,
   AlertCircle, User as UserIcon, RotateCcw,
   ShieldCheck, UserCheck, MailPlus,
 } from "lucide-react";
@@ -10,6 +10,8 @@ import { toast } from "sonner";
 import { cn, generateId } from "@/lib/utils";
 import { normText, jaccardWords } from "@/lib/researchUtils";
 import { researchFileUrl } from "@/lib/researchFileUrl";
+import { DocxAnnotator } from "./DocxAnnotator";
+import { addAnnotation, updateAnnotation, deleteAnnotation } from "@/lib/researchAnnotations";
 import type { ResearchTopic, Task } from "@/types";
 
 // ─── Intake checklist ─────────────────────────────────────────────────────────
@@ -24,95 +26,6 @@ const CHECKLIST = [
 
 type CheckKey = (typeof CHECKLIST)[number]["key"];
 
-// ─── DocxViewer — client-side docx rendering via docx-preview ────────────────
-
-function DocxViewer({ fileUrl, absoluteFileUrl }: { fileUrl: string; absoluteFileUrl: string }) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [state, setState] = useState<"loading" | "done" | "not_found" | "error">("loading");
-  const [errorDetail, setErrorDetail] = useState<string>("");
-
-  useEffect(() => {
-    if (!fileUrl || !containerRef.current) return;
-    let cancelled = false;
-    setState("loading");
-    setErrorDetail("");
-
-    const proxyUrl = researchFileUrl(fileUrl);
-
-    import("docx-preview").then(({ renderAsync }) => {
-      return fetch(proxyUrl)
-        .then(r => {
-          if (r.status === 404) throw Object.assign(new Error("not_found"), { code: "not_found" });
-          if (!r.ok) throw new Error(`Không tải được file (HTTP ${r.status})`);
-          return r.arrayBuffer();
-        })
-        .then(buf => {
-          if (cancelled || !containerRef.current) return;
-          return renderAsync(buf, containerRef.current, undefined, {
-            className: "docx-preview-body",
-            inWrapper: true,
-            ignoreWidth: true,
-          });
-        });
-    }).then(() => {
-      if (!cancelled) setState("done");
-    }).catch(err => {
-      console.error("[DocxViewer] preview failed:", err);
-      if (!cancelled) {
-        if ((err as any).code === "not_found") {
-          setState("not_found");
-        } else {
-          setErrorDetail(err instanceof Error ? err.message : String(err));
-          setState("error");
-        }
-      }
-    });
-
-    return () => { cancelled = true; };
-  }, [fileUrl]);
-
-  return (
-    <div className="relative w-full h-full flex flex-col">
-      {state === "loading" && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-white dark:bg-slate-900 z-10">
-          <Loader2 className="w-8 h-8 animate-spin text-blue-400" />
-          <p className="text-sm text-slate-400">Đang tải bản xem trước...</p>
-        </div>
-      )}
-      {state === "not_found" && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 bg-white dark:bg-slate-900 z-10">
-          <FileText className="w-12 h-12 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-300 text-center">File đề cương không tồn tại trên máy chủ</p>
-          <p className="text-[11px] text-slate-400 text-center max-w-xs">
-            File đã bị xóa hoặc đường dẫn không hợp lệ. Yêu cầu tác giả nộp lại file qua form chỉnh sửa.
-          </p>
-        </div>
-      )}
-      {state === "error" && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 p-6 bg-white dark:bg-slate-900 z-10">
-          <FileText className="w-12 h-12 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm text-slate-500 text-center">Không thể hiển thị bản xem trước.</p>
-          {errorDetail && (
-            <p className="text-[11px] text-red-400 text-center max-w-xs break-words">{errorDetail}</p>
-          )}
-          <a
-            href={absoluteFileUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition"
-          >
-            <Download className="w-4 h-4" /> Tải xuống để xem
-          </a>
-        </div>
-      )}
-      <div
-        ref={containerRef}
-        className="flex-1 overflow-y-auto bg-white dark:bg-slate-100 p-4"
-        style={{ visibility: state === "done" ? "visible" : "hidden" }}
-      />
-    </div>
-  );
-}
 
 // ─── InfoRow helper ──────────────────────────────────────────────────────────
 
@@ -201,15 +114,7 @@ export function IntakeReviewModal({
   const isNoTask = !topic.taskId;
 
   const fileUrl = topic.proposalFileUrl;
-  const isPdf = !!fileUrl && (
-    fileUrl.toLowerCase().includes(".pdf") ||
-    fileUrl.toLowerCase().includes("application/pdf")
-  );
-  // docx-preview only supports OOXML (.docx); .doc is binary OLE and cannot be rendered
-  const isDocx = !!fileUrl && /\.docx$/i.test(fileUrl);
-  const isDoc  = !!fileUrl && /\.doc$/i.test(fileUrl) && !isDocx;
-  // Use the proxy route for all open/download links to avoid URL-encoding issues
-  // with Vietnamese filenames in Next.js static serving.
+  // Proxy route for open/download links (Vietnamese filenames + runtime-uploaded files)
   const absoluteFileUrl = useMemo(() => researchFileUrl(fileUrl), [fileUrl]);
 
   // Smart-sort NCKH tasks: tasks matching topic's year + quarter come first
@@ -405,30 +310,16 @@ export function IntakeReviewModal({
             </div>
             <div className="flex-1 overflow-hidden">
               {fileUrl ? (
-                isPdf ? (
-                  <iframe src={fileUrl} className="w-full h-full border-0" title="File đề cương" />
-                ) : isDoc ? (
-                  /* .doc (binary OLE) cannot be rendered in browser — offer download */
-                  <div className="flex flex-col items-center justify-center h-full gap-4 p-6 text-slate-400">
-                    <FileText className="w-14 h-14 opacity-30" />
-                    <p className="text-sm text-slate-500 text-center">
-                      File <span className="font-mono font-semibold">.doc</span> không hỗ trợ xem trước trực tiếp.
-                    </p>
-                    <a
-                      href={absoluteFileUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition"
-                    >
-                      <Download className="w-4 h-4" /> Tải xuống để xem
-                    </a>
-                    <p className="text-[11px] text-slate-400 text-center">
-                      Yêu cầu tác giả nộp lại dạng <span className="font-semibold">.docx</span> hoặc <span className="font-semibold">.pdf</span> để xem trước.
-                    </p>
-                  </div>
-                ) : (
-                  <DocxViewer fileUrl={fileUrl} absoluteFileUrl={absoluteFileUrl} />
-                )
+                <DocxAnnotator
+                  fileUrl={fileUrl}
+                  annotations={topic.annotations ?? []}
+                  canAnnotate={!!currentUserId}
+                  canManageAll
+                  currentUserId={currentUserId}
+                  onAdd={(p) => addAnnotation(topic.id, p)}
+                  onUpdate={(id, patch) => updateAnnotation(topic.id, id, patch)}
+                  onDelete={(id) => deleteAnnotation(topic.id, id)}
+                />
               ) : (
                 <div className="flex flex-col items-center justify-center h-full gap-4 text-slate-400">
                   <FileText className="w-16 h-16 opacity-30" />

@@ -27,6 +27,7 @@ const researchTopicSchema = new Schema(
     councilSessions: { type: Schema.Types.Mixed, default: [] },
     certificates: { type: Schema.Types.Mixed, default: [] },
     documents: { type: Schema.Types.Mixed, default: [] },
+    annotations: { type: Schema.Types.Mixed, default: [] },
 
     taskId: { type: String, index: true },
     planId: { type: String, index: true },
