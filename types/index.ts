@@ -256,6 +256,9 @@ export interface ResearchReview {
   reviewerEmail?: string;
   reviewerOrg?: string;
   assignedAt: string;
+  assignedBy?: string;      // userId người chỉ định
+  assignedByName?: string;
+  token?: string;           // token bảo mật — gửi qua email để phản biện không cần đăng nhập
   dueAt?: string;
   submittedAt?: string;
 
@@ -467,6 +470,15 @@ export interface ResearchTopic {
   intakeNote?: string;                  // ghi chú yêu cầu chỉnh sửa / từ chối
   intakeRevisionCount?: number;         // số lần yêu cầu chỉnh sửa
   intakeLogs?: IntakeLog[];             // lịch sử thao tác tiếp nhận
+
+  // Phân công phản biện
+  reviewAssignment?: {
+    delegatedTo?: string;       // userId nhân viên được giao chọn phản biện
+    delegatedName?: string;
+    delegatedAt?: string;
+    dueAt?: string;
+    note?: string;
+  };
 
   // Public resubmit link (no-auth form)
   resubmitToken?: string;              // secure token for public resubmit form

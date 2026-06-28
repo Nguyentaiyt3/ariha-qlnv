@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import {
   Microscope, Plus, Loader2, X, FlaskConical, ArrowLeft,
   Pencil, Trash2, AlertTriangle, Search, ChevronRight, ChevronDown,
-  Users, BarChart2, Eye, ClipboardList, ClipboardCheck, Vote, Clock, CheckCircle2, XCircle, AlertCircle, Calendar, Upload, Lock, Mail, ShieldAlert,
+  Users, BarChart2, Eye, ClipboardList, ClipboardCheck, Vote, Clock, CheckCircle2, XCircle, AlertCircle, Calendar, Upload, Lock, Mail, ShieldAlert, UserPlus,
 } from "lucide-react";
 import { ReviewFormModal } from "@/components/research/ReviewFormModal";
 import { ImportReviewsModal } from "@/components/research/ImportReviewsModal";
@@ -14,6 +14,7 @@ import { ImportTopicsModal } from "@/components/research/ImportTopicsModal";
 import { TemplateUploadButton } from "@/components/research/TemplateUploadButton";
 import { TopicDetailModal, FilePreviewOverlay } from "@/components/research/TopicDetailModal";
 import { IntakeReviewModal } from "@/components/research/IntakeReviewModal";
+import { AssignReviewersModal } from "@/components/research/AssignReviewersModal";
 import { cn, generateId } from "@/lib/utils";
 import { findDuplicatePairs, isTopicAuthor } from "@/lib/researchUtils";
 import type { DupPair } from "@/lib/researchUtils";
@@ -975,6 +976,9 @@ function MonitorTab({
   const [assignDraft, setAssignDraft]   = useState<Record<string, string>>({});
   const [assignSaving, setAssignSaving] = useState<string | null>(null);
   const [showDupPanel, setShowDupPanel] = useState(false);
+  // Review assignment
+  const [selectedForReview, setSelectedForReview] = useState<Set<string>>(new Set());
+  const [showAssignModal, setShowAssignModal] = useState(false);
 
   const { tasks } = useTaskStore();
 
@@ -995,6 +999,15 @@ function MonitorTab({
       t.intakeStatus === "revision_needed" ||
       (!t.intakeStatus && t.stage === "init")
     ),
+  [topics]);
+
+  // Đề tài đã tiếp nhận, đang chờ phân công phản biện (chưa đủ 2 phản biện giai đoạn proposal)
+  const passedNeedingReview = useMemo(() =>
+    topics.filter(t => {
+      if (t.intakeStatus !== "passed") return false;
+      const reviewCount = (t.reviews ?? []).filter(r => r.stage === "proposal").length;
+      return reviewCount < 2;
+    }),
   [topics]);
 
   async function sendIntakeEmail(topic: ResearchTopic, type: "accepted" | "revision", note?: string, resubmitLink?: string) {
@@ -1253,8 +1266,12 @@ function MonitorTab({
     return true;
   }), [topics, filters, users]);
 
-  // Duplicate pairs across all loaded topics
-  const dupPairs = useMemo<DupPair[]>(() => findDuplicatePairs(topics), [topics]);
+  // Duplicate pairs — chỉ cảnh báo khi ít nhất 1 đề tài trong cặp chưa được tiếp nhận/từ chối.
+  // Nếu cả hai đã "passed" hoặc "rejected" → đã xử lý xong, không cần cảnh báo nữa.
+  const dupPairs = useMemo<DupPair[]>(() => {
+    const done = (t: ResearchTopic) => t.intakeStatus === "passed" || t.intakeStatus === "rejected";
+    return findDuplicatePairs(topics).filter(({ a, b }) => !(done(a) && done(b)));
+  }, [topics]);
 
   // Stats
   const stats = useMemo(() => ({
@@ -1486,6 +1503,146 @@ function MonitorTab({
             </table>
           </div>
         </div>
+      )}
+
+      {/* ── Review assignment queue ── */}
+      {(canManage || passedNeedingReview.some(t => t.reviewAssignment?.delegatedTo === currentUser.id)) && passedNeedingReview.length > 0 && (
+        <div className="rounded-xl border border-violet-200 dark:border-violet-800 bg-violet-50/50 dark:bg-violet-900/10 overflow-hidden">
+          <div className="flex items-center gap-2 px-4 py-3 border-b border-violet-200 dark:border-violet-800">
+            <UserPlus className="w-4 h-4 text-violet-500 shrink-0" />
+            <p className="text-sm font-semibold text-violet-700 dark:text-violet-300">
+              Hàng chờ phân biện ({passedNeedingReview.length} đề tài)
+            </p>
+            <span className="ml-auto text-xs text-violet-500 dark:text-violet-400 hidden sm:block">
+              Chọn đề tài → Phân công phản biện
+            </span>
+            {selectedForReview.size > 0 && (
+              <button
+                onClick={() => setShowAssignModal(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-violet-600 hover:bg-violet-700 text-white transition"
+              >
+                <UserPlus className="w-3.5 h-3.5" />
+                Phân công ({selectedForReview.size})
+              </button>
+            )}
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-violet-100/60 dark:bg-violet-900/20 text-xs text-violet-700 dark:text-violet-400">
+                  <th className="w-8 px-3 py-2">
+                    <input
+                      type="checkbox"
+                      checked={selectedForReview.size === passedNeedingReview.length && passedNeedingReview.length > 0}
+                      onChange={e => {
+                        if (e.target.checked) setSelectedForReview(new Set(passedNeedingReview.map(t => t.id)));
+                        else setSelectedForReview(new Set());
+                      }}
+                      className="accent-violet-600 cursor-pointer"
+                    />
+                  </th>
+                  <th className="text-left px-3 py-2 font-medium">Tên đề tài</th>
+                  <th className="text-left px-3 py-2 font-medium hidden sm:table-cell">Chủ nhiệm</th>
+                  <th className="text-left px-3 py-2 font-medium hidden lg:table-cell">Đơn vị</th>
+                  <th className="text-center px-3 py-2 font-medium">Phản biện</th>
+                  <th className="text-left px-3 py-2 font-medium hidden md:table-cell">Phụ trách phân công</th>
+                  <th className="text-center px-3 py-2 font-medium">Thao tác</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-violet-100 dark:divide-violet-900/30">
+                {passedNeedingReview.map(topic => {
+                  const piName = topic.principalInvestigatorName ?? users.find(u => u.id === topic.principalInvestigatorId)?.name ?? "—";
+                  const reviewCount = (topic.reviews ?? []).filter(r => r.stage === "proposal").length;
+                  const isSelected = selectedForReview.has(topic.id);
+                  const isDelegatedToMe = topic.reviewAssignment?.delegatedTo === currentUser.id;
+                  const delegateName = topic.reviewAssignment?.delegatedName;
+
+                  return (
+                    <tr
+                      key={topic.id}
+                      className={cn(
+                        "transition cursor-pointer",
+                        isSelected
+                          ? "bg-violet-100/70 dark:bg-violet-900/20"
+                          : "bg-white dark:bg-slate-900/40 hover:bg-violet-50/40 dark:hover:bg-violet-900/10"
+                      )}
+                      onClick={() => setSelectedForReview(prev => {
+                        const next = new Set(prev);
+                        if (next.has(topic.id)) next.delete(topic.id); else next.add(topic.id);
+                        return next;
+                      })}
+                    >
+                      <td className="px-3 py-2.5" onClick={e => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={e => {
+                            setSelectedForReview(prev => {
+                              const next = new Set(prev);
+                              if (e.target.checked) next.add(topic.id); else next.delete(topic.id);
+                              return next;
+                            });
+                          }}
+                          className="accent-violet-600 cursor-pointer"
+                        />
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <p className="font-medium text-slate-800 dark:text-white text-xs leading-snug line-clamp-2 max-w-[220px]">{topic.title}</p>
+                        {topic.code && <span className="text-[10px] text-slate-400">{topic.code}</span>}
+                      </td>
+                      <td className="px-3 py-2.5 hidden sm:table-cell">
+                        <p className="text-xs text-slate-700 dark:text-slate-300">{piName}</p>
+                      </td>
+                      <td className="px-3 py-2.5 text-xs text-slate-500 hidden lg:table-cell">{topic.department ?? "—"}</td>
+                      <td className="px-3 py-2.5 text-center">
+                        <span className={cn(
+                          "text-xs font-bold px-2 py-0.5 rounded-full",
+                          reviewCount === 0
+                            ? "bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400"
+                            : "bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400"
+                        )}>
+                          {reviewCount}/2
+                        </span>
+                      </td>
+                      <td className="px-3 py-2.5 hidden md:table-cell">
+                        {delegateName ? (
+                          <span className="text-xs text-violet-600 dark:text-violet-400">
+                            {delegateName}{isDelegatedToMe && " (bạn)"}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-slate-400">Chưa giao</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2.5 text-center" onClick={e => e.stopPropagation()}>
+                        <button
+                          onClick={() => { setSelectedForReview(new Set([topic.id])); setShowAssignModal(true); }}
+                          disabled={!canManage && !isDelegatedToMe}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold rounded-lg border border-violet-300 dark:border-violet-700 bg-violet-50 dark:bg-violet-900/20 text-violet-700 dark:text-violet-300 hover:bg-violet-100 dark:hover:bg-violet-900/40 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                        >
+                          <UserPlus className="w-3 h-3" />
+                          Phân công
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ── AssignReviewersModal ── */}
+      {showAssignModal && selectedForReview.size > 0 && (
+        <AssignReviewersModal
+          topics={topics.filter(t => selectedForReview.has(t.id))}
+          users={users as any}
+          currentUser={currentUser}
+          canManage={canManage}
+          onClose={() => { setShowAssignModal(false); setSelectedForReview(new Set()); }}
+          onTopicUpdate={onTopicUpdate}
+        />
       )}
 
       {/* Summary stats */}
