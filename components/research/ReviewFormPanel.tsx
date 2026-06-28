@@ -4,6 +4,7 @@ import { useState } from "react";
 import { CheckCircle2, Loader2, FileText, Star, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { researchFileUrl } from "@/lib/researchFileUrl";
 import type { ResearchReview, ResearchTopic, ReviewScores, ReviewVerdict, ReviewGrade } from "@/types";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -184,7 +185,7 @@ export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
               <div>
                 <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">File đề cương</p>
                 <a
-                  href={review.topicFileUrl ?? topic.proposalFileUrl}
+                  href={researchFileUrl(review.topicFileUrl ?? topic.proposalFileUrl)}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-2 text-sm text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 underline"

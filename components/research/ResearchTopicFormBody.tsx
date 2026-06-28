@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { cn, generateId } from "@/lib/utils";
 import { toast } from "sonner";
+import { researchFileUrl } from "@/lib/researchFileUrl";
 import { DEPARTMENTS, COMPLETION_QUARTERS, COMPLETION_YEARS } from "@/lib/research-departments";
 import type { Task } from "@/types";
 
@@ -133,11 +134,7 @@ function formatSize(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function proxyUrl(url: string) {
-  if (!url) return "";
-  if (url.startsWith("http")) return url;
-  return `/api/research-file?path=${encodeURIComponent(url)}`;
-}
+const proxyUrl = researchFileUrl;
 
 // ─── Shared UI ───────────────────────────────────────────────────────────────
 

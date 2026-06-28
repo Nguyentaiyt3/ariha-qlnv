@@ -9,6 +9,7 @@ import {
 import { toast } from "sonner";
 import { cn, generateId } from "@/lib/utils";
 import { normText, jaccardWords } from "@/lib/researchUtils";
+import { researchFileUrl } from "@/lib/researchFileUrl";
 import type { ResearchTopic, Task } from "@/types";
 
 // ─── Intake checklist ─────────────────────────────────────────────────────────
@@ -36,9 +37,7 @@ function DocxViewer({ fileUrl, absoluteFileUrl }: { fileUrl: string; absoluteFil
     setState("loading");
     setErrorDetail("");
 
-    const proxyUrl = fileUrl.startsWith("http")
-      ? fileUrl
-      : `/api/research-file?path=${encodeURIComponent(fileUrl)}`;
+    const proxyUrl = researchFileUrl(fileUrl);
 
     import("docx-preview").then(({ renderAsync }) => {
       return fetch(proxyUrl)
@@ -211,11 +210,7 @@ export function IntakeReviewModal({
   const isDoc  = !!fileUrl && /\.doc$/i.test(fileUrl) && !isDocx;
   // Use the proxy route for all open/download links to avoid URL-encoding issues
   // with Vietnamese filenames in Next.js static serving.
-  const absoluteFileUrl = useMemo(() => {
-    if (!fileUrl) return "";
-    if (fileUrl.startsWith("http")) return fileUrl;
-    return `/api/research-file?path=${encodeURIComponent(fileUrl)}`;
-  }, [fileUrl]);
+  const absoluteFileUrl = useMemo(() => researchFileUrl(fileUrl), [fileUrl]);
 
   // Smart-sort NCKH tasks: tasks matching topic's year + quarter come first
   const sortedNckhTasks = useMemo(() => {

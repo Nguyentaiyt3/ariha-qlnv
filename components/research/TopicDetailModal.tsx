@@ -7,16 +7,22 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { DEPT_BY_ABBR } from "@/lib/research-departments";
+import { researchFileUrl } from "@/lib/researchFileUrl";
 import type { ResearchTopic, IntakeLog } from "@/types";
 
 // ─── File preview overlay ─────────────────────────────────────
 
 export function FilePreviewOverlay({ url, onClose }: { url: string; onClose: () => void }) {
-  const ext = url.split(".").pop()?.toLowerCase();
-  const isDocx = ext === "docx" || ext === "doc";
+  const ext = url.split("?")[0].split(".").pop()?.toLowerCase();
+  // docx-preview only renders OOXML .docx; legacy .doc is binary OLE → download only
+  const isDocx = ext === "docx";
+  const isDoc  = ext === "doc";
   const containerRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(isDocx);
   const [error, setError] = useState<string | null>(null);
+
+  // Always fetch/serve through the proxy so runtime-uploaded files resolve in production
+  const fileUrl = researchFileUrl(url);
 
   useEffect(() => {
     if (!isDocx || !containerRef.current) return;
@@ -24,7 +30,7 @@ export function FilePreviewOverlay({ url, onClose }: { url: string; onClose: () 
     setLoading(true);
     setError(null);
     import("docx-preview").then(({ renderAsync }) =>
-      fetch(url)
+      fetch(fileUrl)
         .then((r) => {
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
           return r.arrayBuffer();
@@ -42,7 +48,7 @@ export function FilePreviewOverlay({ url, onClose }: { url: string; onClose: () 
         .catch((e) => { if (!cancelled) { setError(String(e)); setLoading(false); } })
     );
     return () => { cancelled = true; };
-  }, [url, isDocx]);
+  }, [fileUrl, isDocx]);
 
   return (
     <div className="fixed inset-0 z-[60] flex flex-col bg-black/90 backdrop-blur-sm">
@@ -51,7 +57,7 @@ export function FilePreviewOverlay({ url, onClose }: { url: string; onClose: () 
         <p className="text-sm text-slate-300 truncate max-w-lg">{url.split("/").pop()}</p>
         <div className="flex items-center gap-2">
           <a
-            href={url}
+            href={fileUrl}
             download
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-700 transition"
           >
@@ -86,9 +92,21 @@ export function FilePreviewOverlay({ url, onClose }: { url: string; onClose: () 
             style={{ display: loading || error ? "none" : "block" }}
           />
         </div>
+      ) : isDoc ? (
+        <div className="flex-1 flex flex-col items-center justify-center gap-3 text-slate-300">
+          <File className="w-12 h-12 text-slate-500" />
+          <p className="text-sm">Định dạng .doc không xem trước trực tiếp được.</p>
+          <a
+            href={fileUrl}
+            download
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm text-white transition"
+          >
+            <Maximize2 className="w-4 h-4" /> Tải xuống để xem
+          </a>
+        </div>
       ) : (
         <iframe
-          src={url}
+          src={fileUrl}
           className="flex-1 w-full border-0"
           title="Xem trước file đề cương"
           allow="fullscreen"
