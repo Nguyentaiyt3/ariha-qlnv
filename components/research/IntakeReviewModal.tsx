@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn, generateId } from "@/lib/utils";
-import { normText, jaccardWords } from "@/lib/researchUtils";
+import { normText, jaccardWords, isTopicAuthor } from "@/lib/researchUtils";
 import { DocxAnnotator } from "./DocxAnnotator";
 import { addAnnotation, updateAnnotation, deleteAnnotation } from "@/lib/researchAnnotations";
 import type { ResearchTopic, Task } from "@/types";
@@ -210,13 +210,16 @@ export function IntakeReviewModal({
   const [registerEmailSent,     setRegisterEmailSent]     = useState(false);
   const [registerEmailSending,  setRegisterEmailSending]  = useState(false);
 
+  // Xung đột lợi ích: tác giả / đồng tác giả không được tự kiểm tra, tiếp nhận
+  const isSelfAuthored = isTopicAuthor({ id: currentUserId }, topic);
+
   const checkedCount = Object.values(checks).filter(Boolean).length;
   const allChecked   = checkedCount === CHECKLIST.length;
-  const canSubmit = verdict === "accept"
+  const canSubmit = !isSelfAuthored && (verdict === "accept"
     ? allChecked && !!linkedTaskId.trim()
     : verdict !== null
     ? reason.trim().length > 0
-    : false;
+    : false);
 
   function toggle(key: CheckKey) {
     setChecks(prev => ({ ...prev, [key]: !prev[key] }));
@@ -785,7 +788,13 @@ export function IntakeReviewModal({
 
             {/* ── Footer sticky at bottom ── */}
             <div className="px-4 py-3 border-t border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shrink-0 space-y-2">
-              {verdict === "accept" && !allChecked && (
+              {isSelfAuthored && (
+                <p className="text-[11px] text-red-600 dark:text-red-400 flex items-start gap-1.5 bg-red-50 dark:bg-red-900/15 border border-red-200 dark:border-red-800 rounded-lg px-2.5 py-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-px" />
+                  Bạn là tác giả/đồng tác giả của đề cương này — không thể tự kiểm tra, tiếp nhận.
+                </p>
+              )}
+              {!isSelfAuthored && verdict === "accept" && !allChecked && (
                 <p className="text-[11px] text-amber-500 flex items-center gap-1">
                   <AlertCircle className="w-3 h-3" /> Tích đủ {CHECKLIST.length} tiêu chí
                 </p>

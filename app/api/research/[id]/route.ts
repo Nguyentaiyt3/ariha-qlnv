@@ -3,6 +3,7 @@ import { verifyToken, getUser } from "@/lib/mongodb/auth";
 import { getResearchTopic, updateResearchTopic, deleteResearchTopic } from "@/lib/mongodb/firestore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { redactReviewer } from "@/lib/research";
+import { isTopicAuthor } from "@/lib/researchUtils";
 
 async function auth(req: NextRequest) {
   const token = req.cookies.get("auth-token")?.value;
@@ -44,6 +45,19 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   const u = await auth(req);
   if (!u) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const updates = await req.json();
+
+  // Xung đột lợi ích: tác giả / đồng tác giả không được tự kiểm tra, tiếp nhận
+  // (chặn mọi quyết định tiếp nhận do chính tác giả thực hiện).
+  if (Object.prototype.hasOwnProperty.call(updates, "intakeStatus")) {
+    const [me, topic] = await Promise.all([getUser(u.userId), getResearchTopic(params.id)]);
+    if (topic && isTopicAuthor({ id: me?.id, email: me?.email }, topic)) {
+      return NextResponse.json(
+        { error: "Bạn là tác giả/đồng tác giả — không thể tự kiểm tra, tiếp nhận đề cương của mình" },
+        { status: 403 },
+      );
+    }
+  }
+
   await updateResearchTopic(params.id, updates);
   return NextResponse.json({ success: true });
 }

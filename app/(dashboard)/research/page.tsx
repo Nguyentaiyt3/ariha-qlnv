@@ -15,7 +15,7 @@ import { TemplateUploadButton } from "@/components/research/TemplateUploadButton
 import { TopicDetailModal, FilePreviewOverlay } from "@/components/research/TopicDetailModal";
 import { IntakeReviewModal } from "@/components/research/IntakeReviewModal";
 import { cn, generateId } from "@/lib/utils";
-import { findDuplicatePairs } from "@/lib/researchUtils";
+import { findDuplicatePairs, isTopicAuthor } from "@/lib/researchUtils";
 import type { DupPair } from "@/lib/researchUtils";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useTaskStore } from "@/stores/useTaskStore";
@@ -1393,6 +1393,7 @@ function MonitorTab({
                   const author = users.find(u => u.id === topic.principalInvestigatorId);
                   const piName = topic.principalInvestigatorName ?? author?.name ?? "—";
                   const isBusy = actioning === topic.id;
+                  const isOwnTopic = isTopicAuthor(currentUser, topic);
                   const meta = INTAKE_META[topic.intakeStatus as keyof typeof INTAKE_META] ?? INTAKE_META.awaiting;
 
                   return (
@@ -1437,6 +1438,15 @@ function MonitorTab({
                       </td>
                       <td className="px-3 py-2.5 text-center">
                         <div className="flex flex-col items-center gap-1">
+                          {isOwnTopic ? (
+                            <span
+                              title="Bạn là tác giả/đồng tác giả — không thể tự kiểm tra, tiếp nhận đề cương của mình"
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-400 cursor-not-allowed"
+                            >
+                              <AlertCircle className="w-3 h-3" />
+                              Đề cương của bạn
+                            </span>
+                          ) : (
                           <button
                             onClick={() => setIntakeReviewTopic(topic)}
                             disabled={isBusy}
@@ -1445,6 +1455,7 @@ function MonitorTab({
                             {isBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <ClipboardCheck className="w-3 h-3" />}
                             Kiểm tra
                           </button>
+                          )}
                           {topic.intakeStatus === "revision_needed" && topic.resubmitToken && (
                             <button
                               onClick={() => handleResendEmail(topic)}

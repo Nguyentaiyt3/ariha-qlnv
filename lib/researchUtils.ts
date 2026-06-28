@@ -13,6 +13,32 @@ export function jaccardWords(a: string, b: string): number {
   return union === 0 ? 0 : inter / union;
 }
 
+/**
+ * Xung đột lợi ích: người dùng có phải tác giả / đồng tác giả của đề cương không.
+ * Dùng để chặn chính tác giả tự kiểm tra / tiếp nhận đề cương của mình.
+ * Khớp theo ID (tin cậy) cho chủ nhiệm, thành viên (legacy), đồng tác giả;
+ * và theo email cho đề cương nộp qua form public.
+ */
+export function isTopicAuthor(
+  user: { id?: string; email?: string } | null | undefined,
+  topic: Pick<ResearchTopic,
+    "principalInvestigatorId" | "submitterEmail" | "contributors" | "memberIds">,
+): boolean {
+  if (!user?.id) return false;
+  const uid = user.id;
+
+  if (topic.principalInvestigatorId === uid) return true;
+  if ((topic.memberIds ?? []).includes(uid)) return true;
+  if ((topic.contributors ?? []).some(c =>
+    c.userId === uid && (c.role === "author" || c.role === "coAuthor"))) return true;
+
+  // Đề cương nộp qua form public — khớp theo email người nộp
+  if (topic.principalInvestigatorId === "public" && user.email && topic.submitterEmail &&
+      user.email.toLowerCase() === topic.submitterEmail.toLowerCase()) return true;
+
+  return false;
+}
+
 export type DupPair = {
   a: ResearchTopic;
   b: ResearchTopic;
