@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useMemo } from "react";
+import { renderTextWithLinks } from "@/lib/renderLinks";
 import {
   Send, Loader2, Smile, Paperclip, Camera, Mic, MicOff,
   Play, Pause, Check, CheckCheck, RotateCcw, Trash2, Copy,
@@ -321,7 +322,7 @@ function MessageBubble({
               <p className={cn("text-sm leading-relaxed whitespace-pre-wrap px-3",
                 hasAttachments ? "pb-2 pt-1" : "py-2"
               )}>
-                {msg.content}
+                {renderTextWithLinks(msg.content)}
               </p>
             )}
           </div>

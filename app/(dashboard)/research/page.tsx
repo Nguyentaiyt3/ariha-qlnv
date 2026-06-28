@@ -4,8 +4,8 @@ import { useEffect, useState, useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Microscope, Plus, Loader2, X, FlaskConical, ArrowLeft,
-  Pencil, Trash2, AlertTriangle, Search, ChevronRight,
-  Users, BarChart2, Eye, ClipboardList, Vote, Clock, CheckCircle2, XCircle, AlertCircle, Calendar, Upload, Lock,
+  Pencil, Trash2, AlertTriangle, Search, ChevronRight, ChevronDown,
+  Users, BarChart2, Eye, ClipboardList, ClipboardCheck, Vote, Clock, CheckCircle2, XCircle, AlertCircle, Calendar, Upload, Lock, Mail, ShieldAlert,
 } from "lucide-react";
 import { ReviewFormModal } from "@/components/research/ReviewFormModal";
 import { ImportReviewsModal } from "@/components/research/ImportReviewsModal";
@@ -13,10 +13,13 @@ import { RegisterTopicModal } from "@/components/research/RegisterTopicModal";
 import { ImportTopicsModal } from "@/components/research/ImportTopicsModal";
 import { TemplateUploadButton } from "@/components/research/TemplateUploadButton";
 import { TopicDetailModal, FilePreviewOverlay } from "@/components/research/TopicDetailModal";
+import { IntakeReviewModal } from "@/components/research/IntakeReviewModal";
 import { cn, generateId } from "@/lib/utils";
+import { findDuplicatePairs } from "@/lib/researchUtils";
+import type { DupPair } from "@/lib/researchUtils";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useTaskStore } from "@/stores/useTaskStore";
-import { hasPermission } from "@/lib/rbac/permissions";
+import { hasPermission, getEffectiveRole, ROLE_RANK } from "@/lib/rbac/permissions";
 import { getResearchTopics, saveResearchTopic, updateResearchTopic, deleteResearchTopic } from "@/lib/firebase/firestore";
 import { RESEARCH_STEPS, STAGE_LABEL, buildInitialSteps, researchProgress, stepMeta } from "@/lib/research";
 import type { ResearchTopic, ResearchStage, ResearchReview, ResearchCouncilSession, IntakeLog, Task } from "@/types";
@@ -27,6 +30,7 @@ import { toast } from "sonner";
 const STAGE_BADGE: Record<ResearchStage, string> = {
   init:        "bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300",
   proposal:    "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300",
+  executing:   "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
   recognition: "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300",
   completed:   "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300",
   rejected:    "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-300",
@@ -36,6 +40,7 @@ const STAGES: { value: ResearchStage | "all"; label: string }[] = [
   { value: "all",         label: "Tất cả giai đoạn" },
   { value: "init",        label: STAGE_LABEL.init },
   { value: "proposal",    label: STAGE_LABEL.proposal },
+  { value: "executing",   label: STAGE_LABEL.executing },
   { value: "recognition", label: STAGE_LABEL.recognition },
   { value: "completed",   label: STAGE_LABEL.completed },
   { value: "rejected",    label: STAGE_LABEL.rejected },
@@ -218,7 +223,7 @@ function MyTopicsTab({
 }: {
   topics: ResearchTopic[];
   users: { id: string; name: string }[];
-  currentUser: { id: string };
+  currentUser: { id: string; email?: string };
   onEdit: (t: ResearchTopic) => void;
   onDelete: (t: ResearchTopic) => void;
   onView: (t: ResearchTopic) => void;
@@ -227,18 +232,26 @@ function MyTopicsTab({
 
   const years = useMemo(() => [...new Set(topics.map(t => t.year))].sort((a, b) => b - a), [topics]);
 
-  const mine = useMemo(() => topics.filter(t =>
-    t.principalInvestigatorId === currentUser.id ||
-    t.mainPerformerId === currentUser.id ||
-    (t.memberIds ?? []).includes(currentUser.id)
-  ), [topics, currentUser.id]);
+  const mine = useMemo(() => {
+    const email = currentUser.email?.toLowerCase();
+    return topics.filter(t =>
+      t.principalInvestigatorId === currentUser.id ||
+      t.mainPerformerId === currentUser.id ||
+      (t.memberIds ?? []).includes(currentUser.id) ||
+      // Fallback: public-form submissions with matching email (before auto-claim resolves)
+      (t.principalInvestigatorId === "public" && !!email && t.submitterEmail?.toLowerCase() === email)
+    );
+  }, [topics, currentUser.id, currentUser.email]);
 
   // Stats (computed from mine, not filtered)
   const stats = useMemo(() => {
-    const active    = mine.filter(t => t.stage === "proposal" || t.stage === "recognition").length;
+    const active    = mine.filter(t => t.stage === "proposal" || t.stage === "executing" || t.stage === "recognition").length;
     const pending   = mine.filter(t => t.stage === "init").length;
+    const executing = mine.filter(t => t.stage === "executing").length;
     const completed = mine.filter(t => t.stage === "completed").length;
     const rejected  = mine.filter(t => t.stage === "rejected").length;
+    const needRevision = mine.filter(t => t.intakeStatus === "revision_needed").length;
+    const intakeRejected = mine.filter(t => t.intakeStatus === "rejected").length;
     const needReview = mine.filter(t =>
       (t.stage === "proposal" || t.stage === "recognition") &&
       (t.reviews ?? []).some(r => r.status === "assigned")
@@ -246,7 +259,7 @@ function MyTopicsTab({
     const avgProgress = mine.length
       ? Math.round(mine.reduce((s, t) => s + researchProgress(t), 0) / mine.length)
       : 0;
-    return { total: mine.length, active, pending, completed, rejected, needReview, avgProgress };
+    return { total: mine.length, active, pending, executing, completed, rejected, needReview, avgProgress, needRevision, intakeRejected };
   }, [mine]);
 
   const filtered = useMemo(() => mine.filter(t => {
@@ -261,6 +274,7 @@ function MyTopicsTab({
 
   function myRole(t: ResearchTopic) {
     if (t.principalInvestigatorId === currentUser.id) return "Chủ nhiệm";
+    if (t.principalInvestigatorId === "public" && t.submitterEmail?.toLowerCase() === currentUser.email?.toLowerCase()) return "Chủ nhiệm";
     if (t.mainPerformerId === currentUser.id) return "Thực hiện chính";
     return "Thành viên";
   }
@@ -273,20 +287,25 @@ function MyTopicsTab({
   return (
     <div className="space-y-4">
       {/* Stat cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
         <StatCard label="Tổng đề tài" value={stats.total}
           active={filters.stage === "all" && !filters.search}
           onClick={() => filterByStage("all")} />
-        <StatCard label="Đang triển khai" value={stats.active} sub="Đề cương · Công nhận"
-          variant={stats.active > 0 ? "info" : "default"}
+        <StatCard label="Thẩm định ĐC" value={stats.active - stats.executing} sub="Đề cương · Nghiệm thu"
+          variant={(stats.active - stats.executing) > 0 ? "info" : "default"}
           active={filters.stage === "proposal" || filters.stage === "recognition"}
           onClick={() => filterByStage("proposal")} />
-        <StatCard label="Chờ phê duyệt" value={stats.pending}
+        <StatCard label="Đang triển khai" value={stats.executing} sub="Thực hiện nghiên cứu"
+          variant={stats.executing > 0 ? "warning" : "default"}
+          active={filters.stage === "executing"}
+          onClick={() => filterByStage("executing")} />
+        <StatCard label="Chờ tiếp nhận" value={stats.pending}
           variant={stats.pending > 0 ? "warning" : "default"}
           active={filters.stage === "init"}
           onClick={() => filterByStage("init")} />
-        <StatCard label="Chưa phản biện" value={stats.needReview} sub="Đang chờ phản biện viên"
-          variant={stats.needReview > 0 ? "warning" : "default"} />
+        <StatCard label="Cần chỉnh sửa" value={stats.needRevision}
+          variant={stats.needRevision > 0 ? "danger" : "default"}
+          sub={stats.intakeRejected > 0 ? `${stats.intakeRejected} bị từ chối` : undefined} />
         <StatCard label="Hoàn thành" value={stats.completed}
           variant={stats.completed > 0 ? "success" : "default"}
           active={filters.stage === "completed"}
@@ -334,6 +353,16 @@ function MyTopicsTab({
                   <td className="px-3 py-3">
                     <p className="font-medium text-slate-800 dark:text-white line-clamp-2 leading-snug max-w-xs">{t.title}</p>
                     {t.field && <p className="text-[11px] text-slate-400 mt-0.5">{t.field}</p>}
+                    {t.intakeStatus === "revision_needed" && (
+                      <span className="inline-flex items-center gap-1 mt-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-700">
+                        <AlertCircle className="w-2.5 h-2.5" /> Yêu cầu chỉnh sửa
+                      </span>
+                    )}
+                    {t.intakeStatus === "rejected" && (
+                      <span className="inline-flex items-center gap-1 mt-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-700">
+                        <XCircle className="w-2.5 h-2.5" /> Từ chối tiếp nhận
+                      </span>
+                    )}
                   </td>
                   <td className="px-3 py-3">
                     <span className={cn("text-[11px] px-2 py-0.5 rounded-full font-medium",
@@ -357,18 +386,39 @@ function MyTopicsTab({
                   </td>
                   <td className="px-3 py-3"><ProgressCell pct={pct} /></td>
                   <td className="px-3 py-3 text-xs text-slate-500">{t.year}</td>
-                  <td className="px-3 py-3">
-                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition"
-                      onClick={e => e.stopPropagation()}>
-                      <button onClick={() => onEdit(t)} title="Sửa"
-                        className="p-1 rounded-md text-slate-400 hover:text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/20 transition">
-                        <Pencil className="w-3.5 h-3.5" />
-                      </button>
-                      <button onClick={() => onDelete(t)} title="Xoá"
-                        className="p-1 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition">
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
+                  <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                    {t.intakeStatus === "revision_needed" ? (
+                      <div className="flex items-center gap-1">
+                        {t.resubmitToken ? (
+                          <a
+                            href={`/resubmit/${t.resubmitToken}`}
+                            target="_blank" rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold rounded-lg bg-amber-500 hover:bg-amber-600 text-white transition"
+                            title="Mở form nộp lại (không cần đăng nhập)"
+                          >
+                            <Upload className="w-3 h-3" /> Nộp lại
+                          </a>
+                        ) : (
+                          <button
+                            onClick={() => onEdit(t)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold rounded-lg bg-amber-500 hover:bg-amber-600 text-white transition"
+                          >
+                            <Upload className="w-3 h-3" /> Nộp lại
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
+                        <button onClick={() => onEdit(t)} title="Sửa"
+                          className="p-1 rounded-md text-slate-400 hover:text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/20 transition">
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                        <button onClick={() => onDelete(t)} title="Xoá"
+                          className="p-1 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
                   </td>
                 </tr>
               );
@@ -916,15 +966,15 @@ function MonitorTab({
 }) {
   const [filters, setFilters] = useState<FilterState>({ search: "", year: "all", stage: "all", department: "" });
   const [taskLinked, setTaskLinked] = useState<"all" | "linked" | "unlinked">("all");
-  const [intakeNote, setIntakeNote] = useState<Record<string, string>>({});
-  const [noteOpen, setNoteOpen] = useState<string | null>(null);
   const [actioning, setActioning] = useState<string | null>(null);
-  const [viewTopic, setViewTopic] = useState<ResearchTopic | null>(null);
-  const [previewFileUrl, setPreviewFileUrl] = useState<string | null>(null);
+  const [intakeReviewTopic, setIntakeReviewTopic] = useState<ResearchTopic | null>(null);
+  const [emailSending, setEmailSending] = useState<string | null>(null);
+  const [emailSentIds, setEmailSentIds] = useState<Set<string>>(new Set());
   // Task-link assignment
   const [assigningId, setAssigningId]   = useState<string | null>(null);
   const [assignDraft, setAssignDraft]   = useState<Record<string, string>>({});
   const [assignSaving, setAssignSaving] = useState<string | null>(null);
+  const [showDupPanel, setShowDupPanel] = useState(false);
 
   const { tasks } = useTaskStore();
 
@@ -947,7 +997,7 @@ function MonitorTab({
     ),
   [topics]);
 
-  async function sendIntakeEmail(topic: ResearchTopic, type: "accepted" | "revision", note?: string) {
+  async function sendIntakeEmail(topic: ResearchTopic, type: "accepted" | "revision", note?: string, resubmitLink?: string) {
     const author = users.find(u => u.id === topic.principalInvestigatorId);
     const authorEmail = topic.submitterEmail ?? author?.email;
     if (!authorEmail) return;
@@ -964,7 +1014,7 @@ function MonitorTab({
       : `Kính gửi ${topic.principalInvestigatorName ?? author?.name ?? "Quý tác giả"},\n\n` +
         `Đề cương nghiên cứu "${topic.title}" của bạn chưa đáp ứng yêu cầu tiếp nhận.\n\n` +
         `Lý do: ${note ?? "Vui lòng kiểm tra lại nội dung và format theo yêu cầu."}\n\n` +
-        `Vui lòng chỉnh sửa và nộp lại qua hệ thống.\n\n` +
+        `Vui lòng chỉnh sửa và nộp lại qua link sau (có hiệu lực 30 ngày, không cần đăng nhập):\n${resubmitLink ?? "Xem trong hệ thống ARiHA WorkHub"}\n\n` +
         `Trân trọng,\n${currentUser.name}`;
 
     await fetch("/api/email/custom", {
@@ -979,7 +1029,7 @@ function MonitorTab({
     }).catch(() => {});
   }
 
-  async function sendIntakeNotification(topic: ResearchTopic, type: "accepted" | "revision", note?: string) {
+  async function sendIntakeNotification(topic: ResearchTopic, type: "accepted" | "revision", note?: string, resubmitLink?: string) {
     const piId = topic.principalInvestigatorId;
     if (!piId) return;
     await fetch("/api/notifications", {
@@ -992,7 +1042,7 @@ function MonitorTab({
         body: type === "accepted"
           ? `Đề cương "${topic.title}" đã được kiểm tra và xác nhận tiếp nhận thành công.`
           : `Đề cương "${topic.title}" cần chỉnh sửa: ${note ?? "Vui lòng kiểm tra lại nội dung và format."}`,
-        link: "/research",
+        link: resubmitLink ?? "/research",
         read: false,
         priority: type === "accepted" ? "normal" : "urgent",
         createdAt: new Date().toISOString(),
@@ -1000,23 +1050,28 @@ function MonitorTab({
     }).catch(() => {});
   }
 
-  async function handleAccept(topic: ResearchTopic) {
+  async function handleIntakeAccept(
+    topic: ResearchTopic,
+    note: string,
+    linkedTaskId: string,
+    intakeLogs: ResearchTopic["intakeLogs"],
+    matchedUserId?: string,
+  ) {
     setActioning(topic.id);
     try {
-      const newLog: IntakeLog = {
-        id: `ilog_${Date.now()}`,
-        action: "accepted",
-        userId: currentUser.id,
-        userName: currentUser.name,
-        timestamp: new Date().toISOString(),
-      };
+      const resolvedTaskId = linkedTaskId.trim() || topic.taskId || undefined;
       const updates: Partial<ResearchTopic> = {
         intakeStatus: "passed",
-        intakeNote: undefined,
+        intakeNote: note || undefined,
+        ...(resolvedTaskId ? { taskId: resolvedTaskId } : {}),
+        // Link to matched system account when accepting a public submission
+        ...(matchedUserId && topic.principalInvestigatorId !== matchedUserId
+          ? { principalInvestigatorId: matchedUserId, createdBy: matchedUserId }
+          : {}),
         stage: "proposal",
         currentStep: "p_compile",
         steps: buildAcceptedSteps(topic.steps),
-        intakeLogs: [...(topic.intakeLogs ?? []), newLog],
+        intakeLogs,
         updatedAt: new Date().toISOString(),
       };
       await fetch(`/api/research/${topic.id}`, {
@@ -1029,28 +1084,33 @@ function MonitorTab({
         sendIntakeNotification(topic, "accepted"),
       ]);
       onTopicUpdate(topic.id, updates);
+      setIntakeReviewTopic(null);
       toast.success(`Đã tiếp nhận: ${topic.title}`);
     } catch { toast.error("Tiếp nhận thất bại"); }
     finally { setActioning(null); }
   }
 
-  async function handleRevision(topic: ResearchTopic) {
-    const note = intakeNote[topic.id] ?? "";
+  async function handleIntakeRevise(
+    topic: ResearchTopic,
+    reason: string,
+    intakeLogs: ResearchTopic["intakeLogs"],
+  ) {
     setActioning(topic.id);
     try {
-      const newLog: IntakeLog = {
-        id: `ilog_${Date.now()}`,
-        action: "revision_requested",
-        userId: currentUser.id,
-        userName: currentUser.name,
-        note: note || undefined,
-        timestamp: new Date().toISOString(),
-      };
+      // Generate a secure single-use token for the public resubmit form
+      const rawToken = Array.from(crypto.getRandomValues(new Uint8Array(24)))
+        .map(b => b.toString(16).padStart(2, "0")).join("");
+      const expiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+      const appUrl = typeof window !== "undefined" ? window.location.origin : "";
+      const resubmitLink = `${appUrl}/resubmit/${rawToken}`;
+
       const updates: Partial<ResearchTopic> = {
         intakeStatus: "revision_needed",
-        intakeNote: note || undefined,
+        intakeNote: reason || undefined,
         intakeRevisionCount: (topic.intakeRevisionCount ?? 0) + 1,
-        intakeLogs: [...(topic.intakeLogs ?? []), newLog],
+        intakeLogs,
+        resubmitToken: rawToken,
+        resubmitTokenExpiry: expiry,
         updatedAt: new Date().toISOString(),
       };
       await fetch(`/api/research/${topic.id}`, {
@@ -1059,13 +1119,51 @@ function MonitorTab({
         body: JSON.stringify(updates),
       });
       await Promise.allSettled([
-        sendIntakeEmail(topic, "revision", note),
-        sendIntakeNotification(topic, "revision", note),
+        sendIntakeEmail(topic, "revision", reason, resubmitLink),
+        sendIntakeNotification(topic, "revision", reason, resubmitLink),
       ]);
       onTopicUpdate(topic.id, updates);
-      setNoteOpen(null);
-      toast.success("Đã yêu cầu chỉnh sửa — email và thông báo đã gửi");
+      setIntakeReviewTopic(null);
+      // Show the link so the reviewer can copy & share it
+      toast.success(
+        <div className="space-y-1 text-xs">
+          <p className="font-semibold">Đã yêu cầu chỉnh sửa — email đã gửi</p>
+          <p className="text-slate-400 break-all">{resubmitLink}</p>
+          <button
+            onClick={() => { navigator.clipboard.writeText(resubmitLink); toast.success("Đã sao chép link"); }}
+            className="text-violet-600 font-medium hover:underline"
+          >
+            Sao chép link
+          </button>
+        </div>,
+        { duration: 12000 }
+      );
     } catch { toast.error("Gửi yêu cầu thất bại"); }
+    finally { setActioning(null); }
+  }
+
+  async function handleIntakeReject(
+    topic: ResearchTopic,
+    reason: string,
+    intakeLogs: ResearchTopic["intakeLogs"],
+  ) {
+    setActioning(topic.id);
+    try {
+      const updates: Partial<ResearchTopic> = {
+        intakeStatus: "rejected",
+        intakeNote: reason || undefined,
+        intakeLogs,
+        updatedAt: new Date().toISOString(),
+      };
+      await fetch(`/api/research/${topic.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      });
+      onTopicUpdate(topic.id, updates);
+      setIntakeReviewTopic(null);
+      toast.success("Đã từ chối đề cương");
+    } catch { toast.error("Từ chối thất bại"); }
     finally { setActioning(null); }
   }
 
@@ -1088,6 +1186,38 @@ function MonitorTab({
     finally { setAssignSaving(null); }
   }
 
+  async function handleResendEmail(topic: ResearchTopic) {
+    if (!topic.resubmitToken) return;
+    setEmailSending(topic.id);
+    try {
+      const appUrl = typeof window !== "undefined" ? window.location.origin : "";
+      const resubmitLink = `${appUrl}/resubmit/${topic.resubmitToken}`;
+      await sendIntakeEmail(topic, "revision", topic.intakeNote, resubmitLink);
+
+      // Record email send in intakeLogs
+      const logEntry: IntakeLog = {
+        id: generateId("ilog"),
+        action: "revision_requested",
+        userId: currentUser.id,
+        userName: currentUser.name,
+        note: `Gửi lại mail yêu cầu chỉnh sửa`,
+        timestamp: new Date().toISOString(),
+      };
+      const updatedLogs = [...(topic.intakeLogs ?? []), logEntry];
+      const patch = { intakeLogs: updatedLogs, updatedAt: new Date().toISOString() };
+      await fetch(`/api/research/${topic.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      onTopicUpdate(topic.id, patch);
+      setEmailSentIds(s => new Set(s).add(topic.id));
+      const recipient = topic.submitterEmail ?? topic.principalInvestigatorName ?? "tác giả";
+      toast.success(`Đã gửi mail nhắc chỉnh sửa đến ${recipient}`);
+    } catch { toast.error("Gửi mail thất bại"); }
+    finally { setEmailSending(null); }
+  }
+
   const filtered = useMemo(() => topics.filter(t => {
     if (filters.year !== "all" && t.year !== filters.year) return false;
     if (filters.stage !== "all" && t.stage !== filters.stage) return false;
@@ -1104,6 +1234,9 @@ function MonitorTab({
     return true;
   }), [topics, filters, users]);
 
+  // Duplicate pairs across all loaded topics
+  const dupPairs = useMemo<DupPair[]>(() => findDuplicatePairs(topics), [topics]);
+
   // Stats
   const stats = useMemo(() => ({
     total: topics.length,
@@ -1116,6 +1249,100 @@ function MonitorTab({
     <div className="space-y-4">
       {/* Template management (admin only) */}
       {canManage && <TemplateUploadButton />}
+
+      {/* ── Duplicate-check panel ── */}
+      <div className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setShowDupPanel(p => !p)}
+          className="w-full flex items-center gap-2 px-4 py-3 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 transition text-left"
+        >
+          <ShieldAlert className={cn("w-4 h-4 shrink-0", dupPairs.length > 0 ? "text-red-500" : "text-emerald-500")} />
+          <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+            Kiểm tra trùng lặp
+          </span>
+          {dupPairs.length > 0 ? (
+            <span className="ml-1 px-2 py-0.5 bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 text-xs font-bold rounded-full">
+              {dupPairs.length} cặp
+            </span>
+          ) : (
+            <span className="ml-1 px-2 py-0.5 bg-emerald-100 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 text-xs font-medium rounded-full">
+              Không phát hiện trùng
+            </span>
+          )}
+          <ChevronDown className={cn("w-4 h-4 text-slate-400 ml-auto transition-transform", showDupPanel && "rotate-180")} />
+        </button>
+
+        {showDupPanel && (
+          <div className="border-t border-slate-200 dark:border-slate-700">
+            {dupPairs.length === 0 ? (
+              <div className="px-4 py-6 text-center text-sm text-slate-400">
+                <CheckCircle2 className="w-8 h-8 text-emerald-400 mx-auto mb-2" />
+                Không phát hiện cặp đề tài nào có khả năng trùng lặp.
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                {dupPairs.map(({ a, b, titleSim, samePerson, reason }, idx) => (
+                  <div key={`${a.id}-${b.id}`} className="px-4 py-3 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition">
+                    {/* Badges */}
+                    <div className="flex items-center gap-1.5 mb-2 flex-wrap">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wide mr-1">#{idx + 1}</span>
+                      <span className={cn(
+                        "px-1.5 py-0.5 rounded text-[10px] font-semibold",
+                        titleSim >= 0.8 ? "bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400"
+                        : titleSim >= 0.65 ? "bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400"
+                        : "bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400"
+                      )}>
+                        Tên đề tài {Math.round(titleSim * 100)}% tương đồng
+                      </span>
+                      {samePerson && (
+                        <span className="px-1.5 py-0.5 rounded bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 text-[10px] font-medium">
+                          Cùng chủ nhiệm
+                        </span>
+                      )}
+                      {reason === "title_and_person" && (
+                        <span className="px-1.5 py-0.5 rounded bg-red-50 dark:bg-red-900/20 text-red-500 text-[10px]">
+                          Cả hai dấu hiệu
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Side-by-side topics */}
+                    <div className="grid grid-cols-2 gap-2">
+                      {([a, b] as const).map((t, ti) => (
+                        <div key={t.id} className="rounded-lg border border-slate-200 dark:border-slate-700 p-2.5 space-y-1">
+                          <p className="text-[11px] font-semibold text-slate-800 dark:text-white leading-snug line-clamp-2">{t.title}</p>
+                          <p className="text-[10px] text-slate-500 dark:text-slate-400">{t.principalInvestigatorName ?? "—"}</p>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[10px] text-slate-400">{t.year}</span>
+                            {t.department && <span className="text-[10px] text-slate-400 truncate max-w-[80px]">{t.department}</span>}
+                            {t.intakeStatus && (
+                              <span className={cn("text-[9px] px-1 py-0.5 rounded font-medium",
+                                t.intakeStatus === "passed" ? "bg-emerald-100 dark:bg-emerald-900/20 text-emerald-600"
+                                : t.intakeStatus === "awaiting" ? "bg-amber-100 dark:bg-amber-900/20 text-amber-600"
+                                : "bg-slate-100 dark:bg-slate-800 text-slate-500"
+                              )}>
+                                {t.intakeStatus === "passed" ? "Đã tiếp nhận" : t.intakeStatus === "awaiting" ? "Chờ xét" : t.intakeStatus === "revision_needed" ? "Cần sửa" : t.intakeStatus}
+                              </span>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => onView(t)}
+                            className="flex items-center gap-1 text-[10px] text-blue-600 dark:text-blue-400 hover:underline mt-1"
+                          >
+                            <Eye className="w-3 h-3" /> Xem chi tiết
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* ── Intake queue ── */}
       {awaitingTopics.length > 0 && (
@@ -1137,7 +1364,6 @@ function MonitorTab({
                   <th className="text-left px-3 py-2 font-medium">Tên đề tài</th>
                   <th className="text-left px-3 py-2 font-medium">Chủ nhiệm</th>
                   <th className="text-left px-3 py-2 font-medium hidden sm:table-cell">Đơn vị</th>
-                  <th className="text-left px-3 py-2 font-medium hidden md:table-cell">File đề cương</th>
                   <th className="text-left px-3 py-2 font-medium">Trạng thái</th>
                   <th className="text-left px-3 py-2 font-medium hidden lg:table-cell">Nhiệm vụ NCKH</th>
                   <th className="text-center px-3 py-2 font-medium">Thao tác</th>
@@ -1148,7 +1374,6 @@ function MonitorTab({
                   const author = users.find(u => u.id === topic.principalInvestigatorId);
                   const piName = topic.principalInvestigatorName ?? author?.name ?? "—";
                   const isBusy = actioning === topic.id;
-                  const isNoteOpen = noteOpen === topic.id;
                   const meta = INTAKE_META[topic.intakeStatus as keyof typeof INTAKE_META] ?? INTAKE_META.awaiting;
 
                   return (
@@ -1166,16 +1391,6 @@ function MonitorTab({
                         )}
                       </td>
                       <td className="px-3 py-2.5 text-xs text-slate-500 hidden sm:table-cell">{topic.department ?? "—"}</td>
-                      <td className="px-3 py-2.5 hidden md:table-cell">
-                        {topic.proposalFileUrl ? (
-                          <button
-                            onClick={() => setPreviewFileUrl(topic.proposalFileUrl!)}
-                            className="flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400 hover:underline"
-                          >
-                            <Eye className="w-3 h-3" /> Xem file
-                          </button>
-                        ) : <span className="text-xs text-slate-400 italic">Chưa có</span>}
-                      </td>
                       <td className="px-3 py-2.5">
                         <span className={cn("text-[11px] font-semibold px-2 py-0.5 rounded-full", meta.cls)}>
                           {meta.label}
@@ -1201,49 +1416,36 @@ function MonitorTab({
                           onSave={v => handleAssignTask(topic, v || undefined)}
                         />
                       </td>
-                      <td className="px-3 py-2.5">
+                      <td className="px-3 py-2.5 text-center">
                         <div className="flex flex-col items-center gap-1">
-                          <div className="flex gap-1 flex-wrap justify-center">
+                          <button
+                            onClick={() => setIntakeReviewTopic(topic)}
+                            disabled={isBusy}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold rounded-lg border border-teal-300 dark:border-teal-700 bg-teal-50 dark:bg-teal-900/20 text-teal-700 dark:text-teal-300 hover:bg-teal-100 dark:hover:bg-teal-900/40 disabled:opacity-50 transition"
+                          >
+                            {isBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <ClipboardCheck className="w-3 h-3" />}
+                            Kiểm tra
+                          </button>
+                          {topic.intakeStatus === "revision_needed" && topic.resubmitToken && (
                             <button
-                              onClick={() => setViewTopic(topic)}
-                              className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition"
+                              onClick={() => handleResendEmail(topic)}
+                              disabled={emailSending === topic.id || emailSentIds.has(topic.id)}
+                              title={emailSentIds.has(topic.id) ? "Đã gửi trong phiên này" : "Gửi mail kèm link chỉnh sửa cho tác giả"}
+                              className={cn(
+                                "inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold rounded-lg border transition disabled:opacity-50",
+                                emailSentIds.has(topic.id)
+                                  ? "border-green-300 dark:border-green-700 bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300"
+                                  : "border-blue-300 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/40",
+                              )}
                             >
-                              <Eye className="w-3 h-3" />
-                              Xem nội dung
+                              {emailSending === topic.id
+                                ? <Loader2 className="w-3 h-3 animate-spin" />
+                                : emailSentIds.has(topic.id)
+                                  ? <CheckCircle2 className="w-3 h-3" />
+                                  : <Mail className="w-3 h-3" />
+                              }
+                              {emailSentIds.has(topic.id) ? "Đã gửi" : "Gửi mail"}
                             </button>
-                            <button
-                              onClick={() => handleAccept(topic)}
-                              disabled={isBusy}
-                              className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold rounded-lg bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white transition"
-                            >
-                              {isBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle2 className="w-3 h-3" />}
-                              Tiếp nhận
-                            </button>
-                            <button
-                              onClick={() => setNoteOpen(isNoteOpen ? null : topic.id)}
-                              disabled={isBusy}
-                              className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold rounded-lg border border-orange-200 dark:border-orange-800 text-orange-600 dark:text-orange-400 hover:bg-orange-50 dark:hover:bg-orange-900/20 disabled:opacity-60 transition"
-                            >
-                              <AlertCircle className="w-3 h-3" />
-                              Chỉnh sửa
-                            </button>
-                          </div>
-                          {isNoteOpen && (
-                            <div className="flex gap-1 w-full mt-1">
-                              <input
-                                value={intakeNote[topic.id] ?? ""}
-                                onChange={e => setIntakeNote(n => ({ ...n, [topic.id]: e.target.value }))}
-                                placeholder="Lý do yêu cầu chỉnh sửa..."
-                                className="flex-1 min-w-0 px-2 py-1 text-[11px] border border-orange-200 dark:border-orange-800 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-white focus:outline-none focus:ring-1 focus:ring-orange-400"
-                              />
-                              <button
-                                onClick={() => handleRevision(topic)}
-                                disabled={isBusy}
-                                className="px-2 py-1 text-[11px] font-semibold rounded-lg bg-orange-500 hover:bg-orange-600 text-white transition disabled:opacity-60"
-                              >
-                                Gửi
-                              </button>
-                            </div>
                           )}
                         </div>
                       </td>
@@ -1406,12 +1608,21 @@ function MonitorTab({
         </table>
       </div>
 
-      {viewTopic && (
-        <TopicDetailModal topic={viewTopic} onClose={() => setViewTopic(null)} />
-      )}
-
-      {previewFileUrl && (
-        <FilePreviewOverlay url={previewFileUrl} onClose={() => setPreviewFileUrl(null)} />
+      {intakeReviewTopic && (
+        <IntakeReviewModal
+          topic={intakeReviewTopic}
+          taskId={intakeReviewTopic.taskId ?? ""}
+          receiverName={currentUser.name}
+          nckhTasks={nckhTasks}
+          allTopics={topics}
+          allUsers={users}
+          currentUserId={currentUser.id}
+          currentUserName={currentUser.name}
+          onAccept={(note, linkedTaskId, logs, matchedUserId) => handleIntakeAccept(intakeReviewTopic, note, linkedTaskId, logs, matchedUserId)}
+          onRevise={(reason, logs) => handleIntakeRevise(intakeReviewTopic, reason, logs)}
+          onReject={(reason, logs) => handleIntakeReject(intakeReviewTopic, reason, logs)}
+          onClose={() => setIntakeReviewTopic(null)}
+        />
       )}
     </div>
   );
@@ -1441,11 +1652,15 @@ export default function ResearchPage() {
   const canCreate  = !!currentUser && hasPermission(currentUser.role, "research:create");
   const canManage  = !!currentUser && hasPermission(currentUser.role, "research:manage");
   const roleCanMonitor = !!currentUser && (canManage || hasPermission(currentUser.role, "research:monitor"));
+  // researchManager designation also grants monitor access (without full canManage)
+  const hasResearchManagerDesig = !!(currentUser?.researchDesignations ?? []).includes("researchManager");
   const [taskAccessMonitor, setTaskAccessMonitor] = useState(false);
-  const canMonitor = roleCanMonitor || taskAccessMonitor;
+  const canMonitor = roleCanMonitor || hasResearchManagerDesig || taskAccessMonitor;
 
   // Default tab: monitors/managers start on monitor, others on my-topics
-  const [activeTab, setActiveTab] = useState<"mine" | "review" | "council" | "monitor">(() => roleCanMonitor ? "monitor" : "mine");
+  const [activeTab, setActiveTab] = useState<"mine" | "review" | "council" | "monitor">(
+    () => (roleCanMonitor || hasResearchManagerDesig) ? "monitor" : "mine"
+  );
 
   // Check task-based monitor access for non-role users
   useEffect(() => {
@@ -1462,22 +1677,49 @@ export default function ResearchPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser?.id]);
 
-  const myCount = useMemo(() => currentUser ? topics.filter(t =>
+  const visibleTopics = useMemo(() => {
+    if (!currentUser) return topics;
+    const effectiveRole = getEffectiveRole(currentUser);
+    // director/hrAdmin thấy tất cả
+    if (ROLE_RANK[effectiveRole] >= ROLE_RANK.director) return topics;
+    // teamLead: lọc theo đơn vị (department) mình quản lý
+    if (effectiveRole === "teamLead" && currentUser.positions?.length) {
+      const myUnits = new Set(
+        currentUser.positions
+          .filter(p => p.unitName)
+          .map(p => p.unitName!)
+      );
+      if (myUnits.size > 0) {
+        return topics.filter(t => !t.department || myUnits.has(t.department));
+      }
+    }
+    return topics;
+  }, [topics, currentUser]);
+
+  const myCount = useMemo(() => currentUser ? visibleTopics.filter(t =>
     t.principalInvestigatorId === currentUser.id ||
     t.mainPerformerId === currentUser.id ||
     (t.memberIds ?? []).includes(currentUser.id)
-  ).length : 0, [topics, currentUser]);
+  ).length : 0, [visibleTopics, currentUser]);
 
-  const reviewCount = useMemo(() => currentUser ? topics.reduce((sum, t) =>
+  const reviewCount = useMemo(() => currentUser ? visibleTopics.reduce((sum, t) =>
     sum + (t.reviews ?? []).filter(r => r.reviewerId === currentUser.id).length, 0
-  ) : 0, [topics, currentUser]);
+  ) : 0, [visibleTopics, currentUser]);
 
-  const councilCount = useMemo(() => currentUser ? topics.reduce((sum, t) =>
+  const councilCount = useMemo(() => currentUser ? visibleTopics.reduce((sum, t) =>
     sum + (t.councilSessions ?? []).filter(s => (s.memberIds ?? []).includes(currentUser.id)).length, 0
-  ) : 0, [topics, currentUser]);
+  ) : 0, [visibleTopics, currentUser]);
 
   useEffect(() => {
-    getResearchTopics(taskId).then(setTopics).catch(() => toast.error("Không tải được danh sách đề tài")).finally(() => setLoading(false));
+    // Always load regular topics; also merge in intake-pending no-task topics
+    Promise.all([
+      getResearchTopics(taskId),
+      getResearchTopics(undefined, true),   // forIntake=1 → no-task submissions
+    ]).then(([regular, intakePending]) => {
+      const seen = new Set(regular.map(t => t.id));
+      setTopics([...regular, ...intakePending.filter(t => !seen.has(t.id))]);
+    }).catch(() => toast.error("Không tải được danh sách đề tài"))
+      .finally(() => setLoading(false));
   }, [taskId]);
 
   useEffect(() => {
@@ -1502,7 +1744,7 @@ export default function ResearchPage() {
 
   if (!currentUser) return null;
 
-  const awaitingCount = topics.filter(t =>
+  const awaitingCount = visibleTopics.filter(t =>
     t.intakeStatus === "awaiting" || t.intakeStatus === "revision_needed" ||
     (!t.intakeStatus && t.stage === "init")
   ).length;
@@ -1604,9 +1846,18 @@ export default function ResearchPage() {
         <div className="flex justify-center py-20"><Loader2 className="w-6 h-6 animate-spin text-violet-500" /></div>
       ) : (
         <>
+          {currentUser && getEffectiveRole(currentUser) === "teamLead" && currentUser.positions?.some(p => p.unitName) && (
+            <div className="mb-3 text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 inline-block" />
+              Hiển thị đề tài của:{" "}
+              <span className="font-semibold text-slate-700 dark:text-slate-200">
+                {(currentUser.positions ?? []).filter(p => p.unitName).map(p => p.unitName).join(", ")}
+              </span>
+            </div>
+          )}
           {activeTab === "mine" && (
             <MyTopicsTab
-              topics={topics}
+              topics={visibleTopics}
               users={users}
               currentUser={currentUser}
               onEdit={setEditTopic}
@@ -1616,7 +1867,7 @@ export default function ResearchPage() {
           )}
           {activeTab === "review" && (
             <ReviewTab
-              topics={topics}
+              topics={visibleTopics}
               currentUserId={currentUser.id}
               onView={t => router.push(`/research/${t.id}`)}
               onSubmitReview={(topic, review) => setReviewTarget({ topic, review })}
@@ -1624,7 +1875,7 @@ export default function ResearchPage() {
           )}
           {activeTab === "council" && (
             <CouncilTab
-              topics={topics}
+              topics={visibleTopics}
               users={users}
               currentUserId={currentUser.id}
               onView={t => router.push(`/research/${t.id}`)}
@@ -1632,7 +1883,7 @@ export default function ResearchPage() {
           )}
           {activeTab === "monitor" && canMonitor && (
             <MonitorTab
-              topics={topics}
+              topics={visibleTopics}
               users={users}
               canManage={canManage}
               currentUser={currentUser}

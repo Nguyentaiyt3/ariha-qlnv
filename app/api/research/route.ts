@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyToken, getUser } from "@/lib/mongodb/auth";
-import { getResearchTopics, createResearchTopic, checkResearchTaskParticipant } from "@/lib/mongodb/firestore";
+import { getResearchTopics, createResearchTopic, checkResearchTaskParticipant, claimPublicTopicsByEmail } from "@/lib/mongodb/firestore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { generateId } from "@/lib/utils";
 import { connectDB } from "@/lib/mongodb/config";
@@ -37,7 +37,8 @@ export async function GET(req: NextRequest) {
   const session = await auth(req);
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const taskId = req.nextUrl.searchParams.get("taskId") ?? undefined;
+  const taskId     = req.nextUrl.searchParams.get("taskId") ?? undefined;
+  const forIntake  = req.nextUrl.searchParams.get("forIntake") === "1";
 
   // research:manage / research:monitor / task participants → see all; others → own only
   const me = await getUser(session.userId);
@@ -47,8 +48,15 @@ export async function GET(req: NextRequest) {
   );
   const canSeeAll = roleCanSeeAll || (!taskId && await checkResearchTaskParticipant(session.userId));
   const userId = canSeeAll ? undefined : session.userId;
+  const userEmail = (!canSeeAll && me?.email) ? me.email : undefined;
 
-  const topics = await getResearchTopics(taskId, userId);
+  // Permanently claim any public-form submissions whose email matches this user.
+  // Runs silently; errors are non-critical.
+  if (userId && userEmail) {
+    claimPublicTopicsByEmail(userId, userEmail).catch(() => {});
+  }
+
+  const topics = await getResearchTopics(taskId, userId, forIntake, userEmail);
   return NextResponse.json({ topics });
 }
 

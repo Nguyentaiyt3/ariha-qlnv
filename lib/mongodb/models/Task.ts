@@ -43,7 +43,7 @@ const taskSchema = new Schema(
     totalIncome: Number,
     totalExpense: Number,
     completionProposal: Schema.Types.Mixed,
-    pendingChangeRequest: Schema.Types.Mixed,
+    changeRequests: { type: Schema.Types.Mixed, default: [] },
     resources: { type: Schema.Types.Mixed, default: [] },
     googleCalendarEventId: String,
     department: String,

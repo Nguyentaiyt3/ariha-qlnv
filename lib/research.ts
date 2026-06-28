@@ -20,6 +20,9 @@ export const RESEARCH_STEPS: {
   { key: "p_council",    label: "Họp Hội đồng KHCN thông qua",             stage: "proposal", isCouncil: true },
   { key: "p_ethics",     label: "Chứng nhận y đức",                        stage: "proposal" },
   { key: "p_agree",      label: "Đồng ý cho thực hiện",                    stage: "proposal" },
+  { key: "exec_start",   label: "Bắt đầu triển khai",                      stage: "executing" },
+  { key: "exec_midterm", label: "Báo cáo tiến độ giữa kỳ",                 stage: "executing" },
+  { key: "exec_submit",  label: "Nộp báo cáo kết quả",                     stage: "executing" },
   { key: "r_intake",     label: "Tiếp nhận kết quả",                       stage: "recognition" },
   { key: "r_review",     label: "Thẩm định — 2 phản biện kín",             stage: "recognition", needsTwoReviews: true },
   { key: "r_council",    label: "Họp Hội đồng KHCN thông qua",             stage: "recognition", isCouncil: true },
@@ -29,7 +32,8 @@ export const RESEARCH_STEPS: {
 export const STAGE_LABEL: Record<ResearchStage, string> = {
   init:        "Khởi tạo",
   proposal:    "GĐ1 · Thẩm định đề cương",
-  recognition: "GĐ2 · Công nhận phạm vi ảnh hưởng",
+  executing:   "Đang triển khai",
+  recognition: "GĐ2 · Nghiệm thu & Công nhận",
   completed:   "Đã hoàn tất",
   rejected:    "Đã từ chối",
 };

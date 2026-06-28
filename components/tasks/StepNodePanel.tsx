@@ -18,6 +18,7 @@ import {
   createAdvanceRequest, subscribeAdvanceRequests, createTransaction, EXPENSE_CATEGORIES,
 } from "@/lib/firebase/finance";
 import { UserAvatar } from "@/components/common/UserAvatar";
+import { SearchableSelect } from "@/components/common/SearchableSelect";
 import type {
   Task, TaskStep, User, StepSubTask, Proof, FinancialProof,
   AdvanceRequest, TaskPriority,
@@ -300,15 +301,14 @@ function HelpersSection({
       {/* Add form */}
       {showForm && (
         <div className="rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-3 space-y-2">
-          <select
-            value={helperUserId} onChange={(e) => setHelperUserId(e.target.value)}
-            className="w-full text-sm rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-2.5 py-2 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-400"
-          >
-            <option value="">— Chọn người hỗ trợ —</option>
-            {candidates.map((u) => (
-              <option key={u.id} value={u.id}>{u.name} ({u.department ?? u.role})</option>
-            ))}
-          </select>
+          <SearchableSelect
+            value={helperUserId}
+            onChange={setHelperUserId}
+            options={candidates.map((u) => ({ id: u.id, label: u.name, sub: u.department ?? u.role }))}
+            placeholder="— Chọn người hỗ trợ —"
+            emptyText="Không tìm thấy nhân viên"
+            listHeight="max-h-40"
+          />
           <select value={priority} onChange={(e) => setPriority(e.target.value as TaskPriority)}
             className="w-full text-sm rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-2.5 py-2 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-400">
             <option value="low">Thấp</option>

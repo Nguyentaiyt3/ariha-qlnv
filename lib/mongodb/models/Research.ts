@@ -55,6 +55,8 @@ const researchTopicSchema = new Schema(
     intakeNote:         String,
     intakeRevisionCount: { type: Number, default: 0 },
     intakeLogs:         { type: Schema.Types.Mixed, default: [] },
+    resubmitToken:      { type: String, index: true, sparse: true },
+    resubmitTokenExpiry: String,
 
     createdBy: { type: String, required: true, index: true },
     createdByName: String,

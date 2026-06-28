@@ -244,9 +244,12 @@ export async function deleteWorkflow(id: string): Promise<void> {
 
 // ─── RESEARCH TOPICS ──────────────────────────────────────────
 
-export async function getResearchTopics(taskId?: string): Promise<ResearchTopic[]> {
-  const url = taskId ? `/api/research?taskId=${encodeURIComponent(taskId)}` : "/api/research";
-  const data = await api<{ topics: ResearchTopic[] }>(url);
+export async function getResearchTopics(taskId?: string, forIntake?: boolean): Promise<ResearchTopic[]> {
+  const params = new URLSearchParams();
+  if (taskId) params.set("taskId", taskId);
+  if (forIntake) params.set("forIntake", "1");
+  const qs = params.toString();
+  const data = await api<{ topics: ResearchTopic[] }>(`/api/research${qs ? `?${qs}` : ""}`);
   return data?.topics ?? [];
 }
 export async function getResearchTopic(id: string): Promise<ResearchTopic | null> {

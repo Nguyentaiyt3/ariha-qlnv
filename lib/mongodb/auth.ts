@@ -95,7 +95,8 @@ export async function createUserAccount(
   password: string,
   name: string,
   role: UserRole,
-  department?: string
+  department?: string,
+  position?: string,
 ): Promise<{ user: User; token: string }> {
   await connectDB();
 
@@ -114,6 +115,7 @@ export async function createUserAccount(
     name,
     role,
     department,
+    position,
     isActive: true,
     createdAt: new Date().toISOString(),
   });

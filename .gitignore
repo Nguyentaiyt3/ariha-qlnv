@@ -52,3 +52,9 @@ mongo_data/
 .env.local
 
 .vercel
+
+# Build artifacts
+tsconfig.tsbuildinfo
+
+# User uploaded files
+public/uploads/

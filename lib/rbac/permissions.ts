@@ -1,4 +1,4 @@
-import type { UserRole } from "@/types";
+import type { UserRole, User, ResearchTopic, ResearchContributorRole, CouncilMemberRole } from "@/types";
 
 // ─── Permission definitions ───────────────────────────────────
 
@@ -87,7 +87,10 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "workflow:approve",
     "research:read",
     "research:create",
-    "research:monitor",  // Xem tất cả + tiếp nhận đề cương (tab Giám sát)
+    "research:monitor",
+    "research:assignReviewer",   // Trưởng đơn vị có thể chỉ định phản biện
+    "research:assignCouncil",    // Trưởng đơn vị có thể thành lập hội đồng
+    "research:addContributor",   // Trưởng đơn vị có thể thêm thành viên đề tài
     "calendar:approve",
     "finance:read",
     "finance:approve",
@@ -146,6 +149,10 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "workflow:approve",
     "research:read",
     "research:create",
+    "research:monitor",
+    "research:assignReviewer",
+    "research:assignCouncil",
+    "research:addContributor",
     "research:manage",
     "calendar:approve",
     "finance:read",
@@ -346,10 +353,13 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
   {
     id: "research", label: "Nghiên cứu khoa học",
     permissions: [
-      { id: "research:read",    label: "Xem đề tài (chỉ của mình)" },
-      { id: "research:create",  label: "Đăng ký đề tài mới" },
-      { id: "research:monitor", label: "Giám sát & tiếp nhận đề cương" },
-      { id: "research:manage",  label: "Quản trị KHCN (phản biện, hội đồng, chứng nhận)" },
+      { id: "research:read",             label: "Xem đề tài (chỉ của mình)" },
+      { id: "research:create",           label: "Đăng ký đề tài mới" },
+      { id: "research:monitor",          label: "Giám sát & tiếp nhận đề cương" },
+      { id: "research:assignReviewer",   label: "Chỉ định phản biện kín" },
+      { id: "research:assignCouncil",    label: "Thành lập Hội đồng KHCN" },
+      { id: "research:addContributor",   label: "Thêm tác giả / thành viên đề tài" },
+      { id: "research:manage",           label: "Quản trị toàn bộ NCKH (chứng nhận, từ chối)" },
     ],
   },
   {
@@ -505,4 +515,135 @@ export function getVisibleNavItems(role: UserRole): NavItem[] {
   return NAV_ITEMS.filter(
     (item) => !item.requiredPermission || hasPermission(role, item.requiredPermission)
   );
+}
+
+// ─── Kiêm nhiệm — effective role & scope helpers ──────────────
+
+/**
+ * Trả về role cao nhất của user (xét cả positions[]).
+ * Dùng khi cần check quyền hệ thống toàn cơ quan.
+ */
+export function getEffectiveRole(user: Pick<User, "role" | "positions">): UserRole {
+  if (!user.positions?.length) return user.role;
+  const allRoles = [user.role, ...user.positions.map(p => p.role)];
+  return allRoles.reduce<UserRole>((best, r) =>
+    (ROLE_RANK[r] ?? 0) > (ROLE_RANK[best] ?? 0) ? r : best
+  , user.role);
+}
+
+/**
+ * Kiểm tra user có quyền quản lý đơn vị cụ thể không (theo ID).
+ * director/hrAdmin luôn trả về true (toàn cơ quan).
+ */
+export function canManageUnit(user: Pick<User, "role" | "positions">, unitId: string): boolean {
+  const effective = getEffectiveRole(user);
+  if (ROLE_RANK[effective] >= ROLE_RANK.director) return true;
+  if (!user.positions?.length) return false;
+  return user.positions.some(p => p.scopeUnitId === unitId);
+}
+
+/**
+ * Kiểm tra user có quyền quản lý đơn vị theo tên (department string).
+ * Dùng cho ResearchTopic.department vì chưa có unitId chuẩn hoá.
+ * director/hrAdmin luôn trả về true.
+ * teamLead không có positions[] cũng trả về true (chưa cấu hình scope → không giới hạn).
+ */
+export function canManageDepartment(
+  user: Pick<User, "role" | "positions">,
+  department: string | undefined
+): boolean {
+  const effective = getEffectiveRole(user);
+  if (ROLE_RANK[effective] >= ROLE_RANK.director) return true;
+  if (!department) return true; // topic chưa gán đơn vị → ai quản lý cũng được xem
+  if (!user.positions?.length) return true; // chưa cấu hình scope → không giới hạn
+  return user.positions.some(
+    p => p.unitName?.trim().toLowerCase() === department.trim().toLowerCase()
+  );
+}
+
+/**
+ * Kiểm tra user có quyền thực hiện action trên đề tài thuộc department cụ thể.
+ * Kết hợp: có quyền hệ thống + thuộc đơn vị quản lý.
+ */
+export function canDoResearchAction(
+  user: Pick<User, "role" | "positions">,
+  action: string,
+  department: string | undefined
+): boolean {
+  if (!hasPermission(getEffectiveRole(user), action)) return false;
+  return canManageDepartment(user, department);
+}
+
+/**
+ * Kiểm tra user có permission, xét cả positions[] (lấy role cao nhất).
+ */
+export function hasPermissionForUser(user: Pick<User, "role" | "positions">, action: string): boolean {
+  return hasPermission(getEffectiveRole(user), action);
+}
+
+/**
+ * Chỉ định phản biện kín: chỉ Trưởng VP (Văn phòng) hoặc Director/hrAdmin.
+ * teamLead thuộc đơn vị khác KHÔNG được phép, dù có permission research:assignReviewer.
+ */
+export function canUserAssignReviewer(
+  user: Pick<User, "role" | "positions">,
+  department?: string
+): boolean {
+  const role = getEffectiveRole(user);
+  if (ROLE_RANK[role] >= ROLE_RANK.director) return true;
+  if (role !== "teamLead") return false;
+  if (!hasPermission(role, "research:assignReviewer")) return false;
+  // Phải có ít nhất một vị trí thuộc đơn vị Văn phòng (VP)
+  const isVPHead = user.positions?.some(p => {
+    const unit = p.unitName?.trim().toLowerCase() ?? "";
+    return unit === "vp" || unit.includes("văn phòng");
+  }) ?? false;
+  if (!isVPHead) return false;
+  return canManageDepartment(user, department);
+}
+
+// ─── Research context roles ───────────────────────────────────
+
+/**
+ * Kiểm tra user có vai trò đóng góp trong đề tài không
+ * (tác giả / đồng tác giả / tham gia).
+ */
+export function getResearchContributorRole(
+  user: Pick<User, "id">,
+  topic: Pick<ResearchTopic, "principalInvestigatorId" | "contributors" | "memberIds">
+): ResearchContributorRole | null {
+  if (topic.principalInvestigatorId === user.id) return "author";
+  const fromContributors = topic.contributors?.find(c => c.userId === user.id);
+  if (fromContributors) return fromContributors.role;
+  if (topic.memberIds?.includes(user.id)) return "participant"; // legacy fallback
+  return null;
+}
+
+/**
+ * Kiểm tra user có phải phản biện của đề tài không (bất kỳ giai đoạn).
+ */
+export function isReviewerOf(
+  userId: string,
+  topic: Pick<ResearchTopic, "reviews">
+): boolean {
+  return topic.reviews.some(r => r.reviewerId === userId);
+}
+
+/**
+ * Kiểm tra user có thuộc hội đồng KHCN của đề tài không.
+ * Trả về vai trò hội đồng nếu có.
+ */
+export function getCouncilRole(
+  userId: string,
+  topic: Pick<ResearchTopic, "councilSessions">
+): CouncilMemberRole | null {
+  for (const session of topic.councilSessions) {
+    if (session.members) {
+      const m = session.members.find(m => m.userId === userId);
+      if (m) return m.role;
+    } else if (session.memberIds?.includes(userId)) {
+      return "member"; // legacy fallback
+    }
+  }
+  return null;
 }

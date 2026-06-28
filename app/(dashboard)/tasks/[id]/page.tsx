@@ -7,7 +7,7 @@ import {
   CheckSquare, MessageSquare, Users, Mail, Activity, BarChart3,
   CheckCheck, Loader2, Star, Send, ClipboardCheck, Pencil, Trash2, X as XIcon, Save,
   Paperclip, Link2, FolderOpen, FileText, Download, Plus, DollarSign, ShieldAlert,
-  Microscope, ChevronRight, Bell, Copy, Check,
+  Microscope, ChevronRight, ChevronDown, Bell, Copy, Check,
 } from "lucide-react";
 import { cn, formatDate, formatDateTime, formatRelativeTime, statusLabel, priorityLabel, getInitials, avatarColor, isTaskVisible } from "@/lib/utils";
 import { useTaskStore } from "@/stores/useTaskStore";
@@ -212,26 +212,68 @@ function ResourcesTab({ task, currentUser, isMainPerformer, onSave }: ResourcesT
 
 
 function ResearchWidget({
-  taskId, topics, task, canManage, users, currentUserId,
+  taskId, topics, task, canManage, canCreate, users, currentUserId,
 }: {
   taskId: string;
   topics: ResearchTopic[];
   task: Task;
   canManage: boolean;
+  canCreate: boolean;
   users: UserType[];
   currentUserId: string;
 }) {
   const [showSendPanel, setShowSendPanel] = useState(false);
   const [sending, setSending] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
 
   const gd1 = useMemo(() => ({
-    dangKy:       topics.filter(t => t.stage === "init" && t.intakeStatus !== "revision_needed").length,
+    dangKy:       topics.filter(t => !t.intakeStatus || t.intakeStatus === "awaiting").length,
+    daTimNhan:    topics.filter(t => t.intakeStatus === "passed").length,
     tiepNhan:     topics.filter(t => t.stage === "proposal" && (t.currentStep === "p_intake" || t.currentStep === "p_compile")).length,
     dangThamDinh: topics.filter(t => t.stage === "proposal" && (t.currentStep === "p_review" || t.currentStep === "p_council")).length,
     chinhSua:     topics.filter(t => t.intakeStatus === "revision_needed").length,
-    trienKhai:    topics.filter(t => t.stage === "proposal" && (t.currentStep === "p_assign" || t.currentStep === "p_ethics" || t.currentStep === "p_agree")).length,
+    trienKhai:    topics.filter(t =>
+      (t.stage === "proposal" && (t.currentStep === "p_assign" || t.currentStep === "p_ethics" || t.currentStep === "p_agree")) ||
+      t.stage === "executing"
+    ).length,
   }), [topics]);
+
+  // Accepted topics with no task link — need classification warning
+  const noTaskAccepted = useMemo(() =>
+    topics.filter(t => t.intakeStatus === "passed" && !t.taskId),
+  [topics]);
+
+  // Intake-pending topics with no task link (shown in header)
+  const waitingIntake = useMemo(() =>
+    topics.filter(t => !t.taskId && (!t.intakeStatus || t.intakeStatus === "awaiting")).length,
+  [topics]);
+
+  // Topics classified with a taskId — funnel stats
+  const linked = useMemo(() => topics.filter(t => !!t.taskId), [topics]);
+
+  const lgd1 = useMemo(() => ({
+    dangKy:       linked.length,
+    daTimNhan:    linked.filter(t => t.intakeStatus === "passed").length,
+    dangThamDinh: linked.filter(t => t.stage === "proposal" && (t.currentStep === "p_review" || t.currentStep === "p_council")).length,
+    chinhSua:     linked.filter(t => t.intakeStatus === "revision_needed").length,
+    trienKhai:    linked.filter(t =>
+      (t.stage === "proposal" && (t.currentStep === "p_assign" || t.currentStep === "p_ethics" || t.currentStep === "p_agree")) ||
+      t.stage === "executing"
+    ).length,
+  }), [linked]);
+
+  const lgd2 = useMemo(() => ({
+    deNghiTD:     linked.filter(t => ["recognition", "completed"].includes(t.stage)).length,
+    tiepNhan:     linked.filter(t =>
+      t.stage === "recognition" &&
+      (t.steps ?? []).find(s => s.key === "r_intake")?.status === "passed" &&
+      (t.steps ?? []).find(s => s.key === "r_review")?.status === "pending"
+    ).length,
+    dangThamDinh: linked.filter(t => t.stage === "recognition" && ["r_review","r_council"].includes(t.currentStep)).length,
+    chinhSua:     0 as number,
+    congNhan:     linked.filter(t => t.stage === "completed" || (t.stage === "recognition" && t.currentStep === "r_recognize")).length,
+  }), [linked]);
 
   const gd2 = useMemo(() => ({
     deNghiTD:     topics.filter(t => t.stage === "recognition" && t.currentStep === "r_intake").length,
@@ -260,10 +302,12 @@ function ResearchWidget({
     return result;
   }, [task, users, currentUserId]);
 
-  const regUrl = `/research?taskId=${taskId}&create=1`;
+  // Public form URL — no login required, taskId + taskName pre-filled
+  const publicRegUrl = `/public/register?taskId=${taskId}&taskName=${encodeURIComponent(task.name)}`;
+  const isMainPerformer = currentUserId === task.mainPerformerId;
 
   const handleCopy = async () => {
-    const full = typeof window !== "undefined" ? `${window.location.origin}${regUrl}` : regUrl;
+    const full = typeof window !== "undefined" ? `${window.location.origin}${publicRegUrl}` : publicRegUrl;
     await navigator.clipboard.writeText(full).catch(() => {});
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
@@ -273,13 +317,14 @@ function ResearchWidget({
     if (participants.length === 0) return;
     setSending(true);
     try {
+      const internalRegUrl = `/research?create=1&taskId=${taskId}`;
       await Promise.all(participants.map(p =>
         addNotification({
           userId: p.id,
           type: "task_assigned",
           title: `Đăng ký đề tài NCKH — ${task.name}`,
-          body: "Bạn được mời đăng ký đề tài NCKH cho nhiệm vụ này. Nhấn để mở form đăng ký.",
-          link: regUrl,
+          body: "Bạn được mời đăng ký đề tài NCKH cho nhiệm vụ này. Nhấn để mở form đăng ký trong hệ thống.",
+          link: internalRegUrl,
           read: false,
           priority: "normal",
           taskId,
@@ -299,8 +344,11 @@ function ResearchWidget({
     <div className="bg-white dark:bg-slate-800 rounded-2xl border border-violet-200 dark:border-violet-800 shadow-sm overflow-hidden">
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-3.5 border-b border-violet-100 dark:border-violet-800 bg-violet-50/60 dark:bg-violet-900/10">
-        <div className="flex items-center gap-2">
-          <Microscope className="w-4 h-4 text-violet-500" />
+        <button
+          onClick={() => setCollapsed(v => !v)}
+          className="flex items-center gap-2 text-left flex-1 min-w-0"
+        >
+          <Microscope className="w-4 h-4 text-violet-500 shrink-0" />
           <span className="text-sm font-semibold text-violet-700 dark:text-violet-300">
             Đề tài NCKH liên kết
           </span>
@@ -309,9 +357,15 @@ function ResearchWidget({
               {topics.length}
             </span>
           )}
-        </div>
-        <div className="flex items-center gap-2">
-          {canManage && (
+          {waitingIntake > 0 && (
+            <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-700">
+              {waitingIntake} chờ tiếp nhận
+            </span>
+          )}
+          <ChevronDown className={cn("w-3.5 h-3.5 text-violet-400 shrink-0 transition-transform", collapsed && "-rotate-90")} />
+        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          {(canManage || isMainPerformer) && !collapsed && (
             <button
               onClick={() => setShowSendPanel(v => !v)}
               className={cn(
@@ -320,14 +374,14 @@ function ResearchWidget({
                   ? "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300"
                   : "text-slate-500 hover:text-violet-600 hover:bg-violet-50 dark:hover:bg-violet-900/20",
               )}
-              title="Gửi link đăng ký đề tài cho người tham gia"
+              title="Gửi link đăng ký đề tài (không cần đăng nhập)"
             >
               <Bell className="w-3.5 h-3.5" />
               Gửi link
             </button>
           )}
           <a
-            href={`/research?taskId=${taskId}`}
+            href="/research"
             className="flex items-center gap-1 text-xs text-violet-600 hover:text-violet-800 dark:text-violet-400 font-medium transition"
           >
             {topics.length > 0 ? "Xem & quản lý" : "Mở danh sách"} <ChevronRight className="w-3.5 h-3.5" />
@@ -335,31 +389,41 @@ function ResearchWidget({
         </div>
       </div>
 
+      {/* Collapsible body */}
+      {!collapsed && (<>
+
       {/* Send-link panel */}
       {showSendPanel && (
-        <div className="px-5 py-4 border-b border-violet-100 dark:border-violet-800 bg-violet-50/40 dark:bg-violet-900/5 space-y-3">
-          <p className="text-xs font-medium text-slate-600 dark:text-slate-300">
-            Link đăng ký đề tài cho nhiệm vụ này:
-          </p>
-          {/* Link row */}
-          <div className="flex items-center gap-2">
-            <code className="flex-1 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-1.5 truncate text-slate-600 dark:text-slate-300">
-              {typeof window !== "undefined" ? `${window.location.origin}${regUrl}` : regUrl}
-            </code>
-            <button
-              onClick={handleCopy}
-              className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition shrink-0"
-            >
-              {copied ? <Check className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5" />}
-              {copied ? "Đã sao chép" : "Sao chép"}
-            </button>
+        <div className="px-5 py-4 border-b border-violet-100 dark:border-violet-800 bg-violet-50/40 dark:bg-violet-900/5 space-y-4">
+          {/* External link — for Zalo / email sharing to people without accounts */}
+          <div className="space-y-1.5">
+            <p className="text-xs font-medium text-slate-600 dark:text-slate-300">
+              Link bên ngoài — dùng để gửi qua Zalo / email cho người <span className="text-slate-500">chưa có tài khoản</span>:
+            </p>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-1.5 truncate text-slate-600 dark:text-slate-300">
+                {typeof window !== "undefined" ? `${window.location.origin}${publicRegUrl}` : publicRegUrl}
+              </code>
+              <button
+                onClick={handleCopy}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition shrink-0"
+              >
+                {copied ? <Check className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5" />}
+                {copied ? "Đã sao chép" : "Sao chép"}
+              </button>
+            </div>
           </div>
 
-          {/* Participant list + send button */}
+          <div className="border-t border-violet-100 dark:border-violet-800" />
+
+          {/* In-app notification — links to internal modal (same for all roles) */}
           {participants.length > 0 ? (
             <div className="space-y-2">
+              <p className="text-xs font-medium text-slate-600 dark:text-slate-300">
+                Thông báo in-app — mở form đăng ký trong hệ thống (giống nhau với mọi vai trò):
+              </p>
               <p className="text-xs text-slate-500">
-                Gửi thông báo in-app đến {participants.length} người tham gia:
+                Gửi đến {participants.length} người tham gia:
                 <span className="font-medium text-slate-600 dark:text-slate-300 ml-1">
                   {participants.map(p => p.name).join(", ")}
                 </span>
@@ -379,68 +443,113 @@ function ResearchWidget({
         </div>
       )}
 
-      {/* Topics body */}
+      {/* Topics body — 2 groups */}
       {topics.length === 0 ? (
         <div className="px-5 py-4 text-sm text-slate-400">
-          {canManage
-            ? <>Chưa có đề tài nào liên kết. <a href={`/research?taskId=${taskId}&create=1`} className="text-violet-600 hover:underline font-medium">Tạo đề tài đầu tiên →</a></>
+          {(canManage || canCreate)
+            ? <>Chưa có đề tài nào liên kết.{" "}<a href={`/research?taskId=${taskId}&create=1`} className="text-violet-600 hover:underline font-medium">Đăng ký đề tài →</a></>
             : "Chưa có đề tài NCKH nào được liên kết với nhiệm vụ này."
           }
         </div>
       ) : (
         <div className="px-5 py-3.5 space-y-3">
-          {/* Giai đoạn 1 */}
+          {/* Group 1: Đã phân loại TaskID — funnel stats */}
           <div>
-            <p className="text-[11px] font-semibold text-blue-600 dark:text-blue-400 uppercase tracking-wide mb-1.5 flex items-center gap-2">
-              Giai đoạn 1 — Thẩm định đề cương
-              <span className="px-1.5 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-300 font-bold normal-case tracking-normal">
-                {Object.values(gd1).reduce((a, b) => a + b, 0)}
+            <p className="text-[10px] font-bold text-violet-600 dark:text-violet-400 uppercase tracking-wide mb-2 flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-violet-500 shrink-0" />
+              Đã phân loại TaskID
+              <span className="px-1.5 py-0.5 rounded-full bg-violet-100 dark:bg-violet-900/40 text-violet-600 dark:text-violet-300 font-bold normal-case tracking-normal text-[10px]">
+                {linked.length}
               </span>
             </p>
-            <div className="flex flex-wrap gap-x-4 gap-y-1">
-              {([
-                ["Đăng ký",        gd1.dangKy],
-                ["Tiếp nhận",      gd1.tiepNhan],
-                ["Đang thẩm định", gd1.dangThamDinh],
-                ["Chỉnh sửa",      gd1.chinhSua],
-                ["Triển khai",     gd1.trienKhai],
-              ] as [string, number][]).map(([label, count]) => (
-                <span key={label} className="text-xs text-slate-600 dark:text-slate-400">
-                  {label}:{" "}
-                  <span className={cn("font-semibold", count > 0 ? "text-blue-600 dark:text-blue-400" : "text-slate-400 dark:text-slate-500")}>
-                    {count}
-                  </span>
-                </span>
-              ))}
-            </div>
+            {linked.length === 0 ? (
+              <p className="text-xs text-slate-400 italic pl-3">Chưa có đề tài nào được phân loại.</p>
+            ) : (
+              <div className="pl-3 space-y-2.5">
+                {/* GĐ1 funnel */}
+                <div>
+                  <p className="text-[10px] font-semibold text-blue-600 dark:text-blue-400 uppercase tracking-wide mb-1.5">
+                    Giai đoạn 1 — Thẩm định đề cương
+                  </p>
+                  <div className="space-y-1">
+                    {([
+                      { label: "Đăng ký",         val: lgd1.dangKy,       denom: null,             denomLabel: "" },
+                      { label: "Tiếp nhận",        val: lgd1.daTimNhan,    denom: lgd1.dangKy,      denomLabel: "đăng ký" },
+                      { label: "Đang thẩm định",   val: lgd1.dangThamDinh, denom: lgd1.daTimNhan,   denomLabel: "tiếp nhận" },
+                      { label: "Chỉnh sửa",        val: lgd1.chinhSua,     denom: lgd1.dangKy,      denomLabel: "đăng ký" },
+                      { label: "Triển khai",       val: lgd1.trienKhai,    denom: lgd1.daTimNhan,   denomLabel: "tiếp nhận" },
+                    ]).map(({ label, val, denom, denomLabel }) => (
+                      <div key={label} className="flex items-baseline gap-1 text-xs">
+                        <span className="text-slate-500 dark:text-slate-400 w-28 shrink-0">{label}:</span>
+                        <span className={cn("font-semibold tabular-nums", val > 0 ? "text-blue-600 dark:text-blue-400" : "text-slate-400")}>
+                          {val}
+                        </span>
+                        {denom !== null && (
+                          <span className="text-slate-400 tabular-nums">
+                            /{denom}
+                            <span className="text-[10px] ml-1">({denomLabel})</span>
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* GĐ2 funnel */}
+                <div>
+                  <p className="text-[10px] font-semibold text-violet-600 dark:text-violet-400 uppercase tracking-wide mb-1.5">
+                    Giai đoạn 2 — Công nhận
+                  </p>
+                  <div className="space-y-1">
+                    {([
+                      { label: "Đề nghị thẩm định", val: lgd2.deNghiTD,     denom: null,              denomLabel: "" },
+                      { label: "Tiếp nhận",          val: lgd2.tiepNhan,     denom: lgd2.deNghiTD,     denomLabel: "đề nghị TD" },
+                      { label: "Đang thẩm định",     val: lgd2.dangThamDinh, denom: lgd2.tiepNhan,     denomLabel: "tiếp nhận" },
+                      { label: "Chỉnh sửa",          val: lgd2.chinhSua,     denom: lgd2.deNghiTD,     denomLabel: "đề nghị TD" },
+                      { label: "Công nhận",          val: lgd2.congNhan,     denom: lgd2.tiepNhan,     denomLabel: "tiếp nhận" },
+                    ]).map(({ label, val, denom, denomLabel }) => (
+                      <div key={label} className="flex items-baseline gap-1 text-xs">
+                        <span className="text-slate-500 dark:text-slate-400 w-28 shrink-0">{label}:</span>
+                        <span className={cn("font-semibold tabular-nums", val > 0 ? "text-violet-600 dark:text-violet-400" : "text-slate-400")}>
+                          {val}
+                        </span>
+                        {denom !== null && (
+                          <span className="text-slate-400 tabular-nums">
+                            /{denom}
+                            <span className="text-[10px] ml-1">({denomLabel})</span>
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
-          {/* Giai đoạn 2 */}
-          <div>
-            <p className="text-[11px] font-semibold text-violet-600 dark:text-violet-400 uppercase tracking-wide mb-1.5 flex items-center gap-2">
-              Giai đoạn 2 — Công nhận
-              <span className="px-1.5 py-0.5 rounded-full bg-violet-100 dark:bg-violet-900/40 text-violet-600 dark:text-violet-300 font-bold normal-case tracking-normal">
-                {Object.values(gd2).reduce((a, b) => a + b, 0)}
-              </span>
-            </p>
-            <div className="flex flex-wrap gap-x-4 gap-y-1">
-              {([
-                ["Đề nghị thẩm định", gd2.deNghiTD],
-                ["Tiếp nhận",         gd2.tiepNhan],
-                ["Đang thẩm định",    gd2.dangThamDinh],
-                ["Chỉnh sửa",         gd2.chinhSua],
-                ["Công nhận",         gd2.congNhan],
-              ] as [string, number][]).map(([label, count]) => (
-                <span key={label} className="text-xs text-slate-600 dark:text-slate-400">
-                  {label}:{" "}
-                  <span className={cn("font-semibold", count > 0 ? "text-violet-600 dark:text-violet-400" : "text-slate-400 dark:text-slate-500")}>
-                    {count}
-                  </span>
-                </span>
-              ))}
-            </div>
-          </div>
+
+          {/* Group 2: No task — count + warning only, details in B02 step */}
+          {(() => {
+            const noTaskCount = topics.filter(t => !t.taskId).length;
+            const noTaskWaiting = topics.filter(t => !t.taskId && (!t.intakeStatus || t.intakeStatus === "awaiting")).length;
+            return noTaskCount > 0 ? (
+              <div className="flex items-start gap-2.5 px-3 py-2.5 bg-amber-50 dark:bg-amber-900/15 border border-amber-200 dark:border-amber-800 rounded-xl">
+                <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                <div className="text-xs text-amber-700 dark:text-amber-400 space-y-0.5">
+                  <p className="font-semibold">
+                    {noTaskCount} đề cương chưa phân loại nhiệm vụ (no task)
+                    {noTaskWaiting > 0 && <span className="ml-1 font-normal">— {noTaskWaiting} chờ tiếp nhận</span>}
+                  </p>
+                  {noTaskAccepted.length > 0 && (
+                    <p className="text-amber-600 dark:text-amber-400">{noTaskAccepted.length} đã tiếp nhận nhưng chưa gán vào nhiệm vụ — xử lý tại bước B02</p>
+                  )}
+                </div>
+              </div>
+            ) : null;
+          })()}
         </div>
       )}
+
+      </>)}
     </div>
   );
 }
@@ -514,9 +623,9 @@ export default function TaskDetailsPage() {
     return unsub;
   }, [id]);
 
-  // Load research topics linked to this task
+  // Load research topics: single combined call (linked + intake-pending no-task)
   useEffect(() => {
-    getResearchTopics(id).then(setResearchTopics).catch(() => {});
+    getResearchTopics(id, true).then(setResearchTopics).catch(() => {});
   }, [id]);
 
   // Access guard — redirect if user is not a participant
@@ -645,7 +754,7 @@ export default function TaskDetailsPage() {
         status: "pending",
         changedFields: pendingChangedFields,
       };
-      await updateTask(id, { ...pendingEdits, status: "review", pendingChangeRequest: changeReq });
+      await updateTask(id, { ...pendingEdits, status: "review", changeRequests: [...(task.changeRequests ?? []), changeReq] });
       const managers = users.filter((u) => ["teamLead", "director", "hrAdmin"].includes(u.role) && u.id !== currentUser.id);
       await Promise.all(managers.map((u) =>
         addNotification({
@@ -672,11 +781,15 @@ export default function TaskDetailsPage() {
   }
 
   async function handleApproveChangeRequest(approved: boolean, comment?: string) {
-    if (!currentUser || !task?.pendingChangeRequest) return;
+    const pendingCRForApproval = task?.changeRequests?.find(cr => cr.status === "pending");
+    if (!currentUser || !task || !pendingCRForApproval) return;
     setApprovingChange(true);
-    const cr = task.pendingChangeRequest;
+    const cr = pendingCRForApproval;
     try {
-      const updates: Partial<Task> = { status: cr.previousStatus, pendingChangeRequest: null };
+      const resolvedCRs = (task.changeRequests ?? []).map(c =>
+        c === cr ? { ...c, status: approved ? "approved" as const : "rejected" as const } : c
+      );
+      const updates: Partial<Task> = { status: cr.previousStatus, changeRequests: resolvedCRs };
       if (!approved && cr.changedFields) {
         if (cr.changedFields.deadlineBase) updates.deadlineBase = cr.changedFields.deadlineBase.before;
         if (cr.changedFields.mainPerformerId) updates.mainPerformerId = cr.changedFields.mainPerformerId.before;
@@ -728,7 +841,7 @@ export default function TaskDetailsPage() {
         previousStatus: task.status,
         status: "pending",
       };
-      await updateTask(id, { status: "review", pendingChangeRequest: changeReq });
+      await updateTask(id, { status: "review", changeRequests: [...(task.changeRequests ?? []), changeReq] });
       const managers = users.filter((u) => ["teamLead", "director", "hrAdmin"].includes(u.role) && u.id !== currentUser.id);
       await Promise.all(managers.map((u) =>
         addNotification({
@@ -841,11 +954,18 @@ export default function TaskDetailsPage() {
       setLocalProgress(avg);
     }
 
-    // When a pending change request is submitted, await save then notify managers
-    if (updates.pendingChangeRequest?.status === "pending" && currentUser && task) {
+    // When a new pending change request is submitted, await save then notify managers
+    const newlyAddedCR = (() => {
+      if (!updates.changeRequests || !currentUser || !task) return null;
+      const existing = task.changeRequests ?? [];
+      return updates.changeRequests.find(cr =>
+        cr.status === "pending" && !existing.some(e => e.requestedAt === cr.requestedAt)
+      ) ?? null;
+    })();
+    if (newlyAddedCR && currentUser && task) {
       try {
         await updateTask(id, { ...updates, updatedAt: new Date().toISOString() });
-        const cr = updates.pendingChangeRequest;
+        const cr = newlyAddedCR;
         const managers = users.filter(
           (u) => ["teamLead", "director", "hrAdmin"].includes(u.role) && u.isActive && u.id !== currentUser.id
         );
@@ -1059,6 +1179,7 @@ export default function TaskDetailsPage() {
 
   const performer = users.find((u) => u.id === task.mainPerformerId);
   const canApprove = !!(currentUser && hasPermission(currentUser.role, "task:approve"));
+  const pendingCR = task.changeRequests?.find(cr => cr.status === "pending") ?? null;
 
   // Progress color helper — 3 levels
   const progressTextCls = (p: number) =>
@@ -1355,7 +1476,7 @@ export default function TaskDetailsPage() {
           {/* Actions */}
           <div className="flex items-center gap-2 shrink-0 flex-wrap">
             {/* Initial approval */}
-            {canApprove && !task.approved && !task.pendingChangeRequest && (
+            {canApprove && !task.approved && !pendingCR && (
               <button
                 onClick={handleApprove}
                 className="flex items-center gap-1.5 px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold rounded-xl transition"
@@ -1364,7 +1485,7 @@ export default function TaskDetailsPage() {
               </button>
             )}
             {/* Change request approval — visible to managers */}
-            {canApprove && task.pendingChangeRequest?.status === "pending" && (
+            {canApprove && pendingCR?.status === "pending" && (
               <>
                 <button
                   onClick={() => handleApproveChangeRequest(true)}
@@ -1384,7 +1505,7 @@ export default function TaskDetailsPage() {
               </>
             )}
             {/* Issue escalation — visible to mainPerformer when task is active */}
-            {isMainPerformer && task.approved && !task.pendingChangeRequest && ["todo", "in_progress"].includes(task.status) && !isEditing && (
+            {isMainPerformer && task.approved && !pendingCR && ["todo", "in_progress"].includes(task.status) && !isEditing && (
               <button
                 onClick={() => setShowIssueModal(true)}
                 className="flex items-center gap-1.5 px-3 py-2 border border-orange-200 text-orange-600 hover:bg-orange-50 text-sm font-medium rounded-xl transition"
@@ -1510,40 +1631,40 @@ export default function TaskDetailsPage() {
         </div>
 
         {/* Pending change request banner */}
-        {task.pendingChangeRequest?.status === "pending" && (
+        {pendingCR && (
           <div className="mt-4 p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl space-y-2">
             <div className="flex items-center gap-2">
               <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
               <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">
-                {task.pendingChangeRequest.type === "deadline_change" && "Yêu cầu thay đổi thời hạn"}
-                {task.pendingChangeRequest.type === "performer_change" && "Yêu cầu thay đổi người thực hiện"}
-                {task.pendingChangeRequest.type === "issue_raised" && "Vấn đề phát sinh cần xem xét"}
-                {task.pendingChangeRequest.type === "subworkflow_change" && `Đề xuất sửa quy trình con "${task.pendingChangeRequest.changedFields?.subWorkflowChange?.stepName ?? ""}"`}
+                {pendingCR.type === "deadline_change" && "Yêu cầu thay đổi thời hạn"}
+                {pendingCR.type === "performer_change" && "Yêu cầu thay đổi người thực hiện"}
+                {pendingCR.type === "issue_raised" && "Vấn đề phát sinh cần xem xét"}
+                {pendingCR.type === "subworkflow_change" && `Đề xuất sửa quy trình con "${pendingCR.changedFields?.subWorkflowChange?.stepName ?? ""}"`}
                 {" — chờ phê duyệt"}
               </p>
             </div>
             <p className="text-xs text-amber-700 dark:text-amber-400 ml-6">
-              <span className="font-medium">{task.pendingChangeRequest.requestedByName}</span>: "{task.pendingChangeRequest.reason}"
+              <span className="font-medium">{pendingCR.requestedByName}</span>: "{pendingCR.reason}"
             </p>
-            {task.pendingChangeRequest.changedFields?.deadlineBase && (
+            {pendingCR.changedFields?.deadlineBase && (
               <p className="text-xs text-slate-600 dark:text-slate-400 ml-6">
-                Hạn: <span className="line-through text-red-500">{formatDate(task.pendingChangeRequest.changedFields.deadlineBase.before)}</span>
-                {" → "}<span className="text-green-600 font-medium">{formatDate(task.pendingChangeRequest.changedFields.deadlineBase.after)}</span>
+                Hạn: <span className="line-through text-red-500">{formatDate(pendingCR.changedFields.deadlineBase.before)}</span>
+                {" → "}<span className="text-green-600 font-medium">{formatDate(pendingCR.changedFields.deadlineBase.after)}</span>
               </p>
             )}
-            {task.pendingChangeRequest.changedFields?.mainPerformerId && (
+            {pendingCR.changedFields?.mainPerformerId && (
               <p className="text-xs text-slate-600 dark:text-slate-400 ml-6">
-                Người thực hiện: <span className="line-through text-red-500">{users.find(u => u.id === task.pendingChangeRequest?.changedFields?.mainPerformerId?.before)?.name ?? "—"}</span>
-                {" → "}<span className="text-green-600 font-medium">{users.find(u => u.id === task.pendingChangeRequest?.changedFields?.mainPerformerId?.after)?.name ?? "—"}</span>
+                Người thực hiện: <span className="line-through text-red-500">{users.find(u => u.id === pendingCR.changedFields?.mainPerformerId?.before)?.name ?? "—"}</span>
+                {" → "}<span className="text-green-600 font-medium">{users.find(u => u.id === pendingCR.changedFields?.mainPerformerId?.after)?.name ?? "—"}</span>
               </p>
             )}
-            {task.pendingChangeRequest.changedFields?.subWorkflowChange && (
+            {pendingCR.changedFields?.subWorkflowChange && (
               <p className="text-xs text-slate-600 dark:text-slate-400 ml-6">
-                Bước <span className="font-medium">"{task.pendingChangeRequest.changedFields.subWorkflowChange.stepName}"</span>
-                {" — "}{task.pendingChangeRequest.changedFields.subWorkflowChange.proposedChildSteps.length} bước con mới
+                Bước <span className="font-medium">"{pendingCR.changedFields.subWorkflowChange.stepName}"</span>
+                {" — "}{pendingCR.changedFields.subWorkflowChange.proposedChildSteps.length} bước con mới
               </p>
             )}
-            <p className="text-[10px] text-amber-500 ml-6">{formatRelativeTime(task.pendingChangeRequest.requestedAt)}</p>
+            <p className="text-[10px] text-amber-500 ml-6">{formatRelativeTime(pendingCR.requestedAt)}</p>
           </div>
         )}
 
@@ -1736,13 +1857,14 @@ export default function TaskDetailsPage() {
         </div>
       )}
 
-      {/* Research topics widget — shown when this task has linked NCKH topics */}
-      {task && (researchTopics.length > 0 || (currentUser && hasPermission(currentUser.role, "research:manage"))) && (
+      {/* Research topics widget — shown for anyone with research:create or research:manage */}
+      {task && (researchTopics.length > 0 || (currentUser && (hasPermission(currentUser.role, "research:manage") || hasPermission(currentUser.role, "research:create")))) && (
         <ResearchWidget
           taskId={id}
           topics={researchTopics}
           task={task}
           canManage={!!(currentUser && hasPermission(currentUser.role, "research:manage"))}
+          canCreate={!!(currentUser && hasPermission(currentUser.role, "research:create"))}
           users={users}
           currentUserId={currentUser?.id ?? ""}
         />

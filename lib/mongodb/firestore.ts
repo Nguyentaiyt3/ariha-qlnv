@@ -46,6 +46,32 @@ export async function saveUser(user: Partial<User> & { id: string }): Promise<vo
   await UserModel.findByIdAndUpdate(id, { $set: { ...updateData, updatedAt: now() } }, { upsert: false });
 }
 
+// ─── POSITION CATALOG ────────────────────────────────────────────
+
+export async function getPositions(): Promise<import("@/types").PositionDef[]> {
+  await connectDB();
+  const config = await AppConfigModel.findById("positionCatalog").lean();
+  return ((config?.data as Record<string, unknown>)?.positions as import("@/types").PositionDef[]) ?? [];
+}
+
+export async function savePositions(positions: import("@/types").PositionDef[]): Promise<void> {
+  await connectDB();
+  await AppConfigModel.findByIdAndUpdate(
+    "positionCatalog",
+    { data: { positions }, updatedAt: new Date().toISOString() },
+    { upsert: true },
+  );
+}
+
+export async function bulkApproveUsers(userIds: string[], role: string): Promise<number> {
+  await connectDB();
+  const result = await UserModel.updateMany(
+    { _id: { $in: userIds } },
+    { $set: { role, updatedAt: now() } },
+  );
+  return result.modifiedCount;
+}
+
 export async function deleteUser(userId: string): Promise<void> {
   await connectDB();
   await UserModel.findByIdAndUpdate(userId, { $set: { isActive: false, updatedAt: now() } });
@@ -379,23 +405,80 @@ export async function deleteUnitPlan(planId: string): Promise<void> {
 
 // ─── NGHIÊN CỨU KHOA HỌC ──────────────────────────────────────
 
-export async function getResearchTopics(taskId?: string, userId?: string): Promise<ResearchTopic[]> {
+export async function getResearchTopics(
+  taskId?: string,
+  userId?: string,
+  forIntake?: boolean,
+  userEmail?: string,
+): Promise<ResearchTopic[]> {
   await connectDB();
   const filter: Record<string, unknown> = {};
-  if (taskId) filter.taskId = taskId;
-  if (userId) {
-    // Return only topics where the user is PI, member, or creator
+
+  if (taskId && forIntake) {
+    // Combined: topics linked to this task OR intake-pending topics with no task.
+    // Used by the task detail page to load both in one round-trip.
     filter.$or = [
+      { taskId },
+      {
+        $and: [
+          { $or: [{ taskId: { $exists: false } }, { taskId: null }] },
+          { $or: [{ intakeStatus: { $exists: false } }, { intakeStatus: "awaiting" }] },
+        ],
+      },
+    ];
+  } else if (forIntake) {
+    // All topics awaiting intake review — whether or not they're linked to a task.
+    filter.$or = [
+      { intakeStatus: { $exists: false } },
+      { intakeStatus: "awaiting" },
+    ];
+  } else if (taskId) {
+    filter.taskId = taskId;
+  }
+
+  if (userId) {
+    const userCondition: Record<string, unknown>[] = [
       { principalInvestigatorId: userId },
       { memberIds: userId },
       { createdBy: userId },
     ];
+    // Also surface public submissions whose submitterEmail matches this user.
+    // These will have been auto-claimed by claimPublicTopicsByEmail, but include
+    // as a fallback for topics that arrive in the same request before the claim runs.
+    if (userEmail) {
+      userCondition.push({ principalInvestigatorId: "public", submitterEmail: userEmail });
+    }
+    if (filter.$or) {
+      // Combine with existing $or via $and
+      const existing = filter.$or;
+      delete filter.$or;
+      filter.$and = [{ $or: existing }, { $or: userCondition }];
+    } else {
+      filter.$or = userCondition;
+    }
   }
+
   const topics = await ResearchTopicModel.find(filter).sort({ year: -1, createdAt: -1 }).lean();
   return topics.map((t: any) => {
     const { _id, ...rest } = t;
     return { id: _id as string, ...rest } as ResearchTopic;
   });
+}
+
+/** Permanently claim any public-form submissions whose submitterEmail matches this user. */
+export async function claimPublicTopicsByEmail(userId: string, email: string): Promise<number> {
+  await connectDB();
+  const result = await ResearchTopicModel.updateMany(
+    { principalInvestigatorId: "public", submitterEmail: email },
+    {
+      $set: {
+        principalInvestigatorId: userId,
+        createdBy: userId,
+        updatedAt: new Date().toISOString(),
+      },
+    },
+  );
+  return (result as any).modifiedCount ?? 0;
 }
 
 export async function getResearchTopic(id: string): Promise<ResearchTopic | null> {

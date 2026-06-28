@@ -22,6 +22,7 @@ import { calcPhaseDeadlines } from "@/lib/deadline-calc";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { hasPermission } from "@/lib/rbac/permissions";
+import { SearchableSelect } from "@/components/common/SearchableSelect";
 import type { Task, TaskPriority, TaskStatus, StakeholderRole, TaskResource, UnitPlan, PlanItem, Workflow } from "@/types";
 
 // Pending attachment — file held in memory until submit; links stored directly
@@ -132,6 +133,8 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
   });
   const [department, setDepartment] = useState(currentUser?.department ?? "");
   const [stakeholders, setStakeholders] = useState<{ userId: string; role: StakeholderRole }[]>([]);
+  const [stakeholderUserId, setStakeholderUserId] = useState("");
+  const [stakeholderRole, setStakeholderRole] = useState<StakeholderRole>("collaborator");
   const [kpiTarget, setKpiTarget] = useState(100);
   const [kpiUnit, setKpiUnit] = useState("điểm");
   const [tags, setTags] = useState("");
@@ -541,17 +544,13 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
                   <User className="inline w-4 h-4 mr-1" />
                   Người thực hiện chính <span className="text-red-500">*</span>
                 </label>
-                <select
+                <SearchableSelect
                   value={mainPerformerId}
-                  onChange={(e) => setMainPerformerId(e.target.value)}
-                  className="w-full px-3 py-2.5 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-slate-800 dark:text-white"
-                  required
-                >
-                  <option value="">Chọn nhân viên...</option>
-                  {activeUsers.map((u) => (
-                    <option key={u.id} value={u.id}>{u.name} ({u.department ?? "—"})</option>
-                  ))}
-                </select>
+                  onChange={setMainPerformerId}
+                  options={activeUsers.map((u) => ({ id: u.id, label: u.name, sub: u.department ?? undefined }))}
+                  placeholder="Chọn nhân viên..."
+                  emptyText="Không tìm thấy nhân viên"
+                />
               </div>
 
               {/* Priority */}
@@ -642,17 +641,19 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
                 Người liên quan
               </label>
               <div className="flex gap-2 mb-2">
+                <SearchableSelect
+                  value={stakeholderUserId}
+                  onChange={setStakeholderUserId}
+                  options={activeUsers
+                    .filter((u) => u.id !== mainPerformerId && !stakeholders.some((s) => s.userId === u.id))
+                    .map((u) => ({ id: u.id, label: u.name, sub: u.department ?? undefined }))}
+                  placeholder="Chọn người..."
+                  emptyText="Không tìm thấy"
+                  className="flex-1"
+                />
                 <select
-                  id="stakeholder-user"
-                  className="flex-1 px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-slate-800 dark:text-white"
-                >
-                  <option value="">Chọn người...</option>
-                  {activeUsers.filter(u => u.id !== mainPerformerId).map((u) => (
-                    <option key={u.id} value={u.id}>{u.name}</option>
-                  ))}
-                </select>
-                <select
-                  id="stakeholder-role"
+                  value={stakeholderRole}
+                  onChange={(e) => setStakeholderRole(e.target.value as StakeholderRole)}
                   className="px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-slate-800 dark:text-white"
                 >
                   <option value="collaborator">Hỗ trợ</option>
@@ -663,10 +664,9 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
                 <button
                   type="button"
                   onClick={() => {
-                    const userSel = document.getElementById("stakeholder-user") as HTMLSelectElement;
-                    const roleSel = document.getElementById("stakeholder-role") as HTMLSelectElement;
-                    addStakeholder(userSel.value, roleSel.value as StakeholderRole);
-                    userSel.value = "";
+                    if (!stakeholderUserId) return;
+                    addStakeholder(stakeholderUserId, stakeholderRole);
+                    setStakeholderUserId("");
                   }}
                   className="px-3 py-2 bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-600 dark:text-slate-300 rounded-xl transition"
                 >
@@ -950,18 +950,17 @@ function SortableStepRow({ node, index, deps, candidates, assigneeValue, onAssig
           Đầu vào từ: {deps.join(", ")}
         </p>
       )}
-      <select
-        value={assigneeValue}
-        onChange={(e) => onAssigneeChange(node.id, e.target.value)}
-        className="mt-1.5 ml-[1.625rem] w-[calc(100%-1.625rem)] px-2 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
-      >
-        <option value="">— Chưa gán (phân công sau) —</option>
-        {candidates.map((u) => (
-          <option key={u.id} value={u.id}>
-            {u.name}{u.department ? ` — ${u.department}` : ""}
-          </option>
-        ))}
-      </select>
+      <div className="mt-1.5 ml-[1.625rem] w-[calc(100%-1.625rem)]">
+        <SearchableSelect
+          value={assigneeValue}
+          onChange={(uid) => onAssigneeChange(node.id, uid)}
+          options={candidates.map((u) => ({ id: u.id, label: u.name, sub: u.department ?? undefined }))}
+          placeholder="— Chưa gán (phân công sau) —"
+          emptyText="Không tìm thấy"
+          listHeight="max-h-36"
+          compact
+        />
+      </div>
     </li>
   );
 }

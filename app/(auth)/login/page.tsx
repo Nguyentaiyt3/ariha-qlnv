@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Eye, EyeOff, Lock, Mail, Loader2, Building2, User, UserPlus, LogIn } from "lucide-react";
+import { Eye, EyeOff, Lock, Mail, Loader2, Building2, User, UserPlus, LogIn, ChevronDown, Search, Briefcase } from "lucide-react";
+import type { UnitDef } from "@/types";
 // MongoDB auth via API routes
 async function loginWithEmail(email: string, password: string) {
   const res = await fetch("/api/auth/login", {
@@ -21,12 +22,14 @@ async function loginWithEmail(email: string, password: string) {
 async function createUserAccount(
   email: string,
   password: string,
-  name: string
+  name: string,
+  department?: string,
+  position?: string,
 ) {
   const res = await fetch("/api/auth/register", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password, name }),
+    body: JSON.stringify({ email, password, name, department, position }),
   });
   if (!res.ok) {
     const data = await res.json();
@@ -66,6 +69,55 @@ export default function LoginPage() {
   const [name, setName] = useState("");
   const [confirmPwd, setConfirmPwd] = useState("");
   const [showConfirmPwd, setShowConfirmPwd] = useState(false);
+  const [department, setDepartment] = useState("");
+  const [position, setPosition] = useState("");
+
+  // Unit catalog (public — no auth needed)
+  const [units, setUnits] = useState<UnitDef[]>([]);
+  const [unitQuery, setUnitQuery] = useState("");
+  const [unitOpen, setUnitOpen] = useState(false);
+  const unitRef = useRef<HTMLDivElement>(null);
+
+  // Position catalog (public)
+  const [positionOptions, setPositionOptions] = useState<string[]>([]);
+  const [posQuery, setPosQuery] = useState("");
+  const [posOpen, setPosOpen] = useState(false);
+  const posRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    fetch("/api/public/units")
+      .then(r => r.json())
+      .then(d => { if (Array.isArray(d.catalog)) setUnits(d.catalog); })
+      .catch(() => {});
+    fetch("/api/public/positions")
+      .then(r => r.json())
+      .then(d => {
+        if (Array.isArray(d.positions)) {
+          setPositionOptions([...new Set((d.positions as Array<{ title: string }>).map(p => p.title))]);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    function close(e: MouseEvent) {
+      if (unitRef.current && !unitRef.current.contains(e.target as Node)) setUnitOpen(false);
+      if (posRef.current && !posRef.current.contains(e.target as Node)) setPosOpen(false);
+    }
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, []);
+
+  const filteredPositions = posQuery.trim()
+    ? positionOptions.filter(p => p.toLowerCase().includes(posQuery.toLowerCase()))
+    : positionOptions;
+
+  const filteredUnits = unitQuery.trim()
+    ? units.filter(u =>
+        u.name.toLowerCase().includes(unitQuery.toLowerCase()) ||
+        u.abbr?.toLowerCase().includes(unitQuery.toLowerCase()),
+      )
+    : units;
 
   function switchMode(next: Mode) {
     setMode(next);
@@ -75,6 +127,10 @@ export default function LoginPage() {
     setConfirmPwd("");
     setShowPwd(false);
     setShowConfirmPwd(false);
+    setDepartment("");
+    setPosition("");
+    setUnitQuery("");
+    setPosQuery("");
   }
 
   async function handleLogin(e: React.FormEvent) {
@@ -101,7 +157,11 @@ export default function LoginPage() {
     if (password !== confirmPwd) { toast.error("Mật khẩu xác nhận không khớp."); return; }
     setLoading(true);
     try {
-      const user = await createUserAccount(email, password, name.trim());
+      const user = await createUserAccount(
+        email, password, name.trim(),
+        department.trim() || undefined,
+        position.trim() || undefined,
+      );
       setCurrentUser(user);
       toast.success("Đăng ký thành công! Tài khoản của bạn đang chờ Admin phân quyền.");
       router.push("/dashboard");
@@ -225,6 +285,173 @@ export default function LoginPage() {
                         className="w-full pl-10 pr-4 py-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition text-sm"
                         required
                       />
+                    </div>
+                  </div>
+
+                  {/* Unit — searchable dropdown */}
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-slate-300">
+                      Đơn vị / Phòng ban
+                      <span className="text-slate-500 font-normal ml-1">(tùy chọn)</span>
+                    </label>
+                    <div ref={unitRef} className="relative">
+                      <button
+                        type="button"
+                        onClick={() => { setUnitOpen(o => !o); }}
+                        className={cn(
+                          "w-full flex items-center gap-2 pl-10 pr-3 py-3 bg-white/10 border border-white/20 rounded-xl text-sm transition text-left",
+                          "focus:outline-none focus:ring-2 focus:ring-blue-500",
+                          unitOpen && "ring-2 ring-blue-500 border-blue-500/50",
+                          department ? "text-white" : "text-slate-500",
+                        )}
+                      >
+                        <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                        <span className="flex-1 truncate">{department || "Chọn đơn vị..."}</span>
+                        {department && (
+                          <span
+                            role="button"
+                            onClick={e => { e.stopPropagation(); setDepartment(""); setUnitQuery(""); }}
+                            className="text-slate-400 hover:text-slate-200 px-1 cursor-pointer"
+                          >✕</span>
+                        )}
+                        <ChevronDown className={cn("w-4 h-4 text-slate-400 shrink-0 transition-transform", unitOpen && "rotate-180")} />
+                      </button>
+
+                      {unitOpen && (
+                        <div className="absolute z-50 left-0 right-0 top-full mt-1 bg-slate-900 border border-white/20 rounded-xl shadow-2xl overflow-hidden">
+                          <div className="p-2 border-b border-white/10">
+                            <div className="flex items-center gap-2 px-2.5 py-1.5 bg-white/10 rounded-lg">
+                              <Search className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                              <input
+                                autoFocus
+                                value={unitQuery}
+                                onChange={e => setUnitQuery(e.target.value)}
+                                placeholder="Tìm đơn vị..."
+                                className="flex-1 bg-transparent text-sm outline-none text-white placeholder-slate-500"
+                              />
+                            </div>
+                          </div>
+                          <div className="max-h-44 overflow-y-auto">
+                            {filteredUnits.length === 0 ? (
+                              <p className="text-xs text-slate-500 text-center py-4">
+                                {units.length === 0 ? "Chưa có đơn vị nào trong danh mục" : "Không tìm thấy"}
+                              </p>
+                            ) : (
+                              filteredUnits.map(u => (
+                                <button
+                                  key={u.id}
+                                  type="button"
+                                  onClick={() => { setDepartment(u.name); setUnitQuery(""); setUnitOpen(false); }}
+                                  className={cn(
+                                    "w-full flex items-start gap-2 px-3 py-2 text-left transition hover:bg-white/10",
+                                    department === u.name && "bg-blue-900/40",
+                                  )}
+                                >
+                                  <span className="flex-1 min-w-0">
+                                    <span className={cn(
+                                      "block text-sm truncate",
+                                      u.unitLevel === 3 && "pl-3 border-l border-slate-600",
+                                      department === u.name ? "text-blue-300 font-medium" : "text-white",
+                                    )}>
+                                      {u.name}
+                                    </span>
+                                    {u.abbr && (
+                                      <span className="block text-xs text-slate-500 truncate">{u.abbr}</span>
+                                    )}
+                                  </span>
+                                </button>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Position — searchable dropdown */}
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-slate-300">
+                      Chức vụ
+                      <span className="text-slate-500 font-normal ml-1">(tùy chọn)</span>
+                    </label>
+                    <div ref={posRef} className="relative">
+                      <button
+                        type="button"
+                        onClick={() => setPosOpen(o => !o)}
+                        className={cn(
+                          "w-full flex items-center gap-2 pl-10 pr-3 py-3 bg-white/10 border border-white/20 rounded-xl text-sm transition text-left",
+                          "focus:outline-none focus:ring-2 focus:ring-blue-500",
+                          posOpen && "ring-2 ring-blue-500 border-blue-500/50",
+                          position ? "text-white" : "text-slate-500",
+                        )}
+                      >
+                        <Briefcase className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                        <span className="flex-1 truncate">{position || "Chọn hoặc nhập chức vụ..."}</span>
+                        {position && (
+                          <span
+                            role="button"
+                            onClick={e => { e.stopPropagation(); setPosition(""); setPosQuery(""); }}
+                            className="text-slate-400 hover:text-slate-200 px-1 cursor-pointer"
+                          >✕</span>
+                        )}
+                        <ChevronDown className={cn("w-4 h-4 text-slate-400 shrink-0 transition-transform", posOpen && "rotate-180")} />
+                      </button>
+
+                      {posOpen && (
+                        <div className="absolute z-50 left-0 right-0 top-full mt-1 bg-slate-900 border border-white/20 rounded-xl shadow-2xl overflow-hidden">
+                          <div className="p-2 border-b border-white/10">
+                            <div className="flex items-center gap-2 px-2.5 py-1.5 bg-white/10 rounded-lg">
+                              <Search className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                              <input
+                                autoFocus
+                                value={posQuery}
+                                onChange={e => setPosQuery(e.target.value)}
+                                onKeyDown={e => {
+                                  if (e.key === "Enter" && posQuery.trim()) {
+                                    setPosition(posQuery.trim());
+                                    setPosQuery("");
+                                    setPosOpen(false);
+                                  }
+                                }}
+                                placeholder="Tìm hoặc nhập chức vụ mới..."
+                                className="flex-1 bg-transparent text-sm outline-none text-white placeholder-slate-500"
+                              />
+                            </div>
+                          </div>
+                          <div className="max-h-44 overflow-y-auto">
+                            {/* Nhập tự do nếu không có trong danh sách */}
+                            {posQuery.trim() && !filteredPositions.includes(posQuery.trim()) && (
+                              <button
+                                type="button"
+                                onClick={() => { setPosition(posQuery.trim()); setPosQuery(""); setPosOpen(false); }}
+                                className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-white/10 transition"
+                              >
+                                <span className="text-xs text-slate-500">Dùng:</span>
+                                <span className="text-sm text-blue-300 font-medium">"{posQuery.trim()}"</span>
+                              </button>
+                            )}
+                            {filteredPositions.length === 0 && !posQuery.trim() ? (
+                              <p className="text-xs text-slate-500 text-center py-4">
+                                Chưa có chức vụ nào — nhập để tạo mới
+                              </p>
+                            ) : (
+                              filteredPositions.map(p => (
+                                <button
+                                  key={p}
+                                  type="button"
+                                  onClick={() => { setPosition(p); setPosQuery(""); setPosOpen(false); }}
+                                  className={cn(
+                                    "w-full px-3 py-2 text-left text-sm transition hover:bg-white/10",
+                                    position === p ? "text-blue-300 font-medium bg-blue-900/40" : "text-white",
+                                  )}
+                                >
+                                  {p}
+                                </button>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
 

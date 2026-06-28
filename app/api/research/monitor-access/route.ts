@@ -15,7 +15,8 @@ export async function GET(req: NextRequest) {
 
   if (
     hasPermission(me.role, "research:manage") ||
-    hasPermission(me.role, "research:monitor")
+    hasPermission(me.role, "research:monitor") ||
+    (me.researchDesignations ?? []).includes("researchManager")
   ) {
     return NextResponse.json({ canMonitor: true });
   }

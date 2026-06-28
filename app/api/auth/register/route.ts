@@ -6,7 +6,7 @@ import type { UserRole } from "@/types";
 
 export async function POST(req: NextRequest) {
   try {
-    const { email, password, name, role: requestedRole, department } = await req.json();
+    const { email, password, name, role: requestedRole, department, position } = await req.json();
 
     if (!email || !password || !name) {
       return NextResponse.json(
@@ -32,7 +32,8 @@ export async function POST(req: NextRequest) {
       password,
       name,
       role,
-      department
+      department,
+      position,
     );
 
     const response = NextResponse.json({ user, token });

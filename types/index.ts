@@ -7,12 +7,81 @@
 export type UserRole =
   | "guest"
   | "staff"
-  | "teamLead"
-  | "director"
+  | "teamLead"       // unitHead: Trưởng/Phó phòng, khoa, viện, trung tâm
+  | "director"       // Ban Giám đốc: Phó GĐ, Giám đốc
   | "hrAdmin"
   | "financeViewer"      // Theo dõi tài chính — chỉ xem
   | "financeAuditor"     // Kiểm tra tài chính — xem + đối soát/ghi chú
   | "financeSupervisor"; // Giám sát tài chính — xem + duyệt + quản lý
+
+/**
+ * Một vị trí chức vụ cụ thể — dùng cho kiêm nhiệm.
+ * User.positions[] có thể chứa nhiều OrgPosition cùng lúc.
+ */
+export interface OrgPosition {
+  /** Quyền hạn hệ thống của vị trí này. */
+  role: UserRole;
+  /** Chức danh hiển thị (VD: "Giám đốc", "Viện trưởng", "Trưởng phòng Kế hoạch"). */
+  title: string;
+  /** Loại đơn vị. null = toàn cơ quan. */
+  unitType?: "phong" | "khoa" | "vien" | "trung_tam" | "co_quan";
+  /** ID đơn vị quản lý. null/undefined = phạm vi toàn cơ quan. */
+  scopeUnitId?: string | null;
+  /** Tên đơn vị (cache để hiển thị). */
+  unitName?: string;
+  /** Từ ngày nhận chức. */
+  from?: string;
+  /** Đến ngày (nếu đã kết thúc kiêm nhiệm). */
+  to?: string;
+}
+
+// ─── CHỨC VỤ & QUY TRÌNH PHÊ DUYỆT ────────────────────────────
+
+/** Cấp tổ chức: 1=Ban GĐ, 2=Khoa/Phòng/TT/Viện, 3=Đơn vị thuộc TT/Viện, 4=Nhân viên */
+export type UnitLevel = 1 | 2 | 3 | 4;
+
+/** Định nghĩa một chức vụ/chức danh trong danh mục hệ thống */
+export interface PositionDef {
+  id: string;
+  title: string;      // Chức danh ngắn: "Trưởng phòng", "Giám đốc"
+  name: string;       // Tên đầy đủ: "Trưởng phòng Kế hoạch tổng hợp"
+  unitLevel: UnitLevel;
+  createdAt: string;
+}
+
+/** Một bước trong chuỗi phê duyệt (có thứ tự) */
+export interface ApprovalStep {
+  order: number;          // 1, 2, 3...
+  label: string;          // "Trưởng khoa/phòng", "Giám đốc TT", "Giám đốc"
+  positionIds: string[];  // chức vụ nào có thể duyệt bước này
+}
+
+/** Quy tắc trình/duyệt cho một phạm vi */
+export interface ApprovalRule {
+  id: string;
+  /**
+   * "default" — mặc định cho tất cả đơn vị cùng unitLevel chưa có rule riêng
+   * "unit"    — ghi đè default cho một đơn vị cụ thể
+   */
+  scope: "default" | "unit";
+  unitLevel?: 2 | 3;             // scope="default": cấp đơn vị áp dụng
+  unitName?: string;             // scope="unit": tên đơn vị cụ thể
+  submitterPositionIds: string[];
+  steps: ApprovalStep[];         // chuỗi duyệt có thứ tự
+  description?: string;
+  updatedAt: string;
+}
+
+/** Định nghĩa một đơn vị (Khoa/Phòng/TT/Viện hoặc đơn vị con) trong danh mục */
+export interface UnitDef {
+  id: string;
+  name: string;          // Tên đầy đủ: "Khoa Nội tim mạch"
+  abbr?: string;         // Tên viết tắt: "K.NTM"
+  parentId?: string;     // ID đơn vị cha — null/undefined = đơn vị gốc (cấp 2)
+  unitLevel: 2 | 3;     // 2 = Khoa/Phòng/TT/Viện, 3 = Đơn vị con thuộc TT/Viện
+  source: "auto" | "manual"; // auto = phát hiện từ DB, manual = admin thêm
+  createdAt: string;
+}
 
 export interface BankAccount {
   bankId: string;         // Mã BIN ngân hàng (VD: "970436" = VCB)
@@ -49,6 +118,18 @@ export interface User {
   notificationPrefs?: NotificationPrefs;
   googleCalendarToken?: GoogleToken;
   isActive: boolean;
+  /**
+   * Danh sách chức vụ (bao gồm kiêm nhiệm).
+   * Khi check quyền: lấy role cao nhất trong mảng.
+   * Khi lọc dữ liệu: dùng scopeUnitId của từng position.
+   * Nếu mảng rỗng/không có: dùng User.role làm fallback.
+   */
+  positions?: OrgPosition[];
+  /**
+   * Chỉ định cố định trong hệ thống NCKH — dùng để lọc khi chọn phản biện/hội đồng.
+   * Độc lập với việc được gán vào từng đề tài cụ thể (ResearchReview / ResearchCouncilSession).
+   */
+  researchDesignations?: ResearchDesignation[];
 }
 
 export interface NotificationPrefs {
@@ -101,7 +182,13 @@ export interface UnitPlan {
 // ─── NGHIÊN CỨU KHOA HỌC (thẩm định & công nhận đề tài cấp cơ sở) ─
 
 /** Giai đoạn tổng của đề tài. */
-export type ResearchStage = "init" | "proposal" | "recognition" | "completed" | "rejected";
+export type ResearchStage =
+  | "init"        // Đăng ký — chờ tiếp nhận
+  | "proposal"    // GĐ1 — Thẩm định đề cương
+  | "executing"   // Đang triển khai thực hiện (sau khi đề cương được duyệt)
+  | "recognition" // GĐ2 — Nghiệm thu & công nhận
+  | "completed"   // Hoàn tất
+  | "rejected";   // Từ chối / Đình chỉ
 
 /** Các bước trong quy trình đề tài (cố định). */
 export type ResearchStepKey =
@@ -115,6 +202,9 @@ export type ResearchStepKey =
   | "p_council"     // GĐ1: họp Hội đồng KHCN
   | "p_ethics"      // GĐ1: chứng nhận y đức
   | "p_agree"       // GĐ1: đồng ý cho thực hiện
+  | "exec_start"    // Triển khai: bắt đầu thực hiện đề tài
+  | "exec_midterm"  // Triển khai: báo cáo tiến độ giữa kỳ (optional)
+  | "exec_submit"   // Triển khai: nộp báo cáo kết quả (chuyển sang GĐ2)
   | "r_intake"      // GĐ2: tiếp nhận kết quả
   | "r_review"      // GĐ2: 2 phản biện kín
   | "r_council"     // GĐ2: họp Hội đồng KHCN
@@ -208,7 +298,10 @@ export interface ResearchCouncilSession {
   mode: "in_person" | "online";
   scheduledAt?: string;
   location?: string;
-  memberIds: string[];
+  /** Danh sách thành viên với vai trò (chủ tịch / thành viên / thư ký). */
+  members?: ResearchCouncilMember[];
+  /** @deprecated dùng members[].userId thay thế */
+  memberIds?: string[];
   votes?: ResearchCouncilVote[];               // chế độ online
   decision?: "passed" | "failed" | "revise";   // kết luận chung
   conclusion?: string;
@@ -223,6 +316,61 @@ export interface ResearchCertificate {
   issuedBy?: string;
   fileUrl?: string;
   scope?: string;   // phạm vi ảnh hưởng (cấp cơ sở)
+}
+
+/**
+ * Chỉ định NCKH cố định của người dùng — khác với việc được gán vào từng đề tài.
+ * Lưu trong User.researchDesignations[] để lọc khi chọn phản biện / hội đồng.
+ * - researchManager : Quản lý NCKH — cấp canMonitor (giám sát, tiếp nhận đề cương)
+ * - reviewer        : được phép làm phản biện kín
+ * - councilMember   : thành viên Hội đồng KHCN
+ * - councilChair    : Chủ tịch Hội đồng KHCN
+ * - councilSecretary: Thư ký Hội đồng KHCN
+ */
+export type ResearchDesignation =
+  | "researchManager"
+  | "reviewer"
+  | "councilMember"
+  | "councilChair"
+  | "councilSecretary";
+
+export const RESEARCH_DESIGNATION_LABEL: Record<ResearchDesignation, string> = {
+  researchManager:  "Quản lý NCKH",
+  reviewer:         "Phản biện NCKH",
+  councilMember:    "Thành viên HĐ KHCN",
+  councilChair:     "Chủ tịch HĐ KHCN",
+  councilSecretary: "Thư ký HĐ KHCN",
+};
+
+/**
+ * Vai trò của một người trong đề tài NCKH (context role — khác với system role).
+ * Một người có thể là tác giả đề tài A, phản biện đề tài B, hội đồng đề tài C.
+ */
+export type ResearchContributorRole = "author" | "coAuthor" | "participant";
+
+/** Thành viên đóng góp trong đề tài (tác giả / đồng tác giả / tham gia). */
+export interface ResearchContributor {
+  userId?: string;            // null nếu là người ngoài chưa có tài khoản
+  name: string;
+  role: ResearchContributorRole;
+  department?: string;
+  academicTitle?: string;     // Học hàm / học vị (TS, ThS, GS, PGS...)
+  contributionNote?: string;  // Mô tả vai trò cụ thể
+  order?: number;             // Thứ tự liệt kê (tác giả 1, tác giả 2...)
+}
+
+/** Vai trò trong phiên họp Hội đồng KHCN. */
+export type CouncilMemberRole = "chair" | "member" | "secretary";
+
+/** Thành viên Hội đồng KHCN với vai trò cụ thể trong phiên họp. */
+export interface ResearchCouncilMember {
+  userId?: string;            // null nếu mời chuyên gia ngoài
+  name: string;
+  role: CouncilMemberRole;
+  department?: string;
+  academicTitle?: string;
+  /** true nếu đã xác nhận tham dự. */
+  confirmed?: boolean;
 }
 
 /** Nhóm đề tài NCKH — 1 người thực hiện phụ trách nhiều đề tài trong cùng nhóm. */
@@ -245,8 +393,14 @@ export interface ResearchTopic {
   code?: string;                       // mã đề tài
   title: string;
   field?: string;                      // lĩnh vực / chuyên ngành
-  principalInvestigatorId: string;     // chủ nhiệm đề tài
-  memberIds?: string[];                // thành viên
+  principalInvestigatorId: string;     // chủ nhiệm đề tài (tác giả chính)
+  /**
+   * Danh sách thành viên đề tài có phân vai trò.
+   * Ưu tiên dùng trường này. principalInvestigatorId + memberIds giữ lại để compat.
+   */
+  contributors?: ResearchContributor[];
+  /** @deprecated dùng contributors thay thế */
+  memberIds?: string[];                // thành viên (legacy)
   groupId?: string;                    // ID nhóm đề tài (ResearchGroup)
   groupName?: string;                  // tên nhóm (cache để hiển thị)
   mainPerformerId?: string;            // người thực hiện chính (kế thừa từ nhóm)
@@ -285,12 +439,18 @@ export interface ResearchTopic {
   excludedReviewers?: string;         // excluded reviewer names (multiline)
   submissionType?: "new" | "resubmit";
   registrationNotes?: string;
+  /** "public" = submitted via no-auth public form; "internal" = submitted while logged in */
+  source?: "public" | "internal";
 
   // B02 intake screening result
   intakeStatus?: "awaiting" | "passed" | "revision_needed" | "rejected";
   intakeNote?: string;                  // ghi chú yêu cầu chỉnh sửa / từ chối
   intakeRevisionCount?: number;         // số lần yêu cầu chỉnh sửa
   intakeLogs?: IntakeLog[];             // lịch sử thao tác tiếp nhận
+
+  // Public resubmit link (no-auth form)
+  resubmitToken?: string;              // secure token for public resubmit form
+  resubmitTokenExpiry?: string;        // ISO date — token expires after 30 days
 
   createdBy: string;
   createdByName?: string;
@@ -547,8 +707,9 @@ export interface Task {
   // Completion proposal (main performer → manager approval)
   completionProposal?: CompletionProposal;
 
-  // Change request (deadline / performer / issue — requires re-approval)
-  pendingChangeRequest?: ChangeRequest | null;
+  // Change requests (deadline / performer / issue — requires re-approval)
+  // Array to allow multiple concurrent requests; filter by status === "pending" for active ones.
+  changeRequests?: ChangeRequest[];
 
   // Resources shared by main performer
   resources?: TaskResource[];

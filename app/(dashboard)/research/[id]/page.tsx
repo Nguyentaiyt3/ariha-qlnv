@@ -10,15 +10,18 @@ import {
 import { cn, generateId } from "@/lib/utils";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useTaskStore } from "@/stores/useTaskStore";
-import { hasPermission } from "@/lib/rbac/permissions";
+import { hasPermission, canDoResearchAction, canUserAssignReviewer } from "@/lib/rbac/permissions";
 import {
   getResearchTopic, updateResearchTopic, addNotification,
   getResearchGroups, createResearchGroup, updateResearchGroup,
 } from "@/lib/firebase/firestore";
+import { ReviewFormPanel } from "@/components/research/ReviewFormPanel";
+import { AssignReviewerModal } from "@/components/research/AssignReviewerModal";
 import { RESEARCH_STEPS, STAGE_LABEL, researchProgress, stepMeta } from "@/lib/research";
 import type {
   ResearchTopic, ResearchStage, ResearchStepStatus, ResearchGroup,
-  ResearchReview, ResearchCouncilSession,
+  ResearchReview, ResearchCouncilSession, ResearchCouncilMember, CouncilMemberRole,
+  ResearchContributor,
 } from "@/types";
 import { toast } from "sonner";
 
@@ -29,7 +32,24 @@ const STEP_ICON: Record<ResearchStepStatus, React.ReactNode> = {
   pending:     <Circle className="w-4 h-4 text-slate-300" />,
 };
 
-const STAGES: ResearchStage[] = ["init", "proposal", "recognition"];
+const STAGES: ResearchStage[] = ["init", "proposal", "executing", "recognition"];
+
+const COUNCIL_ROLE_LABEL: Record<CouncilMemberRole, string> = {
+  chair: "Chủ tịch", member: "Thành viên", secretary: "Thư ký",
+};
+const COUNCIL_ROLE_COLOR: Record<CouncilMemberRole, string> = {
+  chair:     "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300",
+  member:    "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300",
+  secretary: "bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300",
+};
+const CONTRIBUTOR_ROLE_LABEL: Record<string, string> = {
+  author: "Tác giả", coAuthor: "Đồng tác giả", participant: "Tham gia",
+};
+const CONTRIBUTOR_ROLE_COLOR: Record<string, string> = {
+  author:      "text-violet-600 dark:text-violet-400 font-semibold",
+  coAuthor:    "text-blue-600 dark:text-blue-400",
+  participant: "text-slate-500 dark:text-slate-400",
+};
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -66,7 +86,15 @@ export default function ResearchDetailPage() {
   const [approving, setApproving] = useState(false);
   const [showRejectModal, setShowRejectModal] = useState(false);
 
-  const canManage = !!currentUser && hasPermission(currentUser.role, "research:manage");
+  // Quyền quản lý toàn bộ quy trình (tiếp nhận, chuyển bước, từ chối...)
+  // director/hrAdmin: luôn true; teamLead: chỉ true nếu đề tài thuộc đơn vị mình
+  const canManage = !!currentUser && canDoResearchAction(currentUser, "research:manage", topic?.department);
+  // Quyền chỉ định phản biện — chỉ Trưởng VP (Văn phòng) hoặc Director/hrAdmin
+  const canAssignReviewer = !!currentUser && canUserAssignReviewer(currentUser, topic?.department);
+  // Quyền thành lập hội đồng — scoped theo đơn vị
+  const canAssignCouncil = !!currentUser && canDoResearchAction(currentUser, "research:assignCouncil", topic?.department);
+  // Quyền thêm tác giả/thành viên — scoped theo đơn vị
+  const canAddContributor = !!currentUser && canDoResearchAction(currentUser, "research:addContributor", topic?.department);
   const isPI = topic?.principalInvestigatorId === currentUser?.id;
   const isPerformer = topic?.mainPerformerId === currentUser?.id;
 
@@ -214,6 +242,17 @@ export default function ResearchDetailPage() {
               {topic.groupName && <> · Nhóm: <strong>{topic.groupName}</strong></>}
             </p>
             {topic.abstract && <p className="text-sm text-slate-600 dark:text-slate-300 mt-2 italic">{topic.abstract}</p>}
+            {topic.contributors && topic.contributors.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                {topic.contributors.map((c, i) => (
+                  <span key={i} className="text-xs flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-700/60">
+                    <span className={CONTRIBUTOR_ROLE_COLOR[c.role]}>{CONTRIBUTOR_ROLE_LABEL[c.role]}</span>
+                    {c.academicTitle && <span className="text-slate-400 text-[10px]">{c.academicTitle}</span>}
+                    <span className="text-slate-700 dark:text-slate-200">{c.name}</span>
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
           <span className="shrink-0 px-2.5 py-1 text-xs font-semibold rounded-full bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300">
             {STAGE_LABEL[topic.stage]}
@@ -276,12 +315,25 @@ export default function ResearchDetailPage() {
           users={users}
           groups={groups}
           canManage={canManage}
+          canAssignReviewer={canAssignReviewer}
+          canAssignCouncil={canAssignCouncil}
           isPI={isPI}
           isPerformer={isPerformer}
           onUpdate={handleUpdate}
           onGroupCreated={g => setGroups(prev => [g, ...prev])}
           onRevise={handleRevise}
           onReject={handleReject}
+        />
+      )}
+
+      {/* Giai đoạn Triển khai */}
+      {topic.stage === "executing" && (
+        <ExecutingPanel
+          topic={topic}
+          canManage={canManage}
+          isPI={isPI}
+          isPerformer={isPerformer}
+          onUpdate={handleUpdate}
         />
       )}
 
@@ -350,14 +402,130 @@ export default function ResearchDetailPage() {
   );
 }
 
+// ─── Executing Panel ─────────────────────────────────────────────────────────
+
+function ExecutingPanel({ topic, canManage, isPI, isPerformer, onUpdate }: {
+  topic: ResearchTopic;
+  canManage: boolean;
+  isPI: boolean;
+  isPerformer: boolean;
+  onUpdate: (updates: Partial<ResearchTopic>, msg: string) => Promise<void>;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [midtermNote, setMidtermNote] = useState("");
+  const [showMidterm, setShowMidterm] = useState(false);
+  const canAct = canManage || isPI || isPerformer;
+
+  const execSteps = ["exec_start", "exec_midterm", "exec_submit"] as const;
+  const stepStatus = (key: string) => topic.steps.find(s => s.key === key)?.status ?? "pending";
+
+  async function handleAdvanceExec(passKey: string, nextKey: string | null, newStage?: ResearchTopic["stage"]) {
+    setSaving(true);
+    await onUpdate(advanceStep(topic, passKey, nextKey, newStage),
+      nextKey === "r_intake"
+        ? "Đã nộp báo cáo kết quả — chuyển sang GĐ2 Nghiệm thu"
+        : nextKey === "exec_midterm"
+        ? "Đã ghi nhận báo cáo tiến độ giữa kỳ"
+        : "Đã bắt đầu triển khai nghiên cứu"
+    );
+    setSaving(false);
+    setShowMidterm(false);
+  }
+
+  return (
+    <div className="bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-700 rounded-2xl p-5 space-y-4">
+      <p className="text-sm font-semibold text-amber-700 dark:text-amber-300 flex items-center gap-2">
+        <FlaskConical className="w-4 h-4" /> Giai đoạn Triển khai — Thực hiện nghiên cứu
+      </p>
+
+      <div className="space-y-2">
+        {/* exec_start */}
+        <div className="flex items-center justify-between gap-3 p-3 bg-white dark:bg-slate-800 rounded-xl border border-amber-100 dark:border-amber-800">
+          <div>
+            <p className="text-sm font-medium text-slate-700 dark:text-slate-200">Bắt đầu triển khai</p>
+            <p className="text-xs text-slate-400">Xác nhận đề tài chính thức bắt đầu thực hiện nghiên cứu</p>
+          </div>
+          {stepStatus("exec_start") === "passed"
+            ? <span className="text-xs text-green-600 font-medium">✓ Đã bắt đầu</span>
+            : canAct && (
+              <button onClick={() => { setSaving(true); handleAdvanceExec("exec_start", "exec_midterm"); }}
+                disabled={saving}
+                className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-amber-500 hover:bg-amber-600 text-white transition disabled:opacity-50">
+                Xác nhận bắt đầu
+              </button>
+            )
+          }
+        </div>
+
+        {/* exec_midterm (optional) */}
+        {stepStatus("exec_start") === "passed" && (
+          <div className="p-3 bg-white dark:bg-slate-800 rounded-xl border border-amber-100 dark:border-amber-800 space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-slate-700 dark:text-slate-200">Báo cáo tiến độ giữa kỳ</p>
+                <p className="text-xs text-slate-400">Tuỳ chọn — ghi nhận tiến độ nghiên cứu</p>
+              </div>
+              {stepStatus("exec_midterm") === "passed"
+                ? <span className="text-xs text-green-600 font-medium">✓ Đã báo cáo</span>
+                : canAct && (
+                  <button onClick={() => setShowMidterm(v => !v)}
+                    className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-100 dark:bg-slate-700 hover:bg-amber-100 dark:hover:bg-amber-900/30 text-slate-600 dark:text-slate-300 transition">
+                    {showMidterm ? "Huỷ" : "Ghi nhận"}
+                  </button>
+                )
+              }
+            </div>
+            {showMidterm && (
+              <div className="space-y-2">
+                <textarea value={midtermNote} onChange={e => setMidtermNote(e.target.value)}
+                  placeholder="Tóm tắt tiến độ nghiên cứu hiện tại..."
+                  rows={3}
+                  className="w-full text-sm px-3 py-2 border border-slate-200 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-900 outline-none focus:ring-2 focus:ring-amber-400 resize-none" />
+                <button onClick={() => handleAdvanceExec("exec_midterm", "exec_submit")}
+                  disabled={saving || !midtermNote.trim()}
+                  className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-amber-500 hover:bg-amber-600 text-white transition disabled:opacity-50">
+                  Lưu báo cáo tiến độ
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* exec_submit → GĐ2 */}
+        {stepStatus("exec_start") === "passed" && (
+          <div className="flex items-center justify-between gap-3 p-3 bg-white dark:bg-slate-800 rounded-xl border border-amber-100 dark:border-amber-800">
+            <div>
+              <p className="text-sm font-medium text-slate-700 dark:text-slate-200">Nộp báo cáo kết quả</p>
+              <p className="text-xs text-slate-400">Kết thúc triển khai — chuyển sang GĐ2 Nghiệm thu</p>
+            </div>
+            {stepStatus("exec_submit") === "passed"
+              ? <span className="text-xs text-green-600 font-medium">✓ Đã nộp</span>
+              : canAct && (
+                <button
+                  onClick={() => handleAdvanceExec("exec_submit", "r_intake", "recognition")}
+                  disabled={saving}
+                  className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-violet-600 hover:bg-violet-700 text-white transition disabled:opacity-50">
+                  Nộp kết quả → GĐ2
+                </button>
+              )
+            }
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── GĐ1 Action Panel ────────────────────────────────────────────────────────
 
 interface GD1Props {
   topic: ResearchTopic;
   currentUser: { id: string; name: string; role: string } | null;
-  users: { id: string; name: string; role?: string }[];
+  users: { id: string; name: string; role?: string; department?: string; academicTitle?: string }[];
   groups: ResearchGroup[];
   canManage: boolean;
+  canAssignReviewer: boolean;  // research:assignReviewer scoped theo đơn vị
+  canAssignCouncil: boolean;   // research:assignCouncil scoped theo đơn vị
   isPI: boolean;
   isPerformer: boolean;
   onUpdate: (updates: Partial<ResearchTopic>, msg: string) => Promise<void>;
@@ -627,22 +795,12 @@ function PAssignPanel({ topic, currentUser, canManage, users, groups, onUpdate, 
 }
 
 // ── p_review ─────────────────────────────────────────────────────────────────
-function PReviewPanel({ topic, currentUser, canManage, users, onUpdate, onRevise, onReject }: GD1Props) {
+function PReviewPanel({ topic, currentUser, canManage, canAssignReviewer, users, onUpdate, onRevise, onReject }: GD1Props) {
   const [showAdd, setShowAdd] = useState(false);
-  const [rType, setRType] = useState<"internal" | "external">("internal");
-  const [rUserId, setRUserId] = useState("");
-  const [rName, setRName] = useState("");
-  const [rEmail, setREmail] = useState("");
-  const [rOrg, setROrg] = useState("");
-  const [rDue, setRDue] = useState("");
   const [saving, setSaving] = useState(false);
 
-  // For reviewer submission
+  // Which review's full form is open
   const [submitReviewId, setSubmitReviewId] = useState<string | null>(null);
-  const [submitScore, setSubmitScore] = useState<number>(0);
-  const [submitRec, setSubmitRec] = useState<"pass" | "revise" | "fail">("pass");
-  const [submitComments, setSubmitComments] = useState("");
-  const [submittingSave, setSubmittingSave] = useState(false);
 
   // Revise / reject inline actions
   const [actionMode, setActionMode] = useState<"advance" | "revise" | "reject" | null>(null);
@@ -653,39 +811,19 @@ function PReviewPanel({ topic, currentUser, canManage, users, onUpdate, onRevise
   const submittedCount = proposalReviews.filter(r => r.status === "submitted").length;
   const canAdvance = submittedCount >= 2 && canManage;
 
-  async function handleAddReviewer() {
-    if (proposalReviews.length >= 2) { toast.error("Đã đủ 2 phản biện"); return; }
-    if (rType === "internal" && !rUserId) { toast.error("Chọn phản biện viên"); return; }
-    if (rType === "external" && !rName.trim()) { toast.error("Nhập tên phản biện viên"); return; }
-    setSaving(true);
-    const reviewer: ResearchReview = {
-      id: generateId("rev"),
-      stage: "proposal",
-      reviewerType: rType,
-      reviewerId: rType === "internal" ? rUserId : undefined,
-      reviewerName: rType === "internal" ? (users.find(u => u.id === rUserId)?.name ?? "") : rName.trim(),
-      reviewerEmail: rType === "external" ? rEmail.trim() : undefined,
-      reviewerOrg: rType === "external" ? rOrg.trim() : undefined,
-      assignedAt: new Date().toISOString(),
-      dueAt: rDue || undefined,
-      status: "assigned",
-    };
-    await onUpdate({ reviews: [...topic.reviews, reviewer] }, "Đã gán phản biện viên");
+  async function handleAddReviewer(reviewer: ResearchReview) {
+    await onUpdate({ reviews: [...topic.reviews, reviewer] }, `Đã chỉ định ${reviewer.reviewerName} làm phản biện viên`);
     setShowAdd(false);
-    setRUserId(""); setRName(""); setREmail(""); setROrg(""); setRDue("");
-    setSaving(false);
   }
 
-  async function handleSubmitReview(reviewId: string) {
-    setSubmittingSave(true);
+  async function handleSubmitReview(reviewId: string, data: Partial<ResearchReview>) {
     const updated = topic.reviews.map(r =>
       r.id === reviewId
-        ? { ...r, status: "submitted" as const, submittedAt: new Date().toISOString(), score: submitScore, recommendation: submitRec, comments: submitComments }
+        ? { ...r, ...data, status: "submitted" as const, submittedAt: new Date().toISOString() }
         : r
     );
-    await onUpdate({ reviews: updated }, "Đã nộp phiếu phản biện");
+    await onUpdate({ reviews: updated }, "Đã nộp phiếu thẩm định");
     setSubmitReviewId(null);
-    setSubmittingSave(false);
   }
 
   async function handleAdvance() {
@@ -695,6 +833,7 @@ function PReviewPanel({ topic, currentUser, canManage, users, onUpdate, onRevise
   }
 
   return (
+    <>
     <PanelWrap title="GĐ1 · Thẩm định — 2 phản biện kín" icon={<Eye className="w-4 h-4" />}>
       <div className="space-y-2">
         {proposalReviews.length === 0 && (
@@ -722,104 +861,56 @@ function PReviewPanel({ topic, currentUser, canManage, users, onUpdate, onRevise
                   {r.status === "submitted" ? "Đã nộp" : "Chờ phản biện"}
                 </span>
               </div>
+              {/* Submitted summary */}
               {r.status === "submitted" && (canManage || isMyReview) && (
-                <div className="text-xs text-slate-500 pl-1">
-                  {r.score !== undefined && <span>Điểm: <strong>{r.score}</strong> · </span>}
-                  {r.recommendation && <span>Đề xuất: <strong>{{pass:"Thông qua", revise:"Sửa đổi", fail:"Không thông qua"}[r.recommendation]}</strong></span>}
-                  {r.comments && <p className="mt-0.5 italic">"{r.comments}"</p>}
+                <div className="text-xs text-slate-500 pl-1 space-y-0.5">
+                  <div className="flex flex-wrap gap-3">
+                    {r.score !== undefined && (
+                      <span>Tổng điểm: <strong className="text-[var(--foreground)]">{r.score}/35</strong></span>
+                    )}
+                    {r.verdict && (
+                      <span>Kết luận: <strong className={
+                        r.verdict === "pass" ? "text-green-600" :
+                        r.verdict === "pass_if_revised" ? "text-amber-600" : "text-red-600"
+                      }>{{ pass:"ĐẠT", pass_if_revised:"ĐẠT (nếu chỉnh sửa)", fail:"KHÔNG ĐẠT" }[r.verdict]}</strong></span>
+                    )}
+                    {r.grade && (
+                      <span>Xếp loại: <strong className="text-[var(--foreground)]">{{ excellent:"Giỏi", good:"Khá", average:"Trung bình", fail:"Không đạt" }[r.grade]}</strong></span>
+                    )}
+                    {r.needResubmit && <span className="text-amber-600 font-medium">⚠ Cần nộp lại</span>}
+                  </div>
+                  {r.revisionPoints && (
+                    <p className="mt-0.5 italic text-slate-400 line-clamp-2">Chỉnh sửa: "{r.revisionPoints}"</p>
+                  )}
+                  <button
+                    onClick={() => setSubmitReviewId(r.id)}
+                    className="text-[10px] text-blue-500 hover:underline mt-1 block"
+                  >
+                    Xem chi tiết phiếu →
+                  </button>
                 </div>
               )}
-              {/* Reviewer submits their own review */}
+              {/* Open full review form */}
               {isMyReview && r.status === "assigned" && (
-                <>
-                  {!showForm ? (
-                    <button onClick={() => setSubmitReviewId(r.id)}
-                      className="text-xs text-blue-600 hover:underline">Nộp phiếu phản biện →</button>
-                  ) : (
-                    <div className="space-y-2 pt-1 border-t border-slate-100 dark:border-slate-700">
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <label className="block text-xs text-slate-500 mb-0.5">Điểm (0–100)</label>
-                          <input type="number" min={0} max={100} value={submitScore} onChange={e => setSubmitScore(Number(e.target.value))}
-                            className="w-full border border-slate-200 dark:border-slate-700 rounded px-2 py-1 text-sm bg-white dark:bg-slate-800" />
-                        </div>
-                        <div>
-                          <label className="block text-xs text-slate-500 mb-0.5">Đề xuất</label>
-                          <select value={submitRec} onChange={e => setSubmitRec(e.target.value as "pass"|"revise"|"fail")}
-                            className="w-full border border-slate-200 dark:border-slate-700 rounded px-2 py-1 text-sm bg-white dark:bg-slate-800">
-                            <option value="pass">Thông qua</option>
-                            <option value="revise">Yêu cầu sửa đổi</option>
-                            <option value="fail">Không thông qua</option>
-                          </select>
-                        </div>
-                      </div>
-                      <textarea value={submitComments} onChange={e => setSubmitComments(e.target.value)} rows={2}
-                        placeholder="Nhận xét, góp ý..."
-                        className="w-full border border-slate-200 dark:border-slate-700 rounded px-2 py-1 text-sm bg-white dark:bg-slate-800 resize-none" />
-                      <div className="flex gap-2 justify-end">
-                        <button onClick={() => setSubmitReviewId(null)} className="text-xs text-slate-400 hover:text-slate-600">Hủy</button>
-                        <button onClick={() => handleSubmitReview(r.id)} disabled={submittingSave}
-                          className="px-3 py-1 bg-blue-600 text-white text-xs rounded-lg flex items-center gap-1">
-                          {submittingSave && <Loader2 className="w-3 h-3 animate-spin" />} Nộp phiếu
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </>
+                <button
+                  onClick={() => setSubmitReviewId(r.id)}
+                  className="text-xs px-3 py-1.5 bg-violet-600 hover:bg-violet-700 text-white rounded-lg font-medium transition flex items-center gap-1.5"
+                >
+                  <FileText className="w-3.5 h-3.5" /> Mở phiếu thẩm định →
+                </button>
               )}
             </div>
           );
         })}
       </div>
 
-      {canManage && proposalReviews.length < 2 && (
-        <>
-          {!showAdd ? (
-            <button onClick={() => setShowAdd(true)}
-              className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1">
-              <Plus className="w-4 h-4" /> Gán phản biện viên ({proposalReviews.length}/2)
-            </button>
-          ) : (
-            <div className="border border-blue-200 dark:border-blue-800 rounded-xl p-3 space-y-2">
-              <div className="flex gap-2">
-                {(["internal", "external"] as const).map(t => (
-                  <button key={t} onClick={() => setRType(t)}
-                    className={cn("px-2.5 py-1 text-xs rounded-lg border font-medium transition",
-                      rType === t ? "bg-blue-600 border-blue-600 text-white" : "border-slate-200 dark:border-slate-700 text-slate-500")}>
-                    {t === "internal" ? "Nội bộ" : "Bên ngoài"}
-                  </button>
-                ))}
-              </div>
-              {rType === "internal" ? (
-                <select value={rUserId} onChange={e => setRUserId(e.target.value)}
-                  className="w-full border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-1.5 text-sm bg-white dark:bg-slate-800">
-                  <option value="">— Chọn phản biện viên —</option>
-                  {users.filter(u => !proposalReviews.some(r => r.reviewerId === u.id)).map(u =>
-                    <option key={u.id} value={u.id}>{u.name}</option>
-                  )}
-                </select>
-              ) : (
-                <div className="grid grid-cols-2 gap-2">
-                  <input value={rName} onChange={e => setRName(e.target.value)} placeholder="Họ tên *"
-                    className="border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-sm bg-white dark:bg-slate-800" />
-                  <input value={rEmail} onChange={e => setREmail(e.target.value)} placeholder="Email"
-                    className="border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-sm bg-white dark:bg-slate-800" />
-                  <input value={rOrg} onChange={e => setROrg(e.target.value)} placeholder="Cơ quan / Đơn vị"
-                    className="border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-sm bg-white dark:bg-slate-800 col-span-2" />
-                </div>
-              )}
-              <input type="date" value={rDue} onChange={e => setRDue(e.target.value)}
-                className="border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1.5 text-sm bg-white dark:bg-slate-800" />
-              <div className="flex gap-2 justify-end">
-                <button onClick={() => setShowAdd(false)} className="text-xs text-slate-400 hover:text-slate-600">Hủy</button>
-                <button onClick={handleAddReviewer} disabled={saving}
-                  className="px-3 py-1 bg-blue-600 text-white text-xs rounded-lg flex items-center gap-1">
-                  {saving && <Loader2 className="w-3 h-3 animate-spin" />} Gán phản biện
-                </button>
-              </div>
-            </div>
-          )}
-        </>
+      {canAssignReviewer && proposalReviews.length < 2 && (
+        <button
+          onClick={() => setShowAdd(true)}
+          className="text-sm px-3 py-1.5 bg-violet-50 dark:bg-violet-900/20 hover:bg-violet-100 dark:hover:bg-violet-900/30 text-violet-700 dark:text-violet-300 border border-violet-200 dark:border-violet-700 rounded-lg font-medium transition flex items-center gap-1.5"
+        >
+          <Plus className="w-4 h-4" /> Chỉ định phản biện ({proposalReviews.length}/2)
+        </button>
       )}
 
       {/* Action footer */}
@@ -879,15 +970,43 @@ function PReviewPanel({ topic, currentUser, canManage, users, onUpdate, onRevise
         <p className="text-xs text-slate-400">{submittedCount}/2 phiếu phản biện đã nộp — cần đủ 2 để tiếp tục.</p>
       )}
     </PanelWrap>
+
+    {/* ── Assign reviewer modal ── */}
+    {showAdd && (
+      <AssignReviewerModal
+        users={users as import("@/types").User[]}
+        existingReviews={proposalReviews}
+        slotsLeft={2 - proposalReviews.length}
+        onAssign={handleAddReviewer}
+        onClose={() => setShowAdd(false)}
+      />
+    )}
+
+    {/* ── Full review form modal ── */}
+    {submitReviewId && (() => {
+      const rev = proposalReviews.find(r => r.id === submitReviewId);
+      if (!rev) return null;
+      return (
+        <ReviewFormPanel
+          key={submitReviewId}
+          review={rev}
+          topic={topic}
+          onCancel={() => setSubmitReviewId(null)}
+          onSubmit={data => handleSubmitReview(submitReviewId, data)}
+        />
+      );
+    })()}
+    </>
   );
 }
 
 // ── p_council ─────────────────────────────────────────────────────────────────
-function PCouncilPanel({ topic, currentUser, canManage, users, onUpdate, onRevise, onReject }: GD1Props) {
+function PCouncilPanel({ topic, currentUser, canManage, canAssignCouncil, users, onUpdate, onRevise, onReject }: GD1Props) {
   const [mode, setMode] = useState<"in_person" | "online">("in_person");
   const [scheduledAt, setScheduledAt] = useState("");
   const [location, setLocation] = useState("");
-  const [memberIds, setMemberIds] = useState<string[]>([]);
+  const [members, setMembers] = useState<ResearchCouncilMember[]>([]);
+  const [pendingRole, setPendingRole] = useState<CouncilMemberRole>("member");
   const [decision, setDecision] = useState<"passed" | "failed" | "revise">("passed");
   const [conclusion, setConclusion] = useState("");
   const [saving, setSaving] = useState(false);
@@ -899,7 +1018,7 @@ function PCouncilPanel({ topic, currentUser, canManage, users, onUpdate, onRevis
   const proposalSession = topic.councilSessions.find(s => s.stage === "proposal");
 
   async function handleCreateSession() {
-    if (memberIds.length === 0) { toast.error("Chọn ít nhất 1 thành viên Hội đồng"); return; }
+    if (members.length === 0) { toast.error("Chọn ít nhất 1 thành viên Hội đồng"); return; }
     setSaving(true);
     const session: ResearchCouncilSession = {
       id: generateId("cs"),
@@ -907,11 +1026,12 @@ function PCouncilPanel({ topic, currentUser, canManage, users, onUpdate, onRevis
       mode,
       scheduledAt: scheduledAt || undefined,
       location: location || undefined,
-      memberIds,
+      members,
+      memberIds: members.map(m => m.userId ?? "").filter(Boolean),
       decision: mode === "in_person" ? decision : undefined,
       conclusion: conclusion || undefined,
       createdAt: new Date().toISOString(),
-      votes: mode === "online" ? memberIds.map(mId => ({ memberId: mId, vote: "abstain" as const, votedAt: "" })) : undefined,
+      votes: mode === "online" ? members.map(m => ({ memberId: m.userId ?? "", vote: "abstain" as const, votedAt: "" })) : undefined,
     };
     const updates: Partial<ResearchTopic> = { councilSessions: [...topic.councilSessions, session] };
     if (mode === "in_person" && decision !== "revise") {
@@ -928,7 +1048,7 @@ function PCouncilPanel({ topic, currentUser, canManage, users, onUpdate, onRevis
       const votes = (s.votes ?? []).map(v => v.memberId === memberId ? { ...v, vote, votedAt: new Date().toISOString() } : v);
       const approves = votes.filter(v => v.vote === "approve").length;
       const rejects = votes.filter(v => v.vote === "reject").length;
-      const total = s.memberIds.length;
+      const total = (s.members ?? s.memberIds ?? []).length;
       const allVoted = votes.every(v => v.votedAt);
       const finalDecision: "passed"|"failed"|"revise"|undefined = allVoted
         ? approves > total / 2 ? "passed" : "failed"
@@ -964,6 +1084,17 @@ function PCouncilPanel({ topic, currentUser, canManage, users, onUpdate, onRevis
             )}
           </div>
           {proposalSession.conclusion && <p className="text-xs text-slate-500 italic">"{proposalSession.conclusion}"</p>}
+
+          {/* Members with roles */}
+          {proposalSession.members && proposalSession.members.length > 0 && (
+            <div className="flex flex-wrap gap-1 mt-1">
+              {proposalSession.members.map(m => (
+                <span key={m.userId} className={cn("text-[10px] px-1.5 py-0.5 rounded-full font-medium", COUNCIL_ROLE_COLOR[m.role])}>
+                  {COUNCIL_ROLE_LABEL[m.role]}: {m.name}{m.academicTitle ? ` (${m.academicTitle})` : ""}
+                </span>
+              ))}
+            </div>
+          )}
 
           {/* Online voting */}
           {proposalSession.mode === "online" && !proposalSession.decision && (
@@ -1050,7 +1181,7 @@ function PCouncilPanel({ topic, currentUser, canManage, users, onUpdate, onRevis
             </div>
           )}
         </div>
-      ) : canManage ? (
+      ) : canAssignCouncil ? (
         <>
           {!showForm ? (
             <button onClick={() => setShowForm(true)} className="text-sm text-blue-600 hover:underline flex items-center gap-1">
@@ -1083,22 +1214,48 @@ function PCouncilPanel({ topic, currentUser, canManage, users, onUpdate, onRevis
               </div>
               <div>
                 <label className="block text-xs text-slate-500 mb-1">Thành viên Hội đồng</label>
-                <div className="flex flex-wrap gap-1 mb-1">
-                  {memberIds.map(mid => {
-                    const u = users.find(u => u.id === mid);
-                    return (
-                      <span key={mid} className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full flex items-center gap-1">
-                        {u?.name ?? mid}
-                        <button onClick={() => setMemberIds(prev => prev.filter(id => id !== mid))}><X className="w-3 h-3" /></button>
-                      </span>
-                    );
-                  })}
+                <div className="flex flex-wrap gap-1 mb-1.5">
+                  {members.map(m => (
+                    <span key={m.userId} className={cn("text-xs px-2 py-0.5 rounded-full flex items-center gap-1", COUNCIL_ROLE_COLOR[m.role])}>
+                      <span className="opacity-70 text-[10px]">{COUNCIL_ROLE_LABEL[m.role]}</span>
+                      {m.name}
+                      <button onClick={() => setMembers(prev => prev.filter(x => x.userId !== m.userId))}>
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ))}
                 </div>
-                <select onChange={e => { if (e.target.value && !memberIds.includes(e.target.value)) setMemberIds(prev => [...prev, e.target.value]); e.target.value=""; }}
-                  className="w-full border border-slate-200 dark:border-slate-700 rounded px-2 py-1.5 text-sm bg-white dark:bg-slate-800">
-                  <option value="">+ Thêm thành viên</option>
-                  {users.filter(u => !memberIds.includes(u.id)).map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-                </select>
+                <div className="flex gap-1">
+                  <select
+                    value={pendingRole}
+                    onChange={e => setPendingRole(e.target.value as CouncilMemberRole)}
+                    className="border border-slate-200 dark:border-slate-700 rounded px-2 py-1.5 text-xs bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200"
+                  >
+                    <option value="chair">Chủ tịch</option>
+                    <option value="member">Thành viên</option>
+                    <option value="secretary">Thư ký</option>
+                  </select>
+                  <select
+                    onChange={e => {
+                      if (!e.target.value) return;
+                      const u = users.find(u => u.id === e.target.value);
+                      if (!u || members.some(m => m.userId === e.target.value)) return;
+                      setMembers(prev => [...prev, {
+                        userId: u.id, name: u.name, role: pendingRole,
+                        department: u.department, academicTitle: u.academicTitle,
+                      }]);
+                      e.target.value = "";
+                    }}
+                    className="flex-1 border border-slate-200 dark:border-slate-700 rounded px-2 py-1.5 text-sm bg-white dark:bg-slate-800"
+                  >
+                    <option value="">+ Thêm thành viên...</option>
+                    {users.filter(u => !members.some(m => m.userId === u.id)).map(u => (
+                      <option key={u.id} value={u.id}>
+                        {u.name}{u.academicTitle ? ` (${u.academicTitle})` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
               {mode === "in_person" && (
                 <>
@@ -1200,19 +1357,19 @@ function PAgreePanel({ topic, currentUser, canManage, users, onUpdate }: GD1Prop
     setSaving(true);
     const stamp = new Date().toISOString();
     const steps = topic.steps.map(s =>
-      s.key === "p_agree" ? { ...s, status: "passed" as const, completedAt: stamp }
-      : s.key === "r_intake" ? { ...s, status: "in_progress" as const }
+      s.key === "p_agree"     ? { ...s, status: "passed" as const, completedAt: stamp }
+      : s.key === "exec_start" ? { ...s, status: "in_progress" as const }
       : s
     );
-    const updates: Partial<ResearchTopic> = { steps, stage: "recognition", currentStep: "r_intake" };
-    await onUpdate(updates, "Đã đồng ý thực hiện — chuyển sang Giai đoạn 2 (Công nhận)");
+    const updates: Partial<ResearchTopic> = { steps, stage: "executing", currentStep: "exec_start" };
+    await onUpdate(updates, "Đã đồng ý thực hiện — chuyển sang Giai đoạn Triển khai");
 
     // Notify PI and performer
     const notifyIds = [topic.principalInvestigatorId, topic.mainPerformerId].filter(Boolean) as string[];
     await Promise.all(notifyIds.filter(uid => uid !== currentUser?.id).map(uid =>
       addNotification({
-        userId: uid, type: "request_approved", title: "Đề tài được đồng ý thực hiện",
-        body: `Đề tài "${topic.title}" đã hoàn tất GĐ1 — bắt đầu Giai đoạn 2 (Công nhận phạm vi ảnh hưởng).`,
+        userId: uid, type: "request_approved", title: "Đề tài bắt đầu triển khai",
+        body: `Đề tài "${topic.title}" đã được duyệt đề cương — bắt đầu giai đoạn thực hiện nghiên cứu.`,
         link: `/research/${topic.id}`, read: false, priority: "normal", createdAt: stamp,
       }).catch(() => {})
     ));

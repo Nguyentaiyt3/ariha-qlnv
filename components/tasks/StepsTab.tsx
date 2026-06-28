@@ -276,7 +276,7 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
           },
         },
       };
-      onSave({ status: "review" as const, pendingChangeRequest: cr }).catch(console.error);
+      onSave({ status: "review" as const, changeRequests: [...(task?.changeRequests ?? []), cr] }).catch(console.error);
       toast.info("Đã gửi đề xuất sửa quy trình con — chờ quản lý phê duyệt.");
       setEditSubWfStep(null);
     }
@@ -766,6 +766,7 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
           : (step.helpers ?? []).includes(currentUser.id) ? "helper"
           : null;
 
+        const isActive = step.status === "in_progress";
         return (
           <div
             key={step.id}
@@ -773,15 +774,20 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
               "rounded-2xl border overflow-hidden",
               isStepDone(step)
                 ? "border-green-200 dark:border-green-900"
-                : step.status === "in_progress"
-                ? "border-blue-200 dark:border-blue-900"
+                : isActive
+                ? "border-blue-400 dark:border-blue-600 ring-2 ring-blue-200 dark:ring-blue-900/60 shadow-md"
                 : "border-slate-200 dark:border-slate-700",
             )}
           >
             {/* ── Step header (always visible) ── */}
             <button
               onClick={() => toggleExpand(step.id)}
-              className="w-full flex items-center gap-3 p-4 bg-[var(--card)] hover:bg-slate-50 dark:hover:bg-slate-800/40 transition text-left"
+              className={cn(
+                "w-full flex items-center gap-3 p-4 transition text-left",
+                isActive
+                  ? "bg-blue-50 dark:bg-blue-950/40 hover:bg-blue-100 dark:hover:bg-blue-950/60"
+                  : "bg-[var(--card)] hover:bg-slate-50 dark:hover:bg-slate-800/40",
+              )}
             >
               <div className={cn(
                 "w-7 h-7 shrink-0 rounded-full flex items-center justify-center text-xs font-bold",
@@ -797,7 +803,12 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
               <div className="flex-1 min-w-0">
                 {/* Tên bước + badge tạm ứng cùng hàng */}
                 <div className="flex items-center gap-1.5 flex-wrap">
-                  <p className="font-medium text-sm dark:text-white truncate">{step.name}</p>
+                  <p className={cn("font-medium text-sm truncate", isActive ? "text-blue-700 dark:text-blue-300" : "dark:text-white")}>{step.name}</p>
+                  {isActive && (
+                    <span className="shrink-0 inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full font-semibold bg-blue-500 text-white animate-pulse">
+                      ● Đang thực hiện
+                    </span>
+                  )}
                   {myRole && (
                     <span className={cn(
                       "shrink-0 text-[10px] px-1.5 py-0.5 rounded-full font-semibold",
