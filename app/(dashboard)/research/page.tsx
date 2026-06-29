@@ -22,7 +22,7 @@ import { useTaskStore } from "@/stores/useTaskStore";
 import { hasPermission, getEffectiveRole, ROLE_RANK } from "@/lib/rbac/permissions";
 import { getResearchTopics, saveResearchTopic, updateResearchTopic, deleteResearchTopic } from "@/lib/firebase/firestore";
 import { RESEARCH_STEPS, STAGE_LABEL, buildInitialSteps, researchProgress, stepMeta } from "@/lib/research";
-import type { ResearchTopic, ResearchStage, ResearchReview, ResearchCouncilSession, IntakeLog, Task } from "@/types";
+import type { ResearchTopic, ResearchStage, ResearchReview, ResearchCouncilSession, IntakeLog, Task, ResearchDesignation } from "@/types";
 import { toast } from "sonner";
 
 // ─── Constants ─────────────────────────────────────────────────
@@ -1150,217 +1150,408 @@ function ReviewTab({
 // ─── Tab: "Hội đồng KH&CN" ────────────────────────────────────
 
 const DECISION_META = {
-  passed:  { label: "Thông qua",   cls: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",  icon: CheckCircle2 },
-  failed:  { label: "Không thông qua", cls: "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400",     icon: XCircle },
-  revise:  { label: "Yêu cầu sửa", cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300", icon: AlertCircle },
+  passed:  { label: "Thông qua",       cls: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",  icon: CheckCircle2 },
+  failed:  { label: "Không thông qua", cls: "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400",         icon: XCircle },
+  revise:  { label: "Yêu cầu sửa",    cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300", icon: AlertCircle },
 } as const;
 
 const VOTE_META = {
-  approve: { label: "Tán thành",   cls: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" },
+  approve: { label: "Tán thành",       cls: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" },
   reject:  { label: "Không tán thành", cls: "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400" },
-  abstain: { label: "Không ý kiến", cls: "bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400" },
+  abstain: { label: "Không ý kiến",    cls: "bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400" },
 } as const;
 
-interface CouncilRow {
-  topic: ResearchTopic;
-  session: ResearchCouncilSession;
-}
-
 function CouncilTab({
-  topics, users, currentUserId, onView,
+  topics, currentUser, canManage, canMonitor, onView, onTopicUpdate,
 }: {
   topics: ResearchTopic[];
-  users: { id: string; name: string }[];
-  currentUserId: string;
+  currentUser: { id: string; researchDesignations?: ResearchDesignation[] };
+  canManage: boolean;
+  canMonitor: boolean;
   onView: (t: ResearchTopic) => void;
+  onTopicUpdate: (id: string, updates: Partial<ResearchTopic>) => void;
 }) {
-  const [stageFilter, setStageFilter] = useState<"all" | "proposal" | "recognition">("all");
+  const [subTab, setSubTab] = useState<"synthesis" | "vote">("synthesis");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [advancing, setAdvancing] = useState(false);
   const [search, setSearch] = useState("");
 
-  const rows = useMemo((): CouncilRow[] => {
-    const result: CouncilRow[] = [];
-    for (const topic of topics) {
-      for (const session of topic.councilSessions ?? []) {
-        if ((session.memberIds ?? []).includes(currentUserId)) {
-          result.push({ topic, session });
-        }
-      }
-    }
-    return result;
-  }, [topics, currentUserId]);
+  // ── Modal gửi phiếu biểu quyết qua email ──
+  const [tokenModal, setTokenModal] = useState<{ topicId: string; sessionId: string; tokens: { name: string; email?: string; link: string }[] } | null>(null);
+  const [sendingTokens, setSendingTokens] = useState<string | null>(null); // sessionId being processed
 
-  const filtered = useMemo(() => rows.filter(r => {
-    if (stageFilter !== "all" && r.session.stage !== stageFilter) return false;
-    if (search) {
-      const q = search.toLowerCase();
-      if (!r.topic.title.toLowerCase().includes(q) && !(r.topic.code ?? "").toLowerCase().includes(q)) return false;
-    }
-    return true;
-  }), [rows, stageFilter, search]);
+  const isCouncilMember = (currentUser?.researchDesignations ?? []).some(d =>
+    ["councilMember", "councilChair", "councilSecretary"].includes(d)
+  );
 
-  const stats = useMemo(() => {
-    const total      = rows.length;
-    const concluded  = rows.filter(r => !!r.session.decision).length;
-    const pending    = rows.filter(r => {
-      if (r.session.decision) return false;
-      if (r.session.mode === "online") {
-        return !(r.session.votes ?? []).find(v => v.memberId === currentUserId);
+  // Sub-tab 1: proposals where both reviews passed, still in p_review
+  const synthesisTopics = useMemo(() => topics.filter(t => {
+    if (t.currentStep !== "p_review") return false;
+    const reviews = (t.reviews ?? []).filter(r => r.stage === "proposal" && r.status === "submitted");
+    return reviews.length >= 2 && reviews.every(r => r.verdict === "pass" || r.verdict === "pass_if_revised");
+  }), [topics]);
+
+  // Sub-tab 2: topics in p_council
+  const councilTopics = useMemo(() => {
+    const all = topics.filter(t => t.currentStep === "p_council");
+    if (!canManage && !canMonitor) {
+      return all.filter(t =>
+        (t.councilSessions ?? []).some(s =>
+          (s.members ?? []).some(m => m.userId === currentUser.id)
+        )
+      );
+    }
+    return all;
+  }, [topics, canManage, canMonitor, currentUser.id]);
+
+  const filteredCouncil = useMemo(() => {
+    if (!search) return councilTopics;
+    const q = search.toLowerCase();
+    return councilTopics.filter(t =>
+      t.title.toLowerCase().includes(q) || (t.code ?? "").toLowerCase().includes(q)
+    );
+  }, [councilTopics, search]);
+
+  // Batch advance selected to p_council
+  async function handleBatchAdvance() {
+    if (selected.size === 0) return;
+    setAdvancing(true);
+    const now = new Date().toISOString();
+    let ok = 0;
+    try {
+      for (const id of selected) {
+        const topic = synthesisTopics.find(t => t.id === id);
+        if (!topic) continue;
+        const steps = (topic.steps ?? []).map(s =>
+          s.key === "p_review"    ? { ...s, status: "passed" as const, completedAt: now }
+          : s.key === "p_council" ? { ...s, status: "active" as const }
+          : s
+        );
+        const updates: Partial<ResearchTopic> = { steps, currentStep: "p_council", updatedAt: now };
+        await fetch(`/api/research/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updates),
+        });
+        onTopicUpdate(id, updates);
+        ok++;
       }
-      return false;
-    }).length;
-    const notVoted   = rows.filter(r =>
-      r.session.mode === "online" &&
-      !r.session.decision &&
-      !(r.session.votes ?? []).find(v => v.memberId === currentUserId)
-    ).length;
-    const inPerson   = rows.filter(r => r.session.mode === "in_person").length;
-    const online     = rows.filter(r => r.session.mode === "online").length;
-    return { total, concluded, pending, notVoted, inPerson, online };
-  }, [rows, currentUserId]);
+      setSelected(new Set());
+      toast.success(`Đã chuyển ${ok} đề cương sang Hội đồng thông qua`);
+    } catch { toast.error("Có lỗi khi chuyển bước"); }
+    finally { setAdvancing(false); }
+  }
+
+  // Generate vote tokens + send email for a session
+  async function handleSendVoteLinks(topicId: string, sessionId: string) {
+    setSendingTokens(sessionId);
+    try {
+      const res = await fetch(`/api/research/${topicId}/council-tokens`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId }),
+      });
+      const data = await res.json() as { tokens?: { name: string; email?: string; link: string }[]; emailErrors?: string[]; error?: string };
+      if (!res.ok) { alert(data.error ?? "Có lỗi xảy ra"); return; }
+      setTokenModal({ topicId, sessionId, tokens: data.tokens ?? [] });
+    } finally {
+      setSendingTokens(null);
+    }
+  }
+
+  const canSeeCouncil = canManage || canMonitor || isCouncilMember;
 
   return (
     <div className="space-y-4">
-      {/* Stat cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <StatCard label="Tổng phiên họp" value={stats.total} />
-        <StatCard label="Chưa biểu quyết" value={stats.notVoted} sub="Phiên họp trực tuyến"
-          variant={stats.notVoted > 0 ? "warning" : "default"} />
-        <StatCard label="Chưa kết luận" value={stats.total - stats.concluded}
-          variant={(stats.total - stats.concluded) > 0 ? "info" : "default"} />
-        <StatCard label="Đã kết luận" value={stats.concluded}
-          variant={stats.concluded > 0 ? "success" : "default"} />
+      {/* Sub-tab switcher */}
+      <div className="flex gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl w-fit">
+        {(canManage || canMonitor) && (
+          <button
+            onClick={() => setSubTab("synthesis")}
+            className={cn("px-4 py-1.5 text-sm font-medium rounded-lg transition",
+              subTab === "synthesis" ? "bg-white dark:bg-slate-700 shadow-sm text-violet-700 dark:text-violet-300" : "text-slate-500 hover:text-slate-700"
+            )}
+          >
+            Tổng hợp kết quả
+            {synthesisTopics.length > 0 && (
+              <span className="ml-1.5 px-1.5 py-0.5 text-[10px] font-bold bg-amber-100 text-amber-700 rounded-full">{synthesisTopics.length}</span>
+            )}
+          </button>
+        )}
+        {canSeeCouncil && (
+          <button
+            onClick={() => setSubTab("vote")}
+            className={cn("px-4 py-1.5 text-sm font-medium rounded-lg transition",
+              subTab === "vote" ? "bg-white dark:bg-slate-700 shadow-sm text-violet-700 dark:text-violet-300" : "text-slate-500 hover:text-slate-700"
+            )}
+          >
+            Hội đồng thông qua
+            {councilTopics.filter(t => !(t.councilSessions ?? []).some(s => s.decision)).length > 0 && (
+              <span className="ml-1.5 px-1.5 py-0.5 text-[10px] font-bold bg-violet-100 text-violet-700 rounded-full">
+                {councilTopics.filter(t => !(t.councilSessions ?? []).some(s => s.decision)).length}
+              </span>
+            )}
+          </button>
+        )}
       </div>
 
-      {/* Filters */}
-      <div className="flex flex-wrap gap-2 items-center">
-        <div className="relative flex-1 min-w-[200px] max-w-xs">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
-          <input value={search} onChange={e => setSearch(e.target.value)}
-            placeholder="Tìm mã, tên đề tài..."
-            className="w-full pl-8 pr-3 py-1.5 text-sm bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-400 dark:text-white" />
+      {/* ── Sub-tab 1: Tổng hợp kết quả thẩm định ── */}
+      {subTab === "synthesis" && (canManage || canMonitor) && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+                Đề cương chờ chuyển Hội đồng
+              </p>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Đã có đủ 2 phiếu phản biện đạt — chọn và chuyển sang Hội đồng thông qua. Hội đồng chỉ thấy sau khi được chuyển.
+              </p>
+            </div>
+            {selected.size > 0 && (
+              <button
+                onClick={handleBatchAdvance}
+                disabled={advancing}
+                className="flex items-center gap-1.5 px-4 py-2 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition shrink-0"
+              >
+                {advancing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Vote className="w-3.5 h-3.5" />}
+                Chuyển sang Hội đồng ({selected.size})
+              </button>
+            )}
+          </div>
+
+          {synthesisTopics.length === 0 ? (
+            <div className="text-center py-16 text-slate-400">
+              <CheckCircle2 className="w-8 h-8 mx-auto mb-2 text-slate-300" />
+              <p className="text-sm">Không có đề cương nào đang chờ tổng hợp.</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-slate-50 dark:bg-slate-800/60 text-left">
+                    <th className="px-3 py-2.5 w-8">
+                      <input type="checkbox"
+                        checked={selected.size === synthesisTopics.length && synthesisTopics.length > 0}
+                        onChange={e => setSelected(e.target.checked ? new Set(synthesisTopics.map(t => t.id)) : new Set())}
+                        className="rounded"
+                      />
+                    </th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500">Đề tài</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-24">PB1</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-24">PB2</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-32">Ngày nộp gần nhất</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
+                  {synthesisTopics.map(topic => {
+                    const reviews = (topic.reviews ?? []).filter(r => r.stage === "proposal" && r.status === "submitted");
+                    const isChecked = selected.has(topic.id);
+                    const lastSubmit = reviews.map(r => r.submittedAt ?? "").sort().reverse()[0];
+                    return (
+                      <tr key={topic.id}
+                        className={cn("transition cursor-pointer", isChecked ? "bg-violet-50/60 dark:bg-violet-900/10" : "hover:bg-slate-50 dark:hover:bg-slate-800/40")}
+                        onClick={() => setSelected(prev => { const n = new Set(prev); n.has(topic.id) ? n.delete(topic.id) : n.add(topic.id); return n; })}
+                      >
+                        <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                          <input type="checkbox" checked={isChecked}
+                            onChange={e => setSelected(prev => { const n = new Set(prev); e.target.checked ? n.add(topic.id) : n.delete(topic.id); return n; })}
+                            className="rounded" />
+                        </td>
+                        <td className="px-3 py-3">
+                          {topic.code && <span className="font-mono text-[11px] text-slate-400 block">{topic.code}</span>}
+                          <p className="font-medium text-slate-800 dark:text-white leading-snug">{topic.title}</p>
+                          {topic.field && <p className="text-[11px] text-slate-400">{topic.field}</p>}
+                        </td>
+                        {reviews.slice(0, 2).map((r, i) => (
+                          <td key={i} className="px-3 py-3">
+                            <span className={cn("text-[11px] px-1.5 py-0.5 rounded-full font-semibold block w-fit",
+                              r.verdict === "pass" ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
+                            )}>
+                              {r.verdict === "pass" ? "ĐẠT" : "ĐẠT (sửa)"}
+                            </span>
+                            {typeof r.score === "number" && (
+                              <span className="text-[11px] text-slate-400 mt-0.5 block">{r.score}/35 điểm</span>
+                            )}
+                          </td>
+                        ))}
+                        <td className="px-3 py-3 text-xs text-slate-400">
+                          {lastSubmit ? new Date(lastSubmit).toLocaleDateString("vi-VN") : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
-        <select value={stageFilter} onChange={e => setStageFilter(e.target.value as typeof stageFilter)}
-          className="text-sm px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-400 dark:text-white">
-          <option value="all">Tất cả giai đoạn</option>
-          <option value="proposal">Thẩm định đề cương</option>
-          <option value="recognition">Công nhận đề tài</option>
-        </select>
-        <span className="text-xs text-slate-400 ml-auto">{filtered.length} phiên họp</span>
-      </div>
+      )}
 
-      <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-slate-50 dark:bg-slate-800/60 text-left">
-              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-8">#</th>
-              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500">Đề tài</th>
-              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-36">Giai đoạn</th>
-              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Hình thức</th>
-              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-32">Ngày họp</th>
-              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Thành viên</th>
-              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-32">Kết luận HĐ</th>
-              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-32">Biểu quyết của tôi</th>
-              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-20"></th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
-            {filtered.length === 0 ? (
-              <tr><td colSpan={9} className="py-16 text-center">
-                <Vote className="w-8 h-8 text-slate-300 mx-auto mb-2" />
-                <p className="text-sm text-slate-400">
-                  {rows.length === 0 ? "Bạn chưa được phân công vào hội đồng nào." : "Không có phiên họp khớp bộ lọc."}
-                </p>
-              </td></tr>
-            ) : filtered.map(({ topic, session }, i) => {
-              const myVote = (session.votes ?? []).find(v => v.memberId === currentUserId);
-              const scheduledDate = session.scheduledAt ? new Date(session.scheduledAt) : null;
-              const memberCount = (session.memberIds ?? []).length;
-              return (
-                <tr key={session.id}
-                  className="hover:bg-violet-50/40 dark:hover:bg-violet-900/10 transition cursor-pointer group"
-                  onClick={() => onView(topic)}>
-                  <td className="px-3 py-3 text-xs text-slate-400">{i + 1}</td>
-                  <td className="px-3 py-3">
-                    {topic.code && <span className="font-mono text-[11px] text-slate-400 block">{topic.code}</span>}
-                    <p className="font-medium text-slate-800 dark:text-white line-clamp-2 max-w-xs leading-snug">{topic.title}</p>
-                  </td>
-                  <td className="px-3 py-3">
-                    <span className={cn("text-[11px] px-2 py-0.5 rounded-full font-semibold",
-                      session.stage === "proposal"
-                        ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
-                        : "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300"
-                    )}>
-                      {session.stage === "proposal" ? "Thẩm định đề cương" : "Công nhận đề tài"}
-                    </span>
-                  </td>
-                  <td className="px-3 py-3">
-                    <span className={cn("text-[11px] px-2 py-0.5 rounded-full font-semibold",
-                      session.mode === "in_person"
-                        ? "bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300"
-                        : "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300"
-                    )}>
-                      {session.mode === "in_person" ? "Họp trực tiếp" : "Trực tuyến"}
-                    </span>
-                  </td>
-                  <td className="px-3 py-3">
-                    {scheduledDate ? (
-                      <span className="text-xs text-slate-600 dark:text-slate-300 flex items-center gap-1">
-                        <Calendar className="w-3 h-3 text-slate-400" />
-                        {scheduledDate.toLocaleDateString("vi-VN")}
-                      </span>
-                    ) : <span className="text-xs text-slate-300 italic">Chưa ấn định</span>}
-                    {session.location && (
-                      <p className="text-[11px] text-slate-400 mt-0.5 truncate max-w-[110px]">{session.location}</p>
-                    )}
-                  </td>
-                  <td className="px-3 py-3">
-                    <span className="flex items-center gap-1 text-xs text-slate-500">
-                      <Users className="w-3 h-3" /> {memberCount} người
-                    </span>
-                    {session.mode === "online" && (
-                      <p className="text-[11px] text-slate-400 mt-0.5">
-                        {(session.votes ?? []).length}/{memberCount} đã bỏ phiếu
-                      </p>
-                    )}
-                  </td>
-                  <td className="px-3 py-3">
-                    {session.decision ? (() => {
-                      const dm = DECISION_META[session.decision];
-                      const DIcon = dm.icon;
-                      return (
-                        <span className={cn("inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full font-semibold", dm.cls)}>
-                          <DIcon className="w-2.5 h-2.5" /> {dm.label}
+      {/* ── Sub-tab 2: Hội đồng thông qua ── */}
+      {subTab === "vote" && canSeeCouncil && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1 max-w-xs">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+              <input value={search} onChange={e => setSearch(e.target.value)}
+                placeholder="Tìm mã, tên đề tài..."
+                className="w-full pl-8 pr-3 py-1.5 text-sm bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-400 dark:text-white" />
+            </div>
+            <span className="text-xs text-slate-400 ml-auto">{filteredCouncil.length} đề tài</span>
+          </div>
+
+          {filteredCouncil.length === 0 ? (
+            <div className="text-center py-16 text-slate-400">
+              <Vote className="w-8 h-8 mx-auto mb-2 text-slate-300" />
+              <p className="text-sm">{councilTopics.length === 0 ? "Chưa có đề tài nào chờ Hội đồng thông qua." : "Không có đề tài khớp bộ lọc."}</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {filteredCouncil.map(topic => {
+                const session = (topic.councilSessions ?? []).find(s => s.stage === "proposal");
+                const myVote = session ? (session.votes ?? []).find(v => v.memberId === currentUser.id || v.voteToken && (session.members ?? []).find(m => m.userId === currentUser.id)?.voteToken === v.voteToken) : undefined;
+                const voteCount = session ? (session.votes ?? []).length : 0;
+                const memberCount = session ? (session.members ?? []).length : 0;
+                const reviews = (topic.reviews ?? []).filter(r => r.stage === "proposal" && r.status === "submitted");
+                return (
+                  <div key={topic.id} className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 p-4 space-y-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex-1 min-w-0">
+                        {topic.code && <span className="font-mono text-[11px] text-slate-400">{topic.code} · </span>}
+                        <span className="font-semibold text-slate-800 dark:text-white">{topic.title}</span>
+                        {topic.field && <p className="text-xs text-slate-400 mt-0.5">{topic.field} · {topic.year}</p>}
+                      </div>
+                      <button onClick={() => onView(topic)} className="shrink-0 text-xs text-violet-600 hover:text-violet-700 flex items-center gap-1 font-medium">
+                        <Eye className="w-3.5 h-3.5" /> Chi tiết
+                      </button>
+                    </div>
+
+                    {/* Review summary */}
+                    <div className="flex gap-2 flex-wrap">
+                      {reviews.map((r, i) => (
+                        <span key={i} className={cn("text-[11px] px-2 py-0.5 rounded-full font-semibold",
+                          r.verdict === "pass" ? "bg-green-100 text-green-700" :
+                          r.verdict === "pass_if_revised" ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-600"
+                        )}>
+                          PB{i + 1}: {r.verdict === "pass" ? "ĐẠT" : r.verdict === "pass_if_revised" ? "ĐẠT (sửa)" : "KHÔNG ĐẠT"}
+                          {typeof r.score === "number" && ` · ${r.score}/35`}
                         </span>
-                      );
-                    })() : <span className="text-xs text-slate-400 italic">Chưa có</span>}
-                  </td>
-                  <td className="px-3 py-3">
-                    {session.mode === "in_person" ? (
-                      <span className="text-xs text-slate-400 italic">Trực tiếp</span>
-                    ) : myVote ? (
-                      <span className={cn("text-[11px] px-2 py-0.5 rounded-full font-semibold", VOTE_META[myVote.vote].cls)}>
-                        {VOTE_META[myVote.vote].label}
-                      </span>
+                      ))}
+                    </div>
+
+                    {/* Session info */}
+                    {session ? (
+                      <div className="bg-slate-50 dark:bg-slate-800 rounded-lg p-3 space-y-2">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className={cn("text-[11px] px-2 py-0.5 rounded-full font-semibold",
+                            session.mode === "in_person" ? "bg-slate-200 text-slate-600" : "bg-indigo-100 text-indigo-700"
+                          )}>
+                            {session.mode === "in_person" ? "Họp trực tiếp" : "Trực tuyến"}
+                          </span>
+                          {session.scheduledAt && (
+                            <span className="text-xs text-slate-500 flex items-center gap-1">
+                              <Calendar className="w-3 h-3" />
+                              {new Date(session.scheduledAt).toLocaleDateString("vi-VN")}
+                            </span>
+                          )}
+                          {session.decision ? (() => {
+                            const dm = DECISION_META[session.decision];
+                            const DIcon = dm.icon;
+                            return <span className={cn("inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full font-semibold", dm.cls)}>
+                              <DIcon className="w-2.5 h-2.5" /> {dm.label}
+                            </span>;
+                          })() : (
+                            <span className="text-[11px] px-2 py-0.5 rounded-full font-semibold bg-amber-100 text-amber-700">Chờ kết luận</span>
+                          )}
+                        </div>
+
+                        {/* Vote progress */}
+                        {memberCount > 0 && (
+                          <div className="text-xs text-slate-500 flex items-center gap-2">
+                            <Users className="w-3 h-3" />
+                            <span>{voteCount}/{memberCount} thành viên đã biểu quyết</span>
+                            {myVote && (
+                              <span className={cn("ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold", VOTE_META[myVote.vote].cls)}>
+                                Bạn: {VOTE_META[myVote.vote].label}
+                              </span>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Action buttons */}
+                        {!session.decision && (canManage || canMonitor) && (
+                          <div className="flex gap-2 flex-wrap pt-1">
+                            <button
+                              onClick={() => onView(topic)}
+                              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-violet-600 hover:bg-violet-700 text-white rounded-lg transition"
+                            >
+                              <Vote className="w-3.5 h-3.5" />
+                              {session.mode === "online" ? "Xem & ghi kết quả" : "Ghi kết quả họp"}
+                            </button>
+                            <button
+                              onClick={() => handleSendVoteLinks(topic.id, session.id)}
+                              disabled={sendingTokens === session.id}
+                              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 hover:bg-slate-50 text-slate-700 dark:text-slate-300 rounded-lg transition disabled:opacity-50"
+                            >
+                              {sendingTokens === session.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Mail className="w-3.5 h-3.5" />}
+                              Gửi phiếu qua email
+                            </button>
+                          </div>
+                        )}
+                        {/* Council member: vote button */}
+                        {!session.decision && isCouncilMember && !myVote && session.mode === "online" && (
+                          <button
+                            onClick={() => onView(topic)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-violet-600 hover:bg-violet-700 text-white rounded-lg transition"
+                          >
+                            <Vote className="w-3.5 h-3.5" /> Biểu quyết
+                          </button>
+                        )}
+                      </div>
                     ) : (
-                      <span className="text-[11px] px-2 py-0.5 rounded-full font-semibold bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
-                        Chưa bỏ phiếu
-                      </span>
+                      <div className="text-xs text-slate-400 italic">
+                        Chưa tạo phiên họp — vào chi tiết đề tài để tạo.
+                        {(canManage || canMonitor) && (
+                          <button onClick={() => onView(topic)} className="ml-1.5 text-violet-500 hover:underline">Mở chi tiết →</button>
+                        )}
+                      </div>
                     )}
-                  </td>
-                  <td className="px-3 py-3">
-                    <button
-                      onClick={e => { e.stopPropagation(); onView(topic); }}
-                      className="opacity-0 group-hover:opacity-100 transition flex items-center gap-1 text-xs text-violet-600 hover:text-violet-700 font-medium">
-                      <Eye className="w-3.5 h-3.5" />
-                      {!myVote && session.mode === "online" && !session.decision ? "Biểu quyết" : "Xem"}
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Modal: link biểu quyết qua email ── */}
+      {tokenModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={() => setTokenModal(null)}>
+          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-700 max-w-lg w-full p-6 space-y-4" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-slate-800 dark:text-white">Link biểu quyết</h3>
+              <button onClick={() => setTokenModal(null)} className="text-slate-400 hover:text-slate-600"><XCircle className="w-5 h-5" /></button>
+            </div>
+            <p className="text-xs text-slate-400">Mỗi link chỉ dùng được 1 lần. Email đã được gửi tới thành viên có email.</p>
+            <div className="space-y-2 max-h-64 overflow-y-auto">
+              {tokenModal.tokens.map((t, i) => (
+                <div key={i} className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800 rounded-lg px-3 py-2">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-semibold text-slate-700 dark:text-slate-200 truncate">{t.name}</p>
+                    {t.email && <p className="text-[11px] text-slate-400 truncate">{t.email}</p>}
+                    <p className="text-[10px] font-mono text-violet-600 truncate mt-0.5">{t.link}</p>
+                  </div>
+                  <button
+                    onClick={() => { navigator.clipboard.writeText(t.link).catch(() => {}); }}
+                    className="shrink-0 text-[10px] text-slate-500 hover:text-violet-600 border border-slate-200 rounded px-1.5 py-0.5"
+                  >Copy</button>
+                </div>
+              ))}
+            </div>
+            <button onClick={() => setTokenModal(null)} className="w-full py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-sm font-medium rounded-lg transition">Đóng</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2414,9 +2605,18 @@ export default function ResearchPage() {
     sum + (t.reviews ?? []).filter(r => r.reviewerId === currentUser.id).length, 0
   ) : 0, [visibleTopics, currentUser]);
 
-  const councilCount = useMemo(() => currentUser ? visibleTopics.reduce((sum, t) =>
-    sum + (t.councilSessions ?? []).filter(s => (s.memberIds ?? []).includes(currentUser.id)).length, 0
-  ) : 0, [visibleTopics, currentUser]);
+  const councilCount = useMemo(() => {
+    if (!currentUser) return 0;
+    const pendingSynthesis = visibleTopics.filter(t => {
+      if (t.currentStep !== "p_review") return false;
+      const reviews = (t.reviews ?? []).filter(r => r.stage === "proposal" && r.status === "submitted");
+      return reviews.length >= 2 && reviews.every(r => r.verdict === "pass" || r.verdict === "pass_if_revised");
+    }).length;
+    const pendingCouncil = visibleTopics.filter(t =>
+      t.currentStep === "p_council" && !(t.councilSessions ?? []).some(s => s.decision)
+    ).length;
+    return pendingSynthesis + pendingCouncil;
+  }, [visibleTopics, currentUser]);
 
   useEffect(() => {
     // Always load regular topics; also merge in intake-pending no-task topics
@@ -2626,9 +2826,11 @@ export default function ResearchPage() {
           {activeTab === "council" && (
             <CouncilTab
               topics={visibleTopics}
-              users={users}
-              currentUserId={currentUser.id}
+              currentUser={currentUser}
+              canManage={canManage}
+              canMonitor={canMonitor}
               onView={t => router.push(`/research/${t.id}`)}
+              onTopicUpdate={handleTopicUpdate}
             />
           )}
           {activeTab === "monitor" && canMonitor && (

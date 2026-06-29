@@ -402,6 +402,10 @@ export interface ResearchCouncilMember {
   academicTitle?: string;
   /** true nếu đã xác nhận tham dự. */
   confirmed?: boolean;
+  /** Email để gửi phiếu biểu quyết (cho hội đồng ngoài hoặc online). */
+  email?: string;
+  /** Token 1 lần để biểu quyết qua link email. */
+  voteToken?: string;
 }
 
 /** Nhóm đề tài NCKH — 1 người thực hiện phụ trách nhiều đề tài trong cùng nhóm. */
