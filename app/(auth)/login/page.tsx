@@ -60,6 +60,8 @@ export default function LoginPage() {
     const redir = params.get("redirect");
     if (redir && redir.startsWith("/")) setRedirectAfterLogin(redir);
     if (params.get("mode") === "register") setMode("register");
+    const prefillEmail = params.get("email");
+    if (prefillEmail) setEmail(prefillEmail);
   }, []);
 
   // Shared fields
