@@ -5,6 +5,7 @@ import { X, Upload, Loader2, FileSpreadsheet, CheckCircle2, AlertTriangle, Chevr
 import { cn, generateId } from "@/lib/utils";
 import { toast } from "sonner";
 import { buildInitialSteps } from "@/lib/research";
+import { researchFileUrl } from "@/lib/researchFileUrl";
 import type { ResearchTopic } from "@/types";
 
 // ─── Column mapping (sheet "Đăng ký Q1" / "Bản sao Đăng ký Q2") ─
@@ -155,7 +156,7 @@ function RowCard({ row, expanded, onToggle }: { row: ParsedRow; expanded: boolea
             <div><span className="text-slate-400">Thành viên:</span> <span className="text-slate-600 dark:text-slate-300">{row.memberNames ? `${row.memberNames.split("\n").length} người` : "—"}</span></div>
           </div>
           {row.proposalFileUrl && (
-            <a href={row.proposalFileUrl} target="_blank" rel="noopener noreferrer"
+            <a href={researchFileUrl(row.proposalFileUrl)} target="_blank" rel="noopener noreferrer"
               className="inline-flex items-center gap-1 text-xs text-violet-600 hover:underline mt-1">
               Xem file đề cương →
             </a>

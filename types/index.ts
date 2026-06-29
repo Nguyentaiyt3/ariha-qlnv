@@ -256,6 +256,9 @@ export interface ResearchReview {
   reviewerEmail?: string;
   reviewerOrg?: string;
   assignedAt: string;
+  assignedBy?: string;      // userId người chỉ định
+  assignedByName?: string;
+  token?: string;           // token bảo mật — gửi qua email để phản biện không cần đăng nhập
   dueAt?: string;
   submittedAt?: string;
 
@@ -276,12 +279,40 @@ export interface ResearchReview {
   grade?: ReviewGrade;      // Xếp loại: Giỏi / Khá / Trung bình / KHÔNG ĐẠT
   needResubmit?: boolean;   // Cần nộp lại bài?
 
+  // ── Ghi chú & highlight của phản biện viên (riêng tư, không chia sẻ) ──
+  reviewerNotes?: string;                  // Ghi chú văn bản tự do
+  reviewerAnnotations?: ResearchAnnotation[]; // Highlight + ghi chú trên file
+
+  // ── Email tracking (quản lý gửi mail mời / nhắc nhở phản biện) ──
+  emailSentAt?: string;      // ISO — lần đầu gửi mail mời
+  lastReminderAt?: string;   // ISO — lần nhắc nhở gần nhất
+  reminderCount?: number;    // tổng số lần nhắc nhở đã gửi
+
   // ── Legacy fields (kept for compatibility) ──
   recommendation?: "pass" | "revise" | "fail";
   score?: number;           // Tổng điểm (tự tính từ scores)
   comments?: string;
   fileUrl?: string;
   status: "assigned" | "submitted";
+}
+
+/**
+ * Highlight + ghi chú trên file đề cương (Word/PDF render). Neo theo nội dung
+ * văn bản (text-quote anchoring) để bám đúng vị trí qua mỗi lần render lại.
+ */
+export interface ResearchAnnotation {
+  id: string;
+  fileUrl: string;            // file mà annotation này gắn vào
+  color: "yellow" | "green" | "pink" | "blue";
+  quote: string;              // đoạn văn bản được bôi
+  prefix?: string;            // ~40 ký tự ngay trước (để neo chính xác)
+  suffix?: string;            // ~40 ký tự ngay sau
+  occurrence?: number;        // lần xuất hiện thứ mấy của quote (0-based) khi trùng
+  note?: string;              // ghi chú kèm theo (có thể rỗng = chỉ highlight)
+  authorId: string;
+  authorName: string;
+  createdAt: string;
+  updatedAt?: string;
 }
 
 export interface ResearchCouncilVote {
@@ -418,8 +449,10 @@ export interface ResearchTopic {
   councilSessions: ResearchCouncilSession[];
   certificates: ResearchCertificate[];
   documents: TaskResource[];
+  annotations?: ResearchAnnotation[];  // highlight + ghi chú trên file đề cương
 
-  taskId?: string;                     // Task liên kết (theo dõi tiến độ + đánh giá 3T)
+  taskId?: string;                     // Task "ô" theo quý (gom nhóm NCKH — auto-match lúc tạo)
+  executionTaskId?: string;            // Task per-đề-tài tự sinh khi vào Triển khai (hub: progress/risk/3T/plan)
   planId?: string;                     // Kế hoạch NCKH liên kết (roll-up khi công nhận)
   approvedToExecute?: boolean;
   revisionCount?: number;              // số lần yêu cầu sửa đổi
@@ -447,6 +480,15 @@ export interface ResearchTopic {
   intakeNote?: string;                  // ghi chú yêu cầu chỉnh sửa / từ chối
   intakeRevisionCount?: number;         // số lần yêu cầu chỉnh sửa
   intakeLogs?: IntakeLog[];             // lịch sử thao tác tiếp nhận
+
+  // Phân công phản biện
+  reviewAssignment?: {
+    delegatedTo?: string;       // userId nhân viên được giao chọn phản biện
+    delegatedName?: string;
+    delegatedAt?: string;
+    dueAt?: string;
+    note?: string;
+  };
 
   // Public resubmit link (no-auth form)
   resubmitToken?: string;              // secure token for public resubmit form
@@ -1025,7 +1067,8 @@ export type WidgetType =
   | "analytics_summary"
   | "quick_actions"
   | "annual_kpi"
-  | "financial_overview";
+  | "financial_overview"
+  | "research_summary";
 
 export interface WidgetConfig {
   id: string;

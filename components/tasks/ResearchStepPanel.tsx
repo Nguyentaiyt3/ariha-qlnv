@@ -4,12 +4,14 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Megaphone, Mail, Link2, Check, X, Loader2, FileText,
   AlertCircle, CheckCircle2, Clock, Search, RotateCcw, Eye,
+  UserPlus, Users, ShieldCheck, Send, ChevronRight,
 } from "lucide-react";
 import { cn, generateId } from "@/lib/utils";
 import { toast } from "sonner";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { IntakeReviewModal } from "@/components/research/IntakeReviewModal";
-import type { Task, TaskStep, User, ResearchTopic, ResearchStepStatus } from "@/types";
+import { AssignReviewersModal } from "@/components/research/AssignReviewersModal";
+import type { Task, TaskStep, User, ResearchTopic, ResearchStepStatus, ResearchReview } from "@/types";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -21,6 +23,11 @@ function isB01Step(name: string) {
 function isB02Step(name: string) {
   const n = name.toLowerCase();
   return n.includes("phân loại") || (n.includes("tiếp nhận") && n.includes("đề cương"));
+}
+
+function isB03Step(name: string) {
+  const n = name.toLowerCase();
+  return n.includes("thẩm định") || (n.includes("phản biện") && (n.includes("gửi") || n.includes("phân công")));
 }
 
 // Build updated steps that mark all early steps passed and set p_compile in_progress
@@ -557,6 +564,383 @@ function B02IntakePanel({ task, users, currentUser, canView, canUpdate }: Props)
   );
 }
 
+// ─── B03: Gửi thẩm định đề cương ─────────────────────────────────────────────
+
+const REVIEW_STATUS_COLOR: Record<string, string> = {
+  assigned:  "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
+  submitted: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300",
+};
+
+const VERDICT_LABEL: Record<string, { label: string; cls: string }> = {
+  pass:            { label: "ĐẠT",             cls: "text-green-600 dark:text-green-400" },
+  pass_if_revised: { label: "ĐẠT — sửa",       cls: "text-amber-600 dark:text-amber-400" },
+  fail:            { label: "KHÔNG ĐẠT",        cls: "text-red-600 dark:text-red-400" },
+};
+
+function proposalReviews(topic: ResearchTopic): ResearchReview[] {
+  return (topic.reviews ?? []).filter(r => r.stage === "proposal");
+}
+
+function B03ReviewPanel({ task, users, currentUser, canView, canUpdate }: Props) {
+  const [topics, setTopics]           = useState<ResearchTopic[]>([]);
+  const [loading, setLoading]         = useState(true);
+  const [search, setSearch]           = useState("");
+  const [selected, setSelected]       = useState<Set<string>>(new Set());
+  const [showAssign, setShowAssign]   = useState(false);
+  const [expandedId, setExpandedId]   = useState<string | null>(null);
+  const allSystemUsers = useTaskStore(s => s.users);
+
+  const fetchTopics = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/research`);
+      const data = await res.json() as { topics: ResearchTopic[] };
+      const passed = (data.topics ?? []).filter(t => t.intakeStatus === "passed");
+      setTopics(passed);
+    } catch {
+      toast.error("Không thể tải danh sách đề tài");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchTopics(); }, [fetchTopics]);
+
+  // ── Summary stats ──────────────────────────────────────────────────────────
+  const stats = useMemo(() => {
+    const total      = topics.length;
+    const noReviewer = topics.filter(t => proposalReviews(t).length === 0).length;
+    const one        = topics.filter(t => proposalReviews(t).length === 1).length;
+    const full       = topics.filter(t => proposalReviews(t).length >= 2).length;
+    const totalSlots = topics.length * 2;
+    const emailSent  = topics.reduce((s, t) => s + proposalReviews(t).filter(r => r.reviewerEmail).length, 0);
+    const submitted  = topics.reduce((s, t) => s + proposalReviews(t).filter(r => r.status === "submitted").length, 0);
+    const passCount  = topics.reduce((s, t) => s + proposalReviews(t).filter(r => r.verdict === "pass" || r.verdict === "pass_if_revised").length, 0);
+    const failCount  = topics.reduce((s, t) => s + proposalReviews(t).filter(r => r.verdict === "fail").length, 0);
+    return { total, noReviewer, one, full, totalSlots, emailSent, submitted, passCount, failCount };
+  }, [topics]);
+
+  const filtered = useMemo(() => {
+    if (!search.trim()) return topics;
+    const q = search.toLowerCase();
+    return topics.filter(t =>
+      t.title.toLowerCase().includes(q) ||
+      (t.principalInvestigatorName ?? "").toLowerCase().includes(q) ||
+      (t.code ?? "").toLowerCase().includes(q)
+    );
+  }, [topics, search]);
+
+  function handleTopicUpdate(id: string, updates: Partial<ResearchTopic>) {
+    setTopics(prev => prev.map(t => t.id === id ? { ...t, ...updates } : t));
+  }
+
+  function toggleSelect(id: string) {
+    setSelected(prev => { const s = new Set(prev); if (s.has(id)) s.delete(id); else s.add(id); return s; });
+  }
+
+  if (!canView) return null;
+
+  return (
+    <>
+      <div className="space-y-4 rounded-xl border border-violet-200 dark:border-violet-800 bg-violet-50/40 dark:bg-violet-900/10 p-4">
+
+        {/* Header */}
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-2 text-sm font-semibold text-violet-700 dark:text-violet-300">
+            <ShieldCheck className="w-4 h-4 shrink-0" />
+            Gửi thẩm định đề cương ({topics.length} đề tài đã tiếp nhận)
+          </div>
+          {canUpdate && selected.size > 0 && (
+            <button
+              onClick={() => setShowAssign(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-violet-600 hover:bg-violet-700 text-white transition"
+            >
+              <UserPlus className="w-3.5 h-3.5" />
+              Phân công ({selected.size})
+            </button>
+          )}
+        </div>
+
+        {/* ── 3×3 summary grid ─────────────────────────────────────────────── */}
+        <div className="grid grid-cols-3 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+          {[
+            { label: "Tổng đề tài", value: stats.total,       cls: "text-slate-700 dark:text-slate-200", bg: "bg-white dark:bg-slate-800" },
+            { label: "Chưa phân công", value: stats.noReviewer, cls: "text-red-600 dark:text-red-400",    bg: "bg-red-50 dark:bg-red-900/10" },
+            { label: "Phân công 1/2",  value: stats.one,        cls: "text-amber-600 dark:text-amber-400", bg: "bg-amber-50 dark:bg-amber-900/10" },
+            { label: "Đủ 2 phản biện", value: stats.full,       cls: "text-green-600 dark:text-green-400", bg: "bg-green-50 dark:bg-green-900/10" },
+            { label: "Đã nộp phiếu",  value: `${stats.submitted}/${stats.totalSlots}`, cls: "text-violet-600 dark:text-violet-400", bg: "bg-violet-50 dark:bg-violet-900/10" },
+            { label: "Đạt / Không đạt", value: `${stats.passCount}/${stats.failCount}`, cls: "text-teal-600 dark:text-teal-400", bg: "bg-teal-50 dark:bg-teal-900/10" },
+          ].map(s => (
+            <div key={s.label} className={cn("rounded-xl border border-slate-200 dark:border-slate-700 px-3 py-2.5 text-center", s.bg)}>
+              <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-tight">{s.label}</p>
+              <p className={cn("text-lg font-bold mt-0.5 leading-none", s.cls)}>{s.value}</p>
+            </div>
+          ))}
+        </div>
+
+        {/* Progress bar */}
+        {stats.totalSlots > 0 && (
+          <div className="space-y-1">
+            <div className="flex justify-between text-[11px] text-slate-500">
+              <span>Tiến độ phản biện</span>
+              <span className="font-medium">{stats.submitted}/{stats.totalSlots} phiếu đã nộp</span>
+            </div>
+            <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-violet-500 transition-all"
+                style={{ width: `${Math.round((stats.submitted / stats.totalSlots) * 100)}%` }}
+              />
+            </div>
+            <div className="flex gap-3 text-[11px]">
+              <span className="text-green-600 dark:text-green-400">{stats.submitted} đã nộp</span>
+              <span className="text-amber-600 dark:text-amber-400">{stats.totalSlots - stats.submitted} chờ phản biện</span>
+              {stats.emailSent > 0 && <span className="text-blue-500">{stats.emailSent} email đã gửi</span>}
+            </div>
+          </div>
+        )}
+
+        {/* Search + select-all */}
+        {topics.length > 0 && (
+          <div className="flex items-center gap-2">
+            {canUpdate && (
+              <label className="flex items-center gap-1.5 cursor-pointer shrink-0">
+                <input
+                  type="checkbox"
+                  checked={selected.size === filtered.length && filtered.length > 0}
+                  onChange={e => setSelected(e.target.checked ? new Set(filtered.map(t => t.id)) : new Set())}
+                  className="accent-violet-600"
+                />
+                <span className="text-xs text-slate-500">Chọn tất cả</span>
+              </label>
+            )}
+            {topics.length > 3 && (
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                <input
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                  placeholder="Tìm đề tài, chủ nhiệm..."
+                  className="w-full pl-8 pr-4 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-violet-500"
+                />
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Table */}
+        {loading ? (
+          <div className="flex items-center gap-2 text-sm text-slate-400 py-6 justify-center">
+            <Loader2 className="w-4 h-4 animate-spin" /> Đang tải...
+          </div>
+        ) : topics.length === 0 ? (
+          <div className="flex items-center gap-2 text-sm text-slate-400 py-6 justify-center">
+            <AlertCircle className="w-4 h-4" />
+            Chưa có đề tài nào được tiếp nhận
+          </div>
+        ) : (
+          <div className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-slate-100 dark:bg-slate-800/60 text-xs text-slate-500 dark:text-slate-400">
+                  {canUpdate && <th className="w-8 px-3 py-2" />}
+                  <th className="text-left px-3 py-2 font-medium">Đề tài</th>
+                  <th className="text-left px-3 py-2 font-medium hidden sm:table-cell">Chủ nhiệm</th>
+                  <th className="text-center px-3 py-2 font-medium">Phản biện 1</th>
+                  <th className="text-center px-3 py-2 font-medium">Phản biện 2</th>
+                  <th className="text-center px-3 py-2 font-medium">Thao tác</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {filtered.map(topic => {
+                  const reviews = proposalReviews(topic);
+                  const isSelected = selected.has(topic.id);
+                  const isExpanded = expandedId === topic.id;
+
+                  return (
+                    <>
+                      <tr
+                        key={topic.id}
+                        className={cn(
+                          "transition",
+                          isSelected ? "bg-violet-50 dark:bg-violet-900/10" : "bg-white dark:bg-slate-900/40 hover:bg-slate-50 dark:hover:bg-slate-800/40"
+                        )}
+                      >
+                        {canUpdate && (
+                          <td className="px-3 py-2.5">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => toggleSelect(topic.id)}
+                              className="accent-violet-600 cursor-pointer"
+                            />
+                          </td>
+                        )}
+                        <td className="px-3 py-2.5 max-w-[200px]">
+                          <p className="text-xs font-medium text-slate-800 dark:text-white leading-snug line-clamp-2">{topic.title}</p>
+                          {topic.code && <span className="text-[10px] text-slate-400">{topic.code}</span>}
+                        </td>
+                        <td className="px-3 py-2.5 text-xs text-slate-600 dark:text-slate-300 hidden sm:table-cell whitespace-nowrap">
+                          {topic.principalInvestigatorName ?? "—"}
+                        </td>
+
+                        {/* Reviewer slots */}
+                        {[0, 1].map(i => {
+                          const r = reviews[i];
+                          return (
+                            <td key={i} className="px-3 py-2.5 text-center">
+                              {r ? (
+                                <div className="space-y-0.5">
+                                  <span className={cn("text-[10px] font-semibold px-2 py-0.5 rounded-full block",
+                                    r.status === "submitted"
+                                      ? "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300"
+                                      : "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300"
+                                  )}>
+                                    {r.status === "submitted" ? "Đã nộp" : "Chờ PB"}
+                                  </span>
+                                  {r.verdict && (
+                                    <span className={cn("text-[10px] font-bold block", VERDICT_LABEL[r.verdict]?.cls ?? "")}>
+                                      {VERDICT_LABEL[r.verdict]?.label}
+                                    </span>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="text-[10px] text-slate-300 dark:text-slate-600">—</span>
+                              )}
+                            </td>
+                          );
+                        })}
+
+                        <td className="px-3 py-2.5 text-center">
+                          <div className="flex items-center justify-center gap-1">
+                            {canUpdate && (
+                              <button
+                                onClick={() => { setSelected(new Set([topic.id])); setShowAssign(true); }}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold rounded-lg border border-violet-200 dark:border-violet-800 text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/20 bg-white dark:bg-slate-800 transition"
+                              >
+                                <UserPlus className="w-3 h-3" />
+                                {reviews.length >= 2 ? "Xem PB" : "Phân công"}
+                              </button>
+                            )}
+                            {reviews.length > 0 && (
+                              <button
+                                onClick={() => setExpandedId(isExpanded ? null : topic.id)}
+                                className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 transition"
+                                title="Xem chi tiết phản biện"
+                              >
+                                <ChevronRight className={cn("w-3.5 h-3.5 transition-transform", isExpanded && "rotate-90")} />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+
+                      {/* Expanded row — review details */}
+                      {isExpanded && reviews.length > 0 && (
+                        <tr key={`${topic.id}-expand`} className="bg-slate-50 dark:bg-slate-800/40">
+                          <td colSpan={canUpdate ? 6 : 5} className="px-4 py-3">
+                            <div className="space-y-2">
+                              {reviews.map((r, i) => {
+                                const scores = r.scores;
+                                const total = scores
+                                  ? Object.values(scores).reduce((s, v) => s + (v ?? 0), 0)
+                                  : null;
+                                return (
+                                  <div key={r.id} className="rounded-lg border border-slate-200 dark:border-slate-700 p-3 space-y-1.5 bg-white dark:bg-slate-900/60">
+                                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                                      <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+                                        Phản biện {i + 1}
+                                        {r.reviewerType === "external" && <span className="ml-1 text-slate-400">(ngoài)</span>}
+                                      </p>
+                                      <div className="flex items-center gap-1.5 flex-wrap">
+                                        <span className={cn("text-[10px] font-semibold px-2 py-0.5 rounded-full",
+                                          r.status === "submitted"
+                                            ? "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300"
+                                            : "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300"
+                                        )}>
+                                          {r.status === "submitted" ? "Đã nộp phiếu" : "Chờ phản biện"}
+                                        </span>
+                                        {r.dueAt && (
+                                          <span className="text-[10px] text-slate-400">Hạn: {new Date(r.dueAt).toLocaleDateString("vi-VN")}</span>
+                                        )}
+                                      </div>
+                                    </div>
+
+                                    {r.status === "submitted" && (
+                                      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs mt-1">
+                                        {total !== null && (
+                                          <p className="text-slate-600 dark:text-slate-300">
+                                            Tổng điểm: <span className="font-bold text-violet-600">{total}/35</span>
+                                          </p>
+                                        )}
+                                        {r.verdict && (
+                                          <p className={cn("font-bold", VERDICT_LABEL[r.verdict]?.cls ?? "")}>
+                                            {VERDICT_LABEL[r.verdict]?.label}
+                                          </p>
+                                        )}
+                                        {r.grade && (
+                                          <p className="text-slate-500">Xếp loại: <span className="font-medium text-slate-700 dark:text-slate-300">
+                                            {({ excellent: "Giỏi", good: "Khá", average: "Trung bình", fail: "Không đạt" } as Record<string, string>)[r.grade] ?? r.grade}
+                                          </span></p>
+                                        )}
+                                        {r.submittedAt && (
+                                          <p className="text-slate-400 text-[10px]">Nộp lúc: {new Date(r.submittedAt).toLocaleString("vi-VN")}</p>
+                                        )}
+                                      </div>
+                                    )}
+
+                                    {/* Email / link info (chỉ hiện với canUpdate) */}
+                                    {canUpdate && r.token && r.status === "assigned" && (
+                                      <div className="flex items-center gap-2 mt-1">
+                                        <span className="text-[10px] text-slate-400 truncate flex-1">
+                                          Link: {typeof window !== "undefined" ? `${window.location.origin}/review/${r.token}` : `/review/${r.token}`}
+                                        </span>
+                                        <button
+                                          onClick={() => {
+                                            const link = `${window.location.origin}/review/${r.token}`;
+                                            navigator.clipboard.writeText(link);
+                                            toast.success("Đã sao chép link phản biện");
+                                          }}
+                                          className="text-[10px] text-violet-600 hover:underline shrink-0 font-medium"
+                                        >
+                                          Copy link
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {!canUpdate && topics.length > 0 && (
+          <p className="text-xs text-slate-400 italic">Chỉ người thực hiện chính mới có thể phân công phản biện.</p>
+        )}
+      </div>
+
+      {/* AssignReviewersModal */}
+      {showAssign && selected.size > 0 && (
+        <AssignReviewersModal
+          topics={topics.filter(t => selected.has(t.id))}
+          users={allSystemUsers as User[]}
+          currentUser={currentUser}
+          canManage={canUpdate}
+          onClose={() => { setShowAssign(false); setSelected(new Set()); }}
+          onTopicUpdate={handleTopicUpdate}
+        />
+      )}
+    </>
+  );
+}
+
 // ─── Main export ──────────────────────────────────────────────────────────────
 
 export function ResearchStepPanel(props: Props) {
@@ -564,5 +948,6 @@ export function ResearchStepPanel(props: Props) {
 
   if (isB01Step(step.name)) return <B01NotifyPanel {...props} />;
   if (isB02Step(step.name)) return <B02IntakePanel {...props} />;
+  if (isB03Step(step.name)) return <B03ReviewPanel {...props} />;
   return null;
 }

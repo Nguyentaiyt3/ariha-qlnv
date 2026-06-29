@@ -1,14 +1,17 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useMemo } from "react";
 import {
-  Loader2, FileText, Download, ExternalLink, Check, X,
+  Loader2, FileText, Check, X,
   AlertCircle, User as UserIcon, RotateCcw,
   ShieldCheck, UserCheck, MailPlus,
+  Maximize2, Minimize2, ChevronDown, ChevronUp, Save,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn, generateId } from "@/lib/utils";
-import { normText, jaccardWords } from "@/lib/researchUtils";
+import { normText, jaccardWords, isTopicAuthor } from "@/lib/researchUtils";
+import { DocxAnnotator } from "./DocxAnnotator";
+import { addAnnotation, updateAnnotation, deleteAnnotation } from "@/lib/researchAnnotations";
 import type { ResearchTopic, Task } from "@/types";
 
 // ─── Intake checklist ─────────────────────────────────────────────────────────
@@ -23,97 +26,6 @@ const CHECKLIST = [
 
 type CheckKey = (typeof CHECKLIST)[number]["key"];
 
-// ─── DocxViewer — client-side docx rendering via docx-preview ────────────────
-
-function DocxViewer({ fileUrl, absoluteFileUrl }: { fileUrl: string; absoluteFileUrl: string }) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [state, setState] = useState<"loading" | "done" | "not_found" | "error">("loading");
-  const [errorDetail, setErrorDetail] = useState<string>("");
-
-  useEffect(() => {
-    if (!fileUrl || !containerRef.current) return;
-    let cancelled = false;
-    setState("loading");
-    setErrorDetail("");
-
-    const proxyUrl = fileUrl.startsWith("http")
-      ? fileUrl
-      : `/api/research-file?path=${encodeURIComponent(fileUrl)}`;
-
-    import("docx-preview").then(({ renderAsync }) => {
-      return fetch(proxyUrl)
-        .then(r => {
-          if (r.status === 404) throw Object.assign(new Error("not_found"), { code: "not_found" });
-          if (!r.ok) throw new Error(`Không tải được file (HTTP ${r.status})`);
-          return r.arrayBuffer();
-        })
-        .then(buf => {
-          if (cancelled || !containerRef.current) return;
-          return renderAsync(buf, containerRef.current, undefined, {
-            className: "docx-preview-body",
-            inWrapper: true,
-            ignoreWidth: true,
-          });
-        });
-    }).then(() => {
-      if (!cancelled) setState("done");
-    }).catch(err => {
-      console.error("[DocxViewer] preview failed:", err);
-      if (!cancelled) {
-        if ((err as any).code === "not_found") {
-          setState("not_found");
-        } else {
-          setErrorDetail(err instanceof Error ? err.message : String(err));
-          setState("error");
-        }
-      }
-    });
-
-    return () => { cancelled = true; };
-  }, [fileUrl]);
-
-  return (
-    <div className="relative w-full h-full flex flex-col">
-      {state === "loading" && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-white dark:bg-slate-900 z-10">
-          <Loader2 className="w-8 h-8 animate-spin text-blue-400" />
-          <p className="text-sm text-slate-400">Đang tải bản xem trước...</p>
-        </div>
-      )}
-      {state === "not_found" && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 bg-white dark:bg-slate-900 z-10">
-          <FileText className="w-12 h-12 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm font-medium text-slate-600 dark:text-slate-300 text-center">File đề cương không tồn tại trên máy chủ</p>
-          <p className="text-[11px] text-slate-400 text-center max-w-xs">
-            File đã bị xóa hoặc đường dẫn không hợp lệ. Yêu cầu tác giả nộp lại file qua form chỉnh sửa.
-          </p>
-        </div>
-      )}
-      {state === "error" && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 p-6 bg-white dark:bg-slate-900 z-10">
-          <FileText className="w-12 h-12 text-slate-300 dark:text-slate-600" />
-          <p className="text-sm text-slate-500 text-center">Không thể hiển thị bản xem trước.</p>
-          {errorDetail && (
-            <p className="text-[11px] text-red-400 text-center max-w-xs break-words">{errorDetail}</p>
-          )}
-          <a
-            href={absoluteFileUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition"
-          >
-            <Download className="w-4 h-4" /> Tải xuống để xem
-          </a>
-        </div>
-      )}
-      <div
-        ref={containerRef}
-        className="flex-1 overflow-y-auto bg-white dark:bg-slate-100 p-4"
-        style={{ visibility: state === "done" ? "visible" : "hidden" }}
-      />
-    </div>
-  );
-}
 
 // ─── InfoRow helper ──────────────────────────────────────────────────────────
 
@@ -164,6 +76,7 @@ export function IntakeReviewModal({
   onAccept,
   onRevise,
   onReject,
+  onLinkTask,
   onClose,
 }: {
   topic: ResearchTopic;
@@ -178,6 +91,8 @@ export function IntakeReviewModal({
   onAccept: (note: string, linkedTaskId: string, intakeLogs: ResearchTopic["intakeLogs"], matchedUserId?: string) => Promise<void>;
   onRevise: (reason: string, intakeLogs: ResearchTopic["intakeLogs"]) => Promise<void>;
   onReject: (reason: string, intakeLogs: ResearchTopic["intakeLogs"]) => Promise<void>;
+  /** Lưu phân loại nhiệm vụ độc lập (không cần tiếp nhận). */
+  onLinkTask?: (linkedTaskId: string) => Promise<void>;
   onClose: () => void;
 }) {
   const [checks, setChecks] = useState<Record<CheckKey, boolean>>({
@@ -188,6 +103,13 @@ export function IntakeReviewModal({
   const [verdict,      setVerdict]      = useState<"accept" | "revise" | "reject" | null>(null);
   const [linkedTaskId, setLinkedTaskId] = useState(taskId);
   const [submitting,   setSubmitting]   = useState(false);
+
+  // ── Layout toggles ──
+  const [fullscreen,   setFullscreen]   = useState(false);
+  const [showInfo,     setShowInfo]     = useState(true);   // "Thông tin đề tài" section
+  const [showAnalysis, setShowAnalysis] = useState(true);   // "Phân tích tự động" section
+  const [savingLink,   setSavingLink]   = useState(false);
+  const [linkSaved,    setLinkSaved]    = useState(false);
 
   // Capture the moment the modal was opened
   const reviewedAt = useMemo(() => new Date(), []);
@@ -202,20 +124,6 @@ export function IntakeReviewModal({
   const isNoTask = !topic.taskId;
 
   const fileUrl = topic.proposalFileUrl;
-  const isPdf = !!fileUrl && (
-    fileUrl.toLowerCase().includes(".pdf") ||
-    fileUrl.toLowerCase().includes("application/pdf")
-  );
-  // docx-preview only supports OOXML (.docx); .doc is binary OLE and cannot be rendered
-  const isDocx = !!fileUrl && /\.docx$/i.test(fileUrl);
-  const isDoc  = !!fileUrl && /\.doc$/i.test(fileUrl) && !isDocx;
-  // Use the proxy route for all open/download links to avoid URL-encoding issues
-  // with Vietnamese filenames in Next.js static serving.
-  const absoluteFileUrl = useMemo(() => {
-    if (!fileUrl) return "";
-    if (fileUrl.startsWith("http")) return fileUrl;
-    return `/api/research-file?path=${encodeURIComponent(fileUrl)}`;
-  }, [fileUrl]);
 
   // Smart-sort NCKH tasks: tasks matching topic's year + quarter come first
   const sortedNckhTasks = useMemo(() => {
@@ -302,13 +210,16 @@ export function IntakeReviewModal({
   const [registerEmailSent,     setRegisterEmailSent]     = useState(false);
   const [registerEmailSending,  setRegisterEmailSending]  = useState(false);
 
+  // Xung đột lợi ích: tác giả / đồng tác giả không được tự kiểm tra, tiếp nhận
+  const isSelfAuthored = isTopicAuthor({ id: currentUserId }, topic);
+
   const checkedCount = Object.values(checks).filter(Boolean).length;
   const allChecked   = checkedCount === CHECKLIST.length;
-  const canSubmit = verdict === "accept"
+  const canSubmit = !isSelfAuthored && (verdict === "accept"
     ? allChecked && !!linkedTaskId.trim()
     : verdict !== null
     ? reason.trim().length > 0
-    : false;
+    : false);
 
   function toggle(key: CheckKey) {
     setChecks(prev => ({ ...prev, [key]: !prev[key] }));
@@ -352,6 +263,19 @@ export function IntakeReviewModal({
     }
   }
 
+  async function handleSaveLink() {
+    if (!onLinkTask || !linkedTaskId.trim() || savingLink) return;
+    setSavingLink(true);
+    setLinkSaved(false);
+    try {
+      await onLinkTask(linkedTaskId.trim());
+      setLinkSaved(true);
+      setTimeout(() => setLinkSaved(false), 2500);
+    } finally {
+      setSavingLink(false);
+    }
+  }
+
   async function handleSubmit() {
     if (!verdict || !canSubmit) return;
     setSubmitting(true);
@@ -369,10 +293,13 @@ export function IntakeReviewModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3">
+    <div className={cn("fixed inset-0 z-50 flex items-center justify-center bg-black/70", fullscreen ? "p-0" : "p-3")}>
       <div
-        className="w-full max-w-6xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-2xl shadow-2xl flex flex-col"
-        style={{ height: "min(94vh, 860px)" }}
+        className={cn(
+          "w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-2xl flex flex-col",
+          fullscreen ? "max-w-none h-full rounded-none" : "max-w-6xl rounded-2xl",
+        )}
+        style={fullscreen ? { height: "100vh" } : { height: "min(94vh, 860px)" }}
       >
         {/* ── Header ── */}
         <div className="px-5 py-3.5 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between shrink-0">
@@ -383,9 +310,18 @@ export function IntakeReviewModal({
             </h2>
             <p className="text-[11px] text-slate-400 truncate">{topic.title}</p>
           </div>
-          <button onClick={onClose} className="shrink-0 p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-600 transition ml-3">
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-1 shrink-0 ml-3">
+            <button
+              onClick={() => setFullscreen(f => !f)}
+              title={fullscreen ? "Thu nhỏ" : "Phóng to toàn màn hình"}
+              className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-600 transition"
+            >
+              {fullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+            </button>
+            <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-600 transition">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* ── 2-column body (2/3 + 1/3) ── */}
@@ -397,43 +333,19 @@ export function IntakeReviewModal({
           <div className="flex flex-col overflow-hidden bg-slate-100 dark:bg-slate-950">
             <div className="px-4 py-2 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex items-center gap-3 shrink-0">
               <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">File đề cương</p>
-              {topic.proposalFileUrl && (
-                <a
-                  href={absoluteFileUrl || topic.proposalFileUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="ml-auto inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/20 transition"
-                >
-                  <ExternalLink className="w-3 h-3" /> Mở tab mới
-                </a>
-              )}
             </div>
             <div className="flex-1 overflow-hidden">
               {fileUrl ? (
-                isPdf ? (
-                  <iframe src={fileUrl} className="w-full h-full border-0" title="File đề cương" />
-                ) : isDoc ? (
-                  /* .doc (binary OLE) cannot be rendered in browser — offer download */
-                  <div className="flex flex-col items-center justify-center h-full gap-4 p-6 text-slate-400">
-                    <FileText className="w-14 h-14 opacity-30" />
-                    <p className="text-sm text-slate-500 text-center">
-                      File <span className="font-mono font-semibold">.doc</span> không hỗ trợ xem trước trực tiếp.
-                    </p>
-                    <a
-                      href={absoluteFileUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition"
-                    >
-                      <Download className="w-4 h-4" /> Tải xuống để xem
-                    </a>
-                    <p className="text-[11px] text-slate-400 text-center">
-                      Yêu cầu tác giả nộp lại dạng <span className="font-semibold">.docx</span> hoặc <span className="font-semibold">.pdf</span> để xem trước.
-                    </p>
-                  </div>
-                ) : (
-                  <DocxViewer fileUrl={fileUrl} absoluteFileUrl={absoluteFileUrl} />
-                )
+                <DocxAnnotator
+                  fileUrl={fileUrl}
+                  annotations={topic.annotations ?? []}
+                  canAnnotate={!!currentUserId}
+                  canManageAll
+                  currentUserId={currentUserId}
+                  onAdd={(p) => addAnnotation(topic.id, p)}
+                  onUpdate={(id, patch) => updateAnnotation(topic.id, id, patch)}
+                  onDelete={(id) => deleteAnnotation(topic.id, id)}
+                />
               ) : (
                 <div className="flex flex-col items-center justify-center h-full gap-4 text-slate-400">
                   <FileText className="w-16 h-16 opacity-30" />
@@ -450,11 +362,16 @@ export function IntakeReviewModal({
           <div className="overflow-y-auto bg-white dark:bg-slate-900 flex flex-col">
 
             {/* ══════════ SECTION 1: THÔNG TIN ĐỀ TÀI ══════════ */}
-            <div className="px-4 py-2.5 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 sticky top-0 z-10">
-              <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Thông tin đề tài</p>
-            </div>
+            <button
+              type="button"
+              onClick={() => setShowInfo(v => !v)}
+              className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 sticky top-0 z-10 flex items-center justify-between hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+            >
+              <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Thông tin đề tài</span>
+              {showInfo ? <ChevronUp className="w-3.5 h-3.5 text-slate-400" /> : <ChevronDown className="w-3.5 h-3.5 text-slate-400" />}
+            </button>
 
-            <div className="p-4 space-y-2.5 border-b-4 border-slate-100 dark:border-slate-800">
+            <div className={cn("p-4 space-y-2.5 border-b-4 border-slate-100 dark:border-slate-800", !showInfo && "hidden")}>
               {/* Title */}
               <div className="text-[11px] space-y-0.5">
                 <p className="text-slate-400">Tên đề tài</p>
@@ -515,13 +432,18 @@ export function IntakeReviewModal({
             </div>
 
             {/* ══════════ SECTION 1.5: PHÂN TÍCH TỰ ĐỘNG ══════════ */}
-            <div className="px-4 py-2.5 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 sticky top-0 z-10">
-              <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setShowAnalysis(v => !v)}
+              className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 sticky top-0 z-10 flex items-center justify-between hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+            >
+              <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
                 <ShieldCheck className="w-3 h-3" /> Phân tích tự động
-              </p>
-            </div>
+              </span>
+              {showAnalysis ? <ChevronUp className="w-3.5 h-3.5 text-slate-400" /> : <ChevronDown className="w-3.5 h-3.5 text-slate-400" />}
+            </button>
 
-            <div className="p-4 space-y-3 border-b-4 border-slate-100 dark:border-slate-800">
+            <div className={cn("p-4 space-y-3 border-b-4 border-slate-100 dark:border-slate-800", !showAnalysis && "hidden")}>
               {/* Trùng lặp */}
               <div>
                 <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Trùng lặp đề tài</p>
@@ -751,6 +673,21 @@ export function IntakeReviewModal({
                   {taskName && linkedTaskId === taskId && (
                     <p className="text-[11px] text-amber-600 dark:text-amber-400">→ {taskName}</p>
                   )}
+                  {onLinkTask && (
+                    <button
+                      type="button"
+                      onClick={handleSaveLink}
+                      disabled={!linkedTaskId.trim() || savingLink || linkedTaskId === topic.taskId}
+                      className={cn(
+                        "w-full mt-1 py-1.5 text-[11px] font-semibold rounded-lg flex items-center justify-center gap-1.5 transition disabled:opacity-40 disabled:cursor-not-allowed",
+                        linkSaved ? "bg-emerald-500 text-white" : "bg-amber-500 hover:bg-amber-600 text-white",
+                      )}
+                    >
+                      {savingLink ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        : linkSaved ? <><Check className="w-3.5 h-3.5" /> Đã lưu phân loại</>
+                        : <><Save className="w-3.5 h-3.5" /> Lưu phân loại</>}
+                    </button>
+                  )}
                 </div>
               )}
 
@@ -851,7 +788,13 @@ export function IntakeReviewModal({
 
             {/* ── Footer sticky at bottom ── */}
             <div className="px-4 py-3 border-t border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shrink-0 space-y-2">
-              {verdict === "accept" && !allChecked && (
+              {isSelfAuthored && (
+                <p className="text-[11px] text-red-600 dark:text-red-400 flex items-start gap-1.5 bg-red-50 dark:bg-red-900/15 border border-red-200 dark:border-red-800 rounded-lg px-2.5 py-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-px" />
+                  Bạn là tác giả/đồng tác giả của đề cương này — không thể tự kiểm tra, tiếp nhận.
+                </p>
+              )}
+              {!isSelfAuthored && verdict === "accept" && !allChecked && (
                 <p className="text-[11px] text-amber-500 flex items-center gap-1">
                   <AlertCircle className="w-3 h-3" /> Tích đủ {CHECKLIST.length} tiêu chí
                 </p>

@@ -3,6 +3,7 @@ import { verifyToken, getUser } from "@/lib/mongodb/auth";
 import { getResearchTopic, updateResearchTopic, deleteResearchTopic } from "@/lib/mongodb/firestore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { redactReviewer } from "@/lib/research";
+import { isTopicAuthor } from "@/lib/researchUtils";
 
 async function auth(req: NextRequest) {
   const token = req.cookies.get("auth-token")?.value;
@@ -44,6 +45,37 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   const u = await auth(req);
   if (!u) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const updates = await req.json();
+
+  // COI checks — fetch topic once if any protected field is being updated
+  const needsCOICheck =
+    Object.prototype.hasOwnProperty.call(updates, "intakeStatus") ||
+    Object.prototype.hasOwnProperty.call(updates, "reviewAssignment");
+
+  if (needsCOICheck) {
+    const [me, topic] = await Promise.all([getUser(u.userId), getResearchTopic(params.id)]);
+
+    // Tác giả / đồng tác giả không được tự tiếp nhận đề cương
+    if (Object.prototype.hasOwnProperty.call(updates, "intakeStatus") && topic) {
+      if (isTopicAuthor({ id: me?.id, email: me?.email }, topic)) {
+        return NextResponse.json(
+          { error: "Bạn là tác giả/đồng tác giả — không thể tự kiểm tra, tiếp nhận đề cương của mình" },
+          { status: 403 },
+        );
+      }
+    }
+
+    // Chủ nhiệm / thành viên không được được giao phân công phản biện đề tài của chính mình
+    if (Object.prototype.hasOwnProperty.call(updates, "reviewAssignment") && topic) {
+      const delegatedTo = (updates as { reviewAssignment?: { delegatedTo?: string } }).reviewAssignment?.delegatedTo;
+      if (delegatedTo && isTopicAuthor({ id: delegatedTo }, topic)) {
+        return NextResponse.json(
+          { error: "Chủ nhiệm / thành viên đề tài không được phân công phản biện đề tài của chính mình" },
+          { status: 403 },
+        );
+      }
+    }
+  }
+
   await updateResearchTopic(params.id, updates);
   return NextResponse.json({ success: true });
 }

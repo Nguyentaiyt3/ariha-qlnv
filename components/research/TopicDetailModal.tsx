@@ -1,48 +1,34 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import {
   X, FlaskConical, Users, MessageSquare, FileText, ExternalLink,
   CheckCircle2, AlertCircle, History, File, AlertTriangle, Maximize2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useAuthStore } from "@/stores/useAuthStore";
+import { hasPermission } from "@/lib/rbac/permissions";
 import { DEPT_BY_ABBR } from "@/lib/research-departments";
-import type { ResearchTopic, IntakeLog } from "@/types";
+import { researchFileUrl } from "@/lib/researchFileUrl";
+import { DocxAnnotator } from "./DocxAnnotator";
+import { addAnnotation, updateAnnotation, deleteAnnotation } from "@/lib/researchAnnotations";
+import type { ResearchTopic, ResearchAnnotation, IntakeLog } from "@/types";
 
 // ─── File preview overlay ─────────────────────────────────────
 
-export function FilePreviewOverlay({ url, onClose }: { url: string; onClose: () => void }) {
-  const ext = url.split(".").pop()?.toLowerCase();
-  const isDocx = ext === "docx" || ext === "doc";
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [loading, setLoading] = useState(isDocx);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!isDocx || !containerRef.current) return;
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    import("docx-preview").then(({ renderAsync }) =>
-      fetch(url)
-        .then((r) => {
-          if (!r.ok) throw new Error(`HTTP ${r.status}`);
-          return r.arrayBuffer();
-        })
-        .then((buf) => {
-          if (cancelled || !containerRef.current) return;
-          return renderAsync(buf, containerRef.current, undefined, {
-            className: "docx-preview-body",
-            inWrapper: true,
-            ignoreWidth: false,
-            ignoreHeight: false,
-          });
-        })
-        .then(() => { if (!cancelled) setLoading(false); })
-        .catch((e) => { if (!cancelled) { setError(String(e)); setLoading(false); } })
-    );
-    return () => { cancelled = true; };
-  }, [url, isDocx]);
+export function FilePreviewOverlay({
+  url, onClose, topicId, annotations, canAnnotate, canManageAll, currentUserId,
+}: {
+  url: string;
+  onClose: () => void;
+  /** When set, the overlay renders the annotatable viewer (highlight + notes). */
+  topicId?: string;
+  annotations?: ResearchAnnotation[];
+  canAnnotate?: boolean;
+  canManageAll?: boolean;
+  currentUserId?: string;
+}) {
+  const fileUrl = researchFileUrl(url);
 
   return (
     <div className="fixed inset-0 z-[60] flex flex-col bg-black/90 backdrop-blur-sm">
@@ -51,7 +37,7 @@ export function FilePreviewOverlay({ url, onClose }: { url: string; onClose: () 
         <p className="text-sm text-slate-300 truncate max-w-lg">{url.split("/").pop()}</p>
         <div className="flex items-center gap-2">
           <a
-            href={url}
+            href={fileUrl}
             download
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-700 transition"
           >
@@ -67,33 +53,19 @@ export function FilePreviewOverlay({ url, onClose }: { url: string; onClose: () 
           </button>
         </div>
       </div>
-      {/* preview body */}
-      {isDocx ? (
-        <div className="flex-1 overflow-auto bg-gray-100">
-          {loading && (
-            <div className="flex items-center justify-center h-full text-slate-500 text-sm">
-              Đang tải file...
-            </div>
-          )}
-          {error && (
-            <div className="flex items-center justify-center h-full text-red-400 text-sm">
-              Không thể hiển thị file: {error}
-            </div>
-          )}
-          <div
-            ref={containerRef}
-            className="mx-auto"
-            style={{ display: loading || error ? "none" : "block" }}
-          />
-        </div>
-      ) : (
-        <iframe
-          src={url}
-          className="flex-1 w-full border-0"
-          title="Xem trước file đề cương"
-          allow="fullscreen"
+      {/* preview body — annotatable viewer */}
+      <div className="flex-1 min-h-0 bg-white">
+        <DocxAnnotator
+          fileUrl={url}
+          annotations={annotations ?? []}
+          canAnnotate={!!topicId && !!canAnnotate}
+          canManageAll={canManageAll}
+          currentUserId={currentUserId}
+          onAdd={topicId ? (p) => addAnnotation(topicId, p) : undefined}
+          onUpdate={topicId ? (id, patch) => updateAnnotation(topicId, id, patch) : undefined}
+          onDelete={topicId ? (id) => deleteAnnotation(topicId, id) : undefined}
         />
-      )}
+      </div>
     </div>
   );
 }
@@ -178,6 +150,8 @@ interface Props {
 
 export function TopicDetailModal({ topic, onClose }: Props) {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const { currentUser: me } = useAuthStore();
+  const canManageAll = !!me && hasPermission(me.role, "research:manage");
 
   const dept = topic.department ? DEPT_BY_ABBR[topic.department] : undefined;
   const deptLabel = dept ? `${dept.abbr} — ${dept.name}` : topic.department;
@@ -378,7 +352,15 @@ export function TopicDetailModal({ topic, onClose }: Props) {
     </div>
 
     {previewUrl && (
-      <FilePreviewOverlay url={previewUrl} onClose={() => setPreviewUrl(null)} />
+      <FilePreviewOverlay
+        url={previewUrl}
+        onClose={() => setPreviewUrl(null)}
+        topicId={topic.id}
+        annotations={topic.annotations ?? []}
+        canAnnotate={!!me}
+        canManageAll={canManageAll}
+        currentUserId={me?.id}
+      />
     )}
     </>
   );
