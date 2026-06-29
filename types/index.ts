@@ -1067,7 +1067,8 @@ export type WidgetType =
   | "analytics_summary"
   | "quick_actions"
   | "annual_kpi"
-  | "financial_overview";
+  | "financial_overview"
+  | "research_summary";
 
 export interface WidgetConfig {
   id: string;

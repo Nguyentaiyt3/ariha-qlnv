@@ -73,6 +73,7 @@ interface WFNodeData {
   locked: boolean;
   assigneeId?: string;
   assigneeName?: string;
+  roleRequired?: string;
   deadline?: string;
   kpiTarget?: number;
   kpiUnit?: string;
@@ -352,6 +353,7 @@ function toRFNodes(wf: Workflow, showStatus: boolean): Node[] {
         showStatus, locked,
         assigneeId:   (n as any).assigneeId ?? "",
         assigneeName: (n as any).assigneeName ?? "",
+        roleRequired: (n as any).roleRequired ?? "",
         deadline:  (n as any).deadline ?? "",
         kpiTarget: (n as any).kpiTarget,
         kpiUnit:   (n as any).kpiUnit ?? "",
@@ -416,8 +418,9 @@ function fromRF(rfNodes: Node[], rfEdges: Edge[], extEdges: WorkflowEdge[]) {
       id: n.id, name: d.label,
       description: d.description || undefined, department: d.department || undefined,
       status: d.status, position: n.position, locked: d.locked,
-      assigneeId:   d.assigneeId  || undefined,
-      assigneeName: d.assigneeName || undefined,
+      assigneeId:   d.assigneeId    || undefined,
+      assigneeName: d.assigneeName  || undefined,
+      roleRequired: (d.roleRequired || undefined) as any,
       deadline:  d.deadline  || undefined,
       kpiTarget: d.kpiTarget,
       kpiUnit:   d.kpiUnit   || undefined,
@@ -615,6 +618,29 @@ function NodeEditor({
           <label style={lbl}>Đơn vị / Phòng ban</label>
           <input value={d.department} onChange={(e) => onUpdate(node.id, { department: e.target.value })}
             style={{ ...inp, marginBottom: 12 }} placeholder="VD: Phòng Kinh doanh" disabled={d.locked} />
+
+          <label style={lbl}>Vai trò yêu cầu (template)</label>
+          <select
+            value={d.roleRequired ?? ""}
+            onChange={(e) => onUpdate(node.id, { roleRequired: e.target.value || undefined })}
+            disabled={d.locked}
+            style={{ ...inp, marginBottom: 12 }}
+          >
+            <option value="">— Bất kỳ (gán tự do) —</option>
+            <option value="staff">Nhân viên (Staff)</option>
+            <option value="teamLead">Trưởng/Phó phòng (TeamLead)</option>
+            <option value="director">Ban Giám đốc (Director)</option>
+            <option value="hrAdmin">Hành chính nhân sự (HRAdmin)</option>
+            <option value="financeViewer">Tài chính — Theo dõi</option>
+            <option value="financeAuditor">Tài chính — Kiểm tra</option>
+            <option value="financeSupervisor">Tài chính — Giám sát</option>
+          </select>
+          {d.roleRequired && (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 12, padding: "5px 9px", borderRadius: 7, background: "#f0f9ff", border: "1px solid #bae6fd", fontSize: 11, color: "#0369a1" }}>
+              <User size={11} style={{ flexShrink: 0 }} />
+              Khi tạo task từ quy trình này, chỉ những người có vai trò <strong style={{ marginLeft: 3 }}>{d.roleRequired}</strong> mới xuất hiện trong dropdown chọn người thực hiện.
+            </div>
+          )}
 
           {viewMode === "classic" && (<>
             <label style={lbl}>Trạng thái</label>

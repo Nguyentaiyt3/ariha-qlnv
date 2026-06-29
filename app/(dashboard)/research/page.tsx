@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import {
   Microscope, Plus, Loader2, X, FlaskConical, ArrowLeft,
   Pencil, Trash2, AlertTriangle, Search, ChevronRight, ChevronDown,
-  Users, BarChart2, Eye, ClipboardList, ClipboardCheck, Vote, Clock, CheckCircle2, XCircle, AlertCircle, Calendar, Upload, Lock, Mail, ShieldAlert, UserPlus, ExternalLink,
+  Users, BarChart2, Eye, ClipboardList, ClipboardCheck, Vote, Clock, CheckCircle2, XCircle, AlertCircle, Calendar, Upload, Download, Lock, Mail, ShieldAlert, UserPlus, ExternalLink,
 } from "lucide-react";
 import { ImportReviewsModal } from "@/components/research/ImportReviewsModal";
 import { RegisterTopicModal } from "@/components/research/RegisterTopicModal";
@@ -2355,6 +2355,7 @@ export default function ResearchPage() {
   const [deleting, setDeleting] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showImportTopics, setShowImportTopics] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const canCreate  = !!currentUser && hasPermission(currentUser.role, "research:create");
   const canManage  = !!currentUser && hasPermission(currentUser.role, "research:manage");
@@ -2433,6 +2434,41 @@ export default function ResearchPage() {
     if (autoCreate && canCreate) setShowCreate(true);
   }, [autoCreate, canCreate]);
 
+  async function handleExportExcel() {
+    setExporting(true);
+    try {
+      const { utils, writeFile } = await import("xlsx");
+      const rows = visibleTopics.map(t => {
+        const performer = users.find(u => u.id === t.mainPerformerId);
+        const cert = t.certificates?.find(c => c.type === "recognition");
+        return {
+          "Mã đề tài":            t.code ?? "",
+          "Tên đề tài":           t.title,
+          "Chủ nhiệm":            t.principalInvestigatorName ?? "",
+          "Người thực hiện chính": performer?.name ?? t.mainPerformerId ?? "",
+          "Đơn vị":               t.department ?? "",
+          "Nhóm":                 t.groupName ?? "",
+          "Giai đoạn":            STAGE_LABEL[t.stage] ?? t.stage,
+          "Bước hiện tại":        t.currentStep,
+          "Tiến độ (%)":          researchProgress(t),
+          "Phạm vi ảnh hưởng":    cert?.scope ?? "",
+          "Thời gian hoàn thành": t.completionTimeline ?? "",
+          "Ngày tạo":             t.createdAt ? t.createdAt.slice(0, 10) : "",
+          "Ngày cập nhật":        t.updatedAt ? t.updatedAt.slice(0, 10) : "",
+        };
+      });
+      const ws = utils.json_to_sheet(rows);
+      const wb = utils.book_new();
+      utils.book_append_sheet(wb, ws, "Đề tài NCKH");
+      writeFile(wb, `NCKH-${new Date().toISOString().slice(0, 10)}.xlsx`);
+      toast.success("Đã xuất Excel");
+    } catch {
+      toast.error("Xuất Excel thất bại");
+    } finally {
+      setExporting(false);
+    }
+  }
+
   async function handleDelete() {
     if (!deleteTarget) return;
     setDeleting(true);
@@ -2504,6 +2540,11 @@ export default function ResearchPage() {
               <button onClick={() => setShowImport(true)}
                 className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 text-sm font-medium rounded-xl transition">
                 <Upload className="w-4 h-4" /> Import phiếu PB
+              </button>
+              <button onClick={handleExportExcel} disabled={exporting || visibleTopics.length === 0}
+                className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 text-sm font-medium rounded-xl transition disabled:opacity-50">
+                {exporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                Xuất Excel
               </button>
             </>
           )}

@@ -1230,10 +1230,11 @@ function PCouncilPanel({ topic, currentUser, canManage, canAssignCouncil, users,
                 </div>
               ) : (
                 <div className="flex gap-2 justify-end">
-                  {proposalSession.decision === "revise" && stage === "proposal" && (
+                  {proposalSession.decision === "revise" && (
                     <button onClick={() => setCouncilActionMode("revise")}
                       className="px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-700 text-xs font-medium rounded-lg flex items-center gap-1.5 transition">
-                      <RotateCcw className="w-3.5 h-3.5" /> Yêu cầu sửa đổi theo HĐ
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      {stage === "proposal" ? "Yêu cầu sửa đổi theo HĐ" : "Yêu cầu nộp lại kết quả"}
                     </button>
                   )}
                   {proposalSession.decision === "failed" && (

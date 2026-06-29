@@ -21,6 +21,7 @@ const WIDGET_LABELS: Partial<Record<WidgetType, string>> = {
   internal_messages:  "Tin nhắn mới nhất",
   annual_kpi:         "KPI Kế hoạch năm",
   financial_overview: "Tổng quan tài chính",
+  research_summary:   "NCKH cấp cơ sở",
 };
 
 function buildDefaultWidgets(role: string): WidgetConfig[] {
