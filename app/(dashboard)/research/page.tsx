@@ -1175,6 +1175,7 @@ function CouncilTab({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [advancing, setAdvancing] = useState(false);
   const [search, setSearch] = useState("");
+  const [yearFilter, setYearFilter] = useState<string>("all");
 
   // ── Modal gửi phiếu biểu quyết qua email ──
   const [tokenModal, setTokenModal] = useState<{ topicId: string; sessionId: string; tokens: { name: string; email?: string; link: string }[] } | null>(null);
@@ -1184,12 +1185,28 @@ function CouncilTab({
     ["councilMember", "councilChair", "councilSecretary"].includes(d)
   );
 
-  // Sub-tab 1: proposals where both reviews passed, still in p_review
+  // Steps that are at or beyond council — exclude from synthesis tab
+  const PAST_REVIEW_STEPS = new Set<ResearchStepKey>([
+    "p_council", "p_ethics", "p_agree",
+    "exec_start", "exec_midterm", "exec_submit",
+    "r_intake", "r_review", "r_council", "r_recognize",
+  ]);
+
+  // Sub-tab 1: proposals where both reviews passed, not yet at council
   const synthesisTopics = useMemo(() => topics.filter(t => {
-    if (t.currentStep !== "p_review") return false;
+    if (PAST_REVIEW_STEPS.has(t.currentStep)) return false;
     const reviews = (t.reviews ?? []).filter(r => r.stage === "proposal" && r.status === "submitted");
     return reviews.length >= 2 && reviews.every(r => r.verdict === "pass" || r.verdict === "pass_if_revised");
-  }), [topics]);
+  }), [topics]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const synthesisYears = useMemo(() => {
+    const yrs = [...new Set(synthesisTopics.map(t => t.year).filter(Boolean))].sort((a, b) => b! - a!);
+    return yrs as number[];
+  }, [synthesisTopics]);
+
+  const filteredSynthesis = useMemo(() => synthesisTopics.filter(t =>
+    yearFilter === "all" || String(t.year) === yearFilter
+  ), [synthesisTopics, yearFilter]);
 
   // Sub-tab 2: topics in p_council
   const councilTopics = useMemo(() => {
@@ -1298,7 +1315,8 @@ function CouncilTab({
       {/* ── Sub-tab 1: Tổng hợp kết quả thẩm định ── */}
       {subTab === "synthesis" && (canManage || canMonitor) && (
         <div className="space-y-3">
-          <div className="flex items-center justify-between">
+          {/* Header + filters */}
+          <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
                 Đề cương chờ chuyển Hội đồng
@@ -1307,22 +1325,35 @@ function CouncilTab({
                 Đã có đủ 2 phiếu phản biện đạt — chọn và chuyển sang Hội đồng thông qua. Hội đồng chỉ thấy sau khi được chuyển.
               </p>
             </div>
-            {selected.size > 0 && (
-              <button
-                onClick={handleBatchAdvance}
-                disabled={advancing}
-                className="flex items-center gap-1.5 px-4 py-2 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition shrink-0"
-              >
-                {advancing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Vote className="w-3.5 h-3.5" />}
-                Chuyển sang Hội đồng ({selected.size})
-              </button>
-            )}
+            <div className="flex items-center gap-2 flex-wrap">
+              {synthesisYears.length > 1 && (
+                <select value={yearFilter} onChange={e => { setYearFilter(e.target.value); setSelected(new Set()); }}
+                  className="text-sm px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-400 dark:text-white">
+                  <option value="all">Tất cả năm</option>
+                  {synthesisYears.map(y => <option key={y} value={String(y)}>{y}</option>)}
+                </select>
+              )}
+              {selected.size > 0 && (
+                <button
+                  onClick={handleBatchAdvance}
+                  disabled={advancing}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition"
+                >
+                  {advancing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Vote className="w-3.5 h-3.5" />}
+                  Chuyển sang Hội đồng ({selected.size})
+                </button>
+              )}
+            </div>
           </div>
 
           {synthesisTopics.length === 0 ? (
             <div className="text-center py-16 text-slate-400">
               <CheckCircle2 className="w-8 h-8 mx-auto mb-2 text-slate-300" />
               <p className="text-sm">Không có đề cương nào đang chờ tổng hợp.</p>
+            </div>
+          ) : filteredSynthesis.length === 0 ? (
+            <div className="text-center py-10 text-slate-400">
+              <p className="text-sm">Không có đề cương nào cho năm đã chọn.</p>
             </div>
           ) : (
             <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
@@ -1331,19 +1362,20 @@ function CouncilTab({
                   <tr className="bg-slate-50 dark:bg-slate-800/60 text-left">
                     <th className="px-3 py-2.5 w-8">
                       <input type="checkbox"
-                        checked={selected.size === synthesisTopics.length && synthesisTopics.length > 0}
-                        onChange={e => setSelected(e.target.checked ? new Set(synthesisTopics.map(t => t.id)) : new Set())}
+                        checked={selected.size === filteredSynthesis.length && filteredSynthesis.length > 0}
+                        onChange={e => setSelected(e.target.checked ? new Set(filteredSynthesis.map(t => t.id)) : new Set())}
                         className="rounded"
                       />
                     </th>
                     <th className="px-3 py-2.5 text-xs font-semibold text-slate-500">Đề tài</th>
                     <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-24">PB1</th>
                     <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-24">PB2</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-20">Năm</th>
                     <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-32">Ngày nộp gần nhất</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
-                  {synthesisTopics.map(topic => {
+                  {filteredSynthesis.map(topic => {
                     const reviews = (topic.reviews ?? []).filter(r => r.stage === "proposal" && r.status === "submitted");
                     const isChecked = selected.has(topic.id);
                     const lastSubmit = reviews.map(r => r.submittedAt ?? "").sort().reverse()[0];
@@ -1374,6 +1406,7 @@ function CouncilTab({
                             )}
                           </td>
                         ))}
+                        <td className="px-3 py-3 text-xs text-slate-500 font-mono">{topic.year ?? "—"}</td>
                         <td className="px-3 py-3 text-xs text-slate-400">
                           {lastSubmit ? new Date(lastSubmit).toLocaleDateString("vi-VN") : "—"}
                         </td>
@@ -2607,8 +2640,9 @@ export default function ResearchPage() {
 
   const councilCount = useMemo(() => {
     if (!currentUser) return 0;
+    const pastReviewSteps = new Set(["p_council", "p_ethics", "p_agree", "exec_start", "exec_midterm", "exec_submit", "r_intake", "r_review", "r_council", "r_recognize"]);
     const pendingSynthesis = visibleTopics.filter(t => {
-      if (t.currentStep !== "p_review") return false;
+      if (pastReviewSteps.has(t.currentStep)) return false;
       const reviews = (t.reviews ?? []).filter(r => r.stage === "proposal" && r.status === "submitted");
       return reviews.length >= 2 && reviews.every(r => r.verdict === "pass" || r.verdict === "pass_if_revised");
     }).length;
