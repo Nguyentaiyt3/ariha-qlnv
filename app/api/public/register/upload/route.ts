@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
 
     const safeName = (file.name.split(/[\\/]/).pop() ?? file.name)
       .replace(/[^a-zA-Z0-9._\-]/g, "_").slice(0, 120);
-    const blob = await put(`proposals/${Date.now()}_${safeName}`, file, { access: "public" });
+    const blob = await put(`proposals/${Date.now()}_${safeName}`, file, { access: "private" });
     return NextResponse.json({ url: blob.url });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "Lỗi lưu file";
