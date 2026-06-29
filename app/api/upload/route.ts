@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { writeFile, mkdir } from "fs/promises";
-import path from "path";
+import { put } from "@vercel/blob";
 import { verifyToken } from "@/lib/mongodb/auth";
 
 const MAX_SIZE_MB = 20;
@@ -15,6 +14,13 @@ const ALLOWED_TYPES = [
 ];
 
 export async function POST(req: NextRequest) {
+  if (!process.env.BLOB_READ_WRITE_TOKEN) {
+    return NextResponse.json(
+      { error: "Lưu trữ file chưa được cấu hình — liên hệ quản trị viên (thiếu BLOB_READ_WRITE_TOKEN)" },
+      { status: 503 },
+    );
+  }
+
   const token = req.cookies.get("auth-token")?.value;
   if (!token || !verifyToken(token)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -31,38 +37,23 @@ export async function POST(req: NextRequest) {
   const folder = (formData.get("folder") as string | null) ?? "misc";
 
   if (!file) return NextResponse.json({ error: "No file provided" }, { status: 400 });
-
-  if (file.size > MAX_SIZE_MB * 1024 * 1024) {
+  if (file.size > MAX_SIZE_MB * 1024 * 1024)
     return NextResponse.json({ error: `File quá lớn (tối đa ${MAX_SIZE_MB}MB)` }, { status: 413 });
-  }
-
-  if (!ALLOWED_TYPES.includes(file.type)) {
+  if (!ALLOWED_TYPES.includes(file.type))
     return NextResponse.json({ error: "Định dạng file không được hỗ trợ" }, { status: 415 });
+
+  try {
+    const safeName  = sanitizeFilename(file.name);
+    const finalName = `${folder}/${Date.now()}_${safeName}`;
+    const blob = await put(finalName, file, { access: "public" });
+    return NextResponse.json({ url: blob.url, name: file.name, size: file.size, type: file.type });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Lỗi lưu file";
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
-
-  const bytes  = await file.arrayBuffer();
-  const buffer = Buffer.from(bytes);
-
-  const safeName  = sanitizeFilename(file.name);
-  const timestamp = Date.now();
-  const finalName = `${timestamp}_${safeName}`;
-
-  const uploadDir = path.join(process.cwd(), "public", "uploads", folder);
-  await mkdir(uploadDir, { recursive: true });
-
-  const filePath = path.join(uploadDir, finalName);
-  await writeFile(filePath, buffer);
-
-  return NextResponse.json({
-    url:  `/uploads/${folder}/${finalName}`,
-    name: file.name,
-    size: file.size,
-    type: file.type,
-  });
 }
 
 function sanitizeFilename(name: string): string {
-  // Remove path traversal, keep extension, replace unsafe chars
-  const base = path.basename(name);
-  return base.replace(/[^a-zA-Z0-9._\-À-ỹ]/g, "_").slice(0, 120);
+  const base = name.split(/[\\/]/).pop() ?? name;
+  return base.replace(/[^a-zA-Z0-9._\-]/g, "_").slice(0, 120);
 }
