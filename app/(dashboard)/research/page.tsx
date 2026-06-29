@@ -722,19 +722,44 @@ function ReviewManagementView({
             <div key={topic.id}
               className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden">
               {/* Topic header */}
-              <div className="px-4 py-3 bg-slate-50 dark:bg-slate-800/60 flex items-center gap-3 border-b border-slate-200 dark:border-slate-700">
-                {topic.code && (
-                  <span className="font-mono text-[11px] text-slate-400 shrink-0">{topic.code}</span>
-                )}
-                <p className="font-semibold text-sm text-slate-800 dark:text-white line-clamp-1 flex-1">{topic.title}</p>
-                <div className="flex items-center gap-1 shrink-0">
-                  {visibleReviews.map(r => (
-                    <span key={r.id}
-                      className={cn("w-2.5 h-2.5 rounded-full",
-                        r.status === "submitted" ? "bg-green-400" : "bg-amber-400"
-                      )}
-                      title={r.status === "submitted" ? "Đã nộp" : "Chưa nộp"} />
-                  ))}
+              <div className="px-4 py-3 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-700 space-y-1.5">
+                <div className="flex items-center gap-3">
+                  {topic.code && (
+                    <span className="font-mono text-[11px] text-slate-400 shrink-0">{topic.code}</span>
+                  )}
+                  <p className="font-semibold text-sm text-slate-800 dark:text-white line-clamp-1 flex-1">{topic.title}</p>
+                  <div className="flex items-center gap-1 shrink-0">
+                    {visibleReviews.map(r => (
+                      <span key={r.id}
+                        className={cn("w-2.5 h-2.5 rounded-full",
+                          r.status === "submitted" ? "bg-green-400" : "bg-amber-400"
+                        )}
+                        title={r.status === "submitted" ? "Đã nộp" : "Chưa nộp"} />
+                    ))}
+                  </div>
+                </div>
+                {/* PI + monitor + file */}
+                <div className="flex items-center gap-3 flex-wrap">
+                  {topic.principalInvestigatorName && (
+                    <div className="flex items-center gap-1.5">
+                      <AvatarBubble name={topic.principalInvestigatorName} size={18} />
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate max-w-[120px]">{topic.principalInvestigatorName}</span>
+                    </div>
+                  )}
+                  {topic.reviewAssignment?.delegatedName && (
+                    <div className="flex items-center gap-1 text-[11px] text-slate-400">
+                      <span className="text-slate-300">·</span>
+                      <AvatarBubble name={topic.reviewAssignment.delegatedName} size={16} />
+                      <span className="truncate max-w-[100px]">{topic.reviewAssignment.delegatedName}</span>
+                    </div>
+                  )}
+                  {topic.proposalFileUrl && (
+                    <a href={researchFileUrl(topic.proposalFileUrl)} target="_blank" rel="noopener noreferrer"
+                      className="ml-auto flex items-center gap-1 text-[11px] text-blue-500 hover:text-blue-700 font-medium"
+                      onClick={e => e.stopPropagation()}>
+                      <ExternalLink className="w-2.5 h-2.5" /> Xem file đề cương
+                    </a>
+                  )}
                 </div>
               </div>
 
@@ -1071,6 +1096,22 @@ function ReviewTab({
                       <td className="px-3 py-3">
                         {topic.code && <span className="font-mono text-[11px] text-slate-400 block">{topic.code}</span>}
                         <p className="font-medium text-slate-800 dark:text-white line-clamp-2 max-w-xs leading-snug">{topic.title}</p>
+                        {(topic.principalInvestigatorName || topic.reviewAssignment?.delegatedName) && (
+                          <div className="flex items-center gap-2 mt-1 flex-wrap">
+                            {topic.principalInvestigatorName && (
+                              <div className="flex items-center gap-1">
+                                <AvatarBubble name={topic.principalInvestigatorName} size={16} />
+                                <span className="text-[10px] text-slate-400 truncate max-w-[100px]">{topic.principalInvestigatorName}</span>
+                              </div>
+                            )}
+                            {topic.reviewAssignment?.delegatedName && (
+                              <div className="flex items-center gap-1 text-[10px] text-slate-400">
+                                <AvatarBubble name={topic.reviewAssignment.delegatedName} size={14} />
+                                <span className="truncate max-w-[90px]">{topic.reviewAssignment.delegatedName}</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </td>
                       <td className="px-3 py-3">
                         <span className={cn("text-[11px] px-2 py-0.5 rounded-full font-semibold",
@@ -1194,6 +1235,8 @@ function CouncilTab({
   const [advancing, setAdvancing] = useState(false);
   const [search, setSearch] = useState("");
   const [yearFilter, setYearFilter] = useState<string>("all");
+  const [synthSearch, setSynthSearch] = useState("");
+  const [synthQuarterFilter, setSynthQuarterFilter] = useState<string>("all");
 
   // Batch action modal for council steps
   type BatchAction = "council_decision" | "ethics" | "proceed";
@@ -1219,20 +1262,42 @@ function CouncilTab({
   ]);
 
   // Sub-tab 1: proposals where both reviews passed, not yet at council
-  const synthesisTopics = useMemo(() => topics.filter(t => {
-    if (PAST_REVIEW_STEPS.has(t.currentStep)) return false;
-    const reviews = (t.reviews ?? []).filter(r => r.stage === "proposal" && r.status === "submitted");
-    return reviews.length >= 2 && reviews.every(r => r.verdict === "pass" || r.verdict === "pass_if_revised");
-  }), [topics]); // eslint-disable-line react-hooks/exhaustive-deps
+  const synthesisTopics = useMemo(() => {
+    const base = topics.filter(t => {
+      if (PAST_REVIEW_STEPS.has(t.currentStep)) return false;
+      const reviews = (t.reviews ?? []).filter(r => r.stage === "proposal" && r.status === "submitted");
+      return reviews.length >= 2 && reviews.every(r => r.verdict === "pass" || r.verdict === "pass_if_revised");
+    });
+    if (!canManage && !canMonitor) {
+      return base.filter(t => t.reviewAssignment?.delegatedTo === currentUser.id);
+    }
+    return base;
+  }, [topics, canManage, canMonitor, currentUser.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const synthesisYears = useMemo(() => {
     const yrs = [...new Set(synthesisTopics.map(t => t.year).filter(Boolean))].sort((a, b) => b! - a!);
     return yrs as number[];
   }, [synthesisTopics]);
 
-  const filteredSynthesis = useMemo(() => synthesisTopics.filter(t =>
-    yearFilter === "all" || String(t.year) === yearFilter
-  ), [synthesisTopics, yearFilter]);
+  const filteredSynthesis = useMemo(() => {
+    const sq = synthSearch.toLowerCase();
+    return synthesisTopics.filter(t => {
+      if (yearFilter !== "all" && String(t.year) !== yearFilter) return false;
+      if (synthQuarterFilter !== "all") {
+        const reviews = (t.reviews ?? []).filter(r => r.stage === "proposal" && r.status === "submitted");
+        const lastSubmit = reviews.map(r => r.submittedAt ?? "").filter(Boolean).sort().reverse()[0];
+        if (lastSubmit) {
+          const qNum = Math.floor(new Date(lastSubmit).getMonth() / 3) + 1;
+          if (String(qNum) !== synthQuarterFilter) return false;
+        }
+      }
+      if (!sq) return true;
+      return t.title.toLowerCase().includes(sq) ||
+        (t.code ?? "").toLowerCase().includes(sq) ||
+        (t.principalInvestigatorName ?? "").toLowerCase().includes(sq) ||
+        (t.reviewAssignment?.delegatedName ?? "").toLowerCase().includes(sq);
+    });
+  }, [synthesisTopics, yearFilter, synthSearch, synthQuarterFilter]);
 
   // Sub-tab 2: topics at p_council, p_ethics, or p_agree (full post-review pipeline)
   const POST_COUNCIL_STEPS = new Set<ResearchStepKey>(["p_council", "p_ethics", "p_agree"]);
@@ -1300,6 +1365,39 @@ function CouncilTab({
     finally { setBatchSaving(false); }
   }
 
+  // Export Excel for synthesis tab
+  async function handleSynthesisExport(topicsToExport: ResearchTopic[]) {
+    try {
+      const { utils, writeFile } = await import("xlsx");
+      const rows = topicsToExport.map(t => {
+        const reviews = (t.reviews ?? []).filter(r => r.stage === "proposal" && r.status === "submitted");
+        const piName = t.principalInvestigatorName ?? users.find(u => u.id === t.principalInvestigatorId)?.name ?? "";
+        const monitorName = t.reviewAssignment?.delegatedName ?? users.find(u => u.id === t.reviewAssignment?.delegatedTo)?.name ?? "";
+        const lastSubmit = reviews.map(r => r.submittedAt ?? "").filter(Boolean).sort().reverse()[0];
+        return {
+          "Mã đề tài":      t.code ?? "",
+          "Tên đề tài":     t.title,
+          "Đơn vị":         t.department ?? "",
+          "Năm":            t.year ?? "",
+          "Chủ nhiệm":      piName,
+          "Người theo dõi": monitorName,
+          "Thành viên":     (t.memberNames ?? "").split("\n").filter(Boolean).join("; "),
+          "PB1 kết quả":    reviews[0] ? (reviews[0].verdict === "pass" ? "ĐẠT" : "ĐẠT (sửa)") : "",
+          "PB1 điểm":       reviews[0]?.score ?? "",
+          "PB2 kết quả":    reviews[1] ? (reviews[1].verdict === "pass" ? "ĐẠT" : "ĐẠT (sửa)") : "",
+          "PB2 điểm":       reviews[1]?.score ?? "",
+          "Ngày nộp":       lastSubmit ? new Date(lastSubmit).toLocaleDateString("vi-VN") : "",
+          "Nhiệm vụ":       t.taskId ?? "",
+        };
+      });
+      const ws = utils.json_to_sheet(rows);
+      const wb = utils.book_new();
+      utils.book_append_sheet(wb, ws, "Tổng hợp PB");
+      writeFile(wb, `TongHopPhanBien-${new Date().toISOString().slice(0, 10)}.xlsx`);
+      toast.success("Đã xuất Excel");
+    } catch { toast.error("Xuất Excel thất bại"); }
+  }
+
   // Export Excel for council tab selected (or all)
   async function handleCouncilExport(topicsToExport: ResearchTopic[]) {
     try {
@@ -1311,17 +1409,24 @@ function CouncilTab({
         const pi = users.find(u => u.id === t.principalInvestigatorId);
         const monitor = t.reviewAssignment?.delegatedTo ? users.find(u => u.id === t.reviewAssignment!.delegatedTo) : undefined;
         const session = (t.councilSessions ?? []).find(s => s.stage === "proposal");
+        const reviews = (t.reviews ?? []).filter(r => r.stage === "proposal" && r.status === "submitted");
+        const reviewerNames = reviews.map((r, i) =>
+          `PB${i + 1}: ${r.reviewerName ?? users.find(u => u.id === r.reviewerId)?.name ?? ""}`
+        ).join("; ");
         return {
-          "Mã đề tài":      t.code ?? "",
-          "Tên đề tài":     t.title,
-          "Lĩnh vực":       t.field ?? "",
-          "Năm":            t.year ?? "",
-          "Chủ nhiệm":      t.principalInvestigatorName ?? pi?.name ?? "",
-          "Người theo dõi": monitor?.name ?? t.reviewAssignment?.delegatedName ?? "",
-          "Bước":           STEP_LABEL[t.currentStep] ?? t.currentStep,
-          "Kết luận HĐ":   session?.decision ? { passed: "Thông qua", failed: "Không thông qua", revise: "Yêu cầu sửa" }[session.decision] ?? session.decision : "",
-          "Nhiệm vụ":       t.taskId ?? "",
-          "File đề cương":  t.proposalFileUrl ?? "",
+          "Mã đề tài":       t.code ?? "",
+          "Tên đề tài":      t.title,
+          "Đơn vị":          t.department ?? "",
+          "Lĩnh vực":        t.field ?? "",
+          "Năm":             t.year ?? "",
+          "Chủ nhiệm":       t.principalInvestigatorName ?? pi?.name ?? "",
+          "Người theo dõi":  monitor?.name ?? t.reviewAssignment?.delegatedName ?? "",
+          "Thành viên":      (t.memberNames ?? "").split("\n").filter(Boolean).join("; "),
+          "Phản biện":       reviewerNames,
+          "Bước":            STEP_LABEL[t.currentStep] ?? t.currentStep,
+          "Kết luận HĐ":    session?.decision ? { passed: "Thông qua", failed: "Không thông qua", revise: "Yêu cầu sửa" }[session.decision] ?? session.decision : "",
+          "Nhiệm vụ":        t.taskId ?? "",
+          "File đề cương":   t.proposalFileUrl ?? "",
         };
       });
       const ws = utils.json_to_sheet(rows);
@@ -1429,12 +1534,35 @@ function CouncilTab({
               </p>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
-              {synthesisYears.length > 1 && (
-                <select value={yearFilter} onChange={e => { setYearFilter(e.target.value); setSelected(new Set()); }}
-                  className="text-sm px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-400 dark:text-white">
-                  <option value="all">Tất cả năm</option>
-                  {synthesisYears.map(y => <option key={y} value={String(y)}>{y}</option>)}
-                </select>
+              {/* Search */}
+              <div className="relative min-w-[180px]">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                <input value={synthSearch} onChange={e => { setSynthSearch(e.target.value); setSelected(new Set()); }}
+                  placeholder="Tên đề tài, tác giả..."
+                  className="w-full pl-8 pr-3 py-1.5 text-sm bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-400 dark:text-white" />
+              </div>
+              {/* Year */}
+              <select value={yearFilter} onChange={e => { setYearFilter(e.target.value); setSelected(new Set()); }}
+                className="text-sm px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-400 dark:text-white">
+                <option value="all">Tất cả năm</option>
+                {synthesisYears.map(y => <option key={y} value={String(y)}>{y}</option>)}
+              </select>
+              {/* Quarter */}
+              <select value={synthQuarterFilter} onChange={e => { setSynthQuarterFilter(e.target.value); setSelected(new Set()); }}
+                className="text-sm px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-400 dark:text-white">
+                <option value="all">Tất cả quý</option>
+                <option value="1">Quý I</option>
+                <option value="2">Quý II</option>
+                <option value="3">Quý III</option>
+                <option value="4">Quý IV</option>
+              </select>
+              {/* Export */}
+              {filteredSynthesis.length > 0 && (
+                <button
+                  onClick={() => handleSynthesisExport(selected.size > 0 ? filteredSynthesis.filter(t => selected.has(t.id)) : filteredSynthesis)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 text-slate-600 dark:text-slate-300 rounded-lg transition">
+                  <Download className="w-3.5 h-3.5" /> Xuất Excel{selected.size > 0 ? ` (${selected.size})` : ""}
+                </button>
               )}
               {selected.size > 0 && (
                 <button
@@ -1456,7 +1584,7 @@ function CouncilTab({
             </div>
           ) : filteredSynthesis.length === 0 ? (
             <div className="text-center py-10 text-slate-400">
-              <p className="text-sm">Không có đề cương nào cho năm đã chọn.</p>
+              <p className="text-sm">Không có đề cương nào khớp bộ lọc.</p>
             </div>
           ) : (
             <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
@@ -1471,11 +1599,14 @@ function CouncilTab({
                       />
                     </th>
                     <th className="px-3 py-2.5 text-xs font-semibold text-slate-500">Đề tài</th>
-                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-32">Chủ nhiệm / Theo dõi</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Đơn vị</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Chủ nhiệm</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Theo dõi</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-32">Thành viên</th>
                     <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-24">PB1</th>
                     <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-24">PB2</th>
-                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-20">Năm</th>
-                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-32">Ngày nộp</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-16">Năm</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Ngày nộp</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
@@ -1510,19 +1641,32 @@ function CouncilTab({
                           <p className="font-medium text-slate-800 dark:text-white leading-snug">{topic.title}</p>
                           {topic.field && <p className="text-[11px] text-slate-400">{topic.field}</p>}
                         </td>
+                        <td className="px-3 py-3 text-[11px] text-slate-500">{topic.department ?? "—"}</td>
                         <td className="px-3 py-3">
                           {piName && (
-                            <div className="flex items-center gap-1.5 mb-1">
+                            <div className="flex items-center gap-1.5">
                               <AvatarBubble name={piName} size={20} />
                               <span className="text-[11px] text-slate-600 dark:text-slate-300 truncate max-w-[80px]">{piName}</span>
                             </div>
                           )}
+                        </td>
+                        <td className="px-3 py-3">
                           {monitorName && (
                             <div className="flex items-center gap-1.5">
                               <AvatarBubble name={monitorName} size={18} />
-                              <span className="text-[10px] text-slate-400 truncate max-w-[80px]">{monitorName}</span>
+                              <span className="text-[11px] text-slate-500 truncate max-w-[80px]">{monitorName}</span>
                             </div>
                           )}
+                        </td>
+                        <td className="px-3 py-3">
+                          <div className="flex flex-col gap-0.5">
+                            {(topic.memberNames ?? "").split("\n").filter(Boolean).map((name, i) => (
+                              <div key={i} className="flex items-center gap-1">
+                                <AvatarBubble name={name.trim()} size={16} />
+                                <span className="text-[10px] text-slate-400 truncate max-w-[80px]">{name.trim()}</span>
+                              </div>
+                            ))}
+                          </div>
                         </td>
                         {reviews.slice(0, 2).map((r, i) => (
                           <td key={i} className="px-3 py-3">
@@ -1616,7 +1760,10 @@ function CouncilTab({
                       )}
                     </th>
                     <th className="px-3 py-2.5 text-xs font-semibold text-slate-500">Đề tài</th>
-                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-32">Chủ nhiệm / Theo dõi</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-24">Đơn vị</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Chủ nhiệm</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Theo dõi</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-32">Thành viên</th>
                     <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Phản biện</th>
                     <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Bước</th>
                     <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Kết luận HĐ</th>
@@ -1671,19 +1818,32 @@ function CouncilTab({
                             </p>
                           )}
                         </td>
+                        <td className="px-3 py-3 text-[11px] text-slate-500">{topic.department ?? "—"}</td>
                         <td className="px-3 py-3">
                           {piName && (
-                            <div className="flex items-center gap-1.5 mb-1">
+                            <div className="flex items-center gap-1.5">
                               <AvatarBubble name={piName} size={20} />
                               <span className="text-[11px] text-slate-600 dark:text-slate-300 truncate max-w-[80px]">{piName}</span>
                             </div>
                           )}
+                        </td>
+                        <td className="px-3 py-3">
                           {monitorName && (
                             <div className="flex items-center gap-1.5">
                               <AvatarBubble name={monitorName} size={18} />
-                              <span className="text-[10px] text-slate-400 truncate max-w-[80px]">{monitorName}</span>
+                              <span className="text-[11px] text-slate-500 truncate max-w-[80px]">{monitorName}</span>
                             </div>
                           )}
+                        </td>
+                        <td className="px-3 py-3">
+                          <div className="flex flex-col gap-0.5">
+                            {(topic.memberNames ?? "").split("\n").filter(Boolean).map((name, i) => (
+                              <div key={i} className="flex items-center gap-1">
+                                <AvatarBubble name={name.trim()} size={16} />
+                                <span className="text-[10px] text-slate-400 truncate max-w-[90px]">{name.trim()}</span>
+                              </div>
+                            ))}
+                          </div>
                         </td>
                         <td className="px-3 py-3">
                           <div className="flex flex-col gap-0.5">
@@ -1945,11 +2105,12 @@ function TaskLinkCell({
 // ─── Tab: "Giám sát tiến độ" ──────────────────────────────────
 
 function MonitorTab({
-  topics, users, canManage, currentUser, onEdit, onDelete, onView, onTopicUpdate,
+  topics, users, canManage, canAssignReviewer, currentUser, onEdit, onDelete, onView, onTopicUpdate,
 }: {
   topics: ResearchTopic[];
   users: { id: string; name: string; email?: string }[];
   canManage: boolean;
+  canAssignReviewer: boolean;
   currentUser: { id: string; name: string; email?: string };
   onEdit: (t: ResearchTopic) => void;
   onDelete: (t: ResearchTopic) => void;
@@ -2548,6 +2709,8 @@ function MonitorTab({
                   const isSelected = selectedForReview.has(topic.id);
                   const isDelegatedToMe = topic.reviewAssignment?.delegatedTo === currentUser.id;
                   const delegateName = topic.reviewAssignment?.delegatedName;
+                  const isOwnTopic = topic.principalInvestigatorId === currentUser.id ||
+                    (topic.memberIds ?? []).includes(currentUser.id);
 
                   return (
                     <tr
@@ -2608,7 +2771,8 @@ function MonitorTab({
                       <td className="px-3 py-2.5 text-center" onClick={e => e.stopPropagation()}>
                         <button
                           onClick={() => { setSelectedForReview(new Set([topic.id])); setShowAssignModal(true); }}
-                          disabled={!canManage && !isDelegatedToMe}
+                          disabled={isOwnTopic || (!canManage && !canAssignReviewer && !isDelegatedToMe)}
+                          title={isOwnTopic ? "Không thể phân công cho đề tài của chính mình" : undefined}
                           className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold rounded-lg border border-violet-300 dark:border-violet-700 bg-violet-50 dark:bg-violet-900/20 text-violet-700 dark:text-violet-300 hover:bg-violet-100 dark:hover:bg-violet-900/40 disabled:opacity-40 disabled:cursor-not-allowed transition"
                         >
                           <UserPlus className="w-3 h-3" />
@@ -2631,6 +2795,7 @@ function MonitorTab({
           users={users as any}
           currentUser={currentUser}
           canManage={canManage}
+          canAssignReviewer={canAssignReviewer}
           onClose={() => { setShowAssignModal(false); setSelectedForReview(new Set()); }}
           onTopicUpdate={onTopicUpdate}
         />
@@ -2828,8 +2993,9 @@ export default function ResearchPage() {
   const [showImportTopics, setShowImportTopics] = useState(false);
   const [exporting, setExporting] = useState(false);
 
-  const canCreate  = !!currentUser && hasPermission(currentUser.role, "research:create");
-  const canManage  = !!currentUser && hasPermission(currentUser.role, "research:manage");
+  const canCreate         = !!currentUser && hasPermission(currentUser.role, "research:create");
+  const canManage         = !!currentUser && hasPermission(currentUser.role, "research:manage");
+  const canAssignReviewer = !!currentUser && (canManage || hasPermission(currentUser.role, "research:assignReviewer"));
   const roleCanMonitor = !!currentUser && (canManage || hasPermission(currentUser.role, "research:monitor"));
   // researchManager designation also grants monitor access (without full canManage)
   const hasResearchManagerDesig = !!(currentUser?.researchDesignations ?? []).includes("researchManager");
@@ -3117,9 +3283,10 @@ export default function ResearchPage() {
           )}
           {activeTab === "monitor" && canMonitor && (
             <MonitorTab
-              topics={visibleTopics}
+              topics={canManage ? visibleTopics : visibleTopics.filter(t => t.reviewAssignment?.delegatedTo === currentUser?.id)}
               users={users}
               canManage={canManage}
+              canAssignReviewer={canAssignReviewer}
               currentUser={currentUser}
               onEdit={setEditTopic}
               onDelete={setDeleteTarget}
