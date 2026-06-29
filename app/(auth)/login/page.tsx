@@ -50,12 +50,15 @@ export default function LoginPage() {
   const router = useRouter();
   const { setCurrentUser } = useAuthStore();
   const [mode, setMode] = useState<Mode>("login");
+  const [redirectAfterLogin, setRedirectAfterLogin] = useState("/dashboard");
 
-  // Show error from Google OAuth redirect
+  // Show error from Google OAuth redirect + read ?redirect= param
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const err = params.get("error");
     if (err) toast.error(`Lỗi đăng nhập Google: ${decodeURIComponent(err)}`);
+    const redir = params.get("redirect");
+    if (redir && redir.startsWith("/")) setRedirectAfterLogin(redir);
   }, []);
 
   // Shared fields
@@ -141,7 +144,7 @@ export default function LoginPage() {
       const user = await loginWithEmail(email, password);
       setCurrentUser(user);
       toast.success(`Chào mừng, ${user.name}!`);
-      router.push("/dashboard");
+      router.push(redirectAfterLogin);
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : "Đăng nhập thất bại.");
     } finally {
