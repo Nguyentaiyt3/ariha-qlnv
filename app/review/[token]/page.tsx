@@ -328,8 +328,8 @@ export default function PublicReviewPage({ params }: { params: { token: string }
               Đăng nhập
             </a>
             <a
-              href={`/login?redirect=${redirectParam}&mode=register`}
-              className="block px-6 py-2.5 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-sm font-medium rounded-lg border border-slate-200 dark:border-slate-600 transition text-center"
+              href={`/login?redirect=${redirectParam}&mode=register${reviewerEmail ? `&email=${encodeURIComponent(reviewerEmail)}` : ""}`}
+              className="block px-6 py-2.5 bg-amber-400 hover:bg-amber-500 text-amber-900 text-sm font-semibold rounded-lg transition text-center shadow-sm"
             >
               Chưa có tài khoản? Đăng ký ngay
             </a>
