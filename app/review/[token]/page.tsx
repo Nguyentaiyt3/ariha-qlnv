@@ -322,7 +322,7 @@ export default function PublicReviewPage({ params }: { params: { token: string }
           )}
           <div className="flex flex-col gap-2 pt-1">
             <a
-              href={`/login?redirect=${redirectParam}`}
+              href={`/login?redirect=${redirectParam}${reviewerEmail ? `&email=${encodeURIComponent(reviewerEmail)}` : ""}`}
               className="block px-6 py-2.5 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium rounded-lg transition text-center"
             >
               Đăng nhập
