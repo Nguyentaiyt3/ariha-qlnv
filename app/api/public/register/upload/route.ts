@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { writeFile, mkdir } from "fs/promises";
-import path from "path";
+import { put } from "@vercel/blob";
 
 const ALLOWED = [
   "application/pdf",
@@ -19,13 +18,9 @@ export async function POST(req: NextRequest) {
   if (!ALLOWED.includes(file.type))
     return NextResponse.json({ error: "Chỉ hỗ trợ PDF, DOC, DOCX" }, { status: 400 });
 
-  const bytes = await file.arrayBuffer();
-  const buffer = Buffer.from(bytes);
-  const dir = path.join(process.cwd(), "public", "uploads", "proposals");
-  await mkdir(dir, { recursive: true });
-  const safeName = path.basename(file.name).replace(/[^a-zA-Z0-9._\-À-ỹ]/g, "_").slice(0, 120);
-  const filename = `${Date.now()}_${safeName}`;
-  await writeFile(path.join(dir, filename), buffer);
+  const safeName = (file.name.split(/[\\/]/).pop() ?? file.name)
+    .replace(/[^a-zA-Z0-9._\-]/g, "_").slice(0, 120);
+  const blob = await put(`proposals/${Date.now()}_${safeName}`, file, { access: "public" });
 
-  return NextResponse.json({ url: `/uploads/proposals/${filename}` });
+  return NextResponse.json({ url: blob.url });
 }

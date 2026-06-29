@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { writeFile, mkdir } from "fs/promises";
-import path from "path";
+import { put } from "@vercel/blob";
 import { verifyToken } from "@/lib/mongodb/auth";
 
 const MAX_SIZE_MB = 20;
@@ -40,21 +39,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Định dạng file không được hỗ trợ" }, { status: 415 });
   }
 
-  const bytes  = await file.arrayBuffer();
-  const buffer = Buffer.from(bytes);
-
   const safeName  = sanitizeFilename(file.name);
-  const timestamp = Date.now();
-  const finalName = `${timestamp}_${safeName}`;
+  const finalName = `${folder}/${Date.now()}_${safeName}`;
 
-  const uploadDir = path.join(process.cwd(), "public", "uploads", folder);
-  await mkdir(uploadDir, { recursive: true });
-
-  const filePath = path.join(uploadDir, finalName);
-  await writeFile(filePath, buffer);
+  const blob = await put(finalName, file, { access: "public" });
 
   return NextResponse.json({
-    url:  `/uploads/${folder}/${finalName}`,
+    url:  blob.url,
     name: file.name,
     size: file.size,
     type: file.type,
@@ -62,7 +53,6 @@ export async function POST(req: NextRequest) {
 }
 
 function sanitizeFilename(name: string): string {
-  // Remove path traversal, keep extension, replace unsafe chars
-  const base = path.basename(name);
-  return base.replace(/[^a-zA-Z0-9._\-À-ỹ]/g, "_").slice(0, 120);
+  const base = name.split(/[\\/]/).pop() ?? name;
+  return base.replace(/[^a-zA-Z0-9._\-]/g, "_").slice(0, 120);
 }
