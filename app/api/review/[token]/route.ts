@@ -24,15 +24,28 @@ export async function GET(req: NextRequest, { params }: { params: { token: strin
   const review = (topic.reviews ?? []).find(r => r.token === token);
   if (!review) return NextResponse.json({ error: "Token không hợp lệ" }, { status: 404 });
 
-  // Kiểm tra tài khoản nội bộ (optional)
-  const authHeader = req.cookies.get("auth-token")?.value;
+  // Xác thực danh tính theo loại phản biện viên
+  const authCookie = req.cookies.get("auth-token")?.value;
   let isInternalReviewer = false;
-  if (authHeader) {
-    const payload = verifyAuthToken(authHeader);
-    if (payload && review.reviewerId && payload.userId === review.reviewerId) {
-      isInternalReviewer = true;
+
+  if (review.reviewerType === "internal") {
+    // Phản biện nội bộ: bắt buộc đăng nhập đúng tài khoản được phân công
+    const payload = authCookie ? verifyAuthToken(authCookie) : null;
+    if (!payload) {
+      return NextResponse.json(
+        { error: "Phiếu phản biện này yêu cầu đăng nhập bằng tài khoản được phân công.", requireLogin: true },
+        { status: 401 },
+      );
     }
+    if (payload.userId !== review.reviewerId) {
+      return NextResponse.json(
+        { error: "Bạn không có quyền xem phiếu phản biện này — chỉ người được phân công mới truy cập được." },
+        { status: 403 },
+      );
+    }
+    isInternalReviewer = true;
   }
+  // Phản biện ngoài: token = credential (nhận qua mail), không cần đăng nhập
 
   // Phản biện kín: ẩn tên tác giả, email, thành viên, các phản biện khác
   const blindedTopic = {
@@ -72,7 +85,7 @@ export async function GET(req: NextRequest, { params }: { params: { token: strin
   });
 }
 
-/** PATCH — nộp phiếu phản biện (không cần đăng nhập nếu có token hợp lệ). */
+/** PATCH — nộp phiếu phản biện. */
 export async function PATCH(req: NextRequest, { params }: { params: { token: string } }) {
   const { token } = params;
   if (!token || token.length < 40) {
@@ -86,6 +99,29 @@ export async function PATCH(req: NextRequest, { params }: { params: { token: str
   const topic = { ...doc, id: String(doc._id) } as ResearchTopic;
   const review = (topic.reviews ?? []).find(r => r.token === token);
   if (!review) return NextResponse.json({ error: "Token không hợp lệ" }, { status: 404 });
+
+  // Xác thực danh tính trước khi cho phép nộp
+  const authCookie = req.cookies.get("auth-token")?.value;
+  if (review.reviewerType === "internal") {
+    const payload = authCookie ? verifyAuthToken(authCookie) : null;
+    if (!payload) {
+      return NextResponse.json(
+        { error: "Cần đăng nhập để nộp phiếu phản biện.", requireLogin: true },
+        { status: 401 },
+      );
+    }
+    if (payload.userId !== review.reviewerId) {
+      return NextResponse.json(
+        { error: "Bạn không có quyền nộp phiếu này — chỉ người được phân công mới có thể nộp." },
+        { status: 403 },
+      );
+    }
+  }
+
+  // Kiểm tra hết hạn (áp dụng cho cả internal và external)
+  if (review.dueAt && new Date(review.dueAt) < new Date()) {
+    return NextResponse.json({ error: "Phiếu phản biện đã hết hạn nộp." }, { status: 403 });
+  }
 
   if (review.status === "submitted") {
     return NextResponse.json({ error: "Phiếu phản biện đã được nộp" }, { status: 409 });

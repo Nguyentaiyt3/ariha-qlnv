@@ -100,6 +100,7 @@ export default function PublicReviewPage({ params }: { params: { token: string }
 
   const [loading, setLoading]       = useState(true);
   const [error, setError]           = useState<string | null>(null);
+  const [requireLogin, setRequireLogin] = useState(false);
   const [submitted, setSubmitted]   = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [alreadySubmitted, setAlreadySubmitted] = useState(false);
@@ -183,6 +184,7 @@ export default function PublicReviewPage({ params }: { params: { token: string }
     fetch(`/api/review/${token}`)
       .then(r => r.json())
       .then(data => {
+        if (data.requireLogin) { setRequireLogin(true); return; }
         if (data.error) { setError(data.error); return; }
         const t = data.topic;
         setTopicId(t.id ?? "");
@@ -295,6 +297,28 @@ export default function PublicReviewPage({ params }: { params: { token: string }
         <h2 className="text-lg font-bold text-slate-800 dark:text-white">Không thể truy cập</h2>
         <p className="text-sm text-slate-500 dark:text-slate-400">{error}</p>
         <p className="text-xs text-slate-400 mt-2">Đường dẫn này có thể đã hết hạn hoặc không hợp lệ.</p>
+      </div>
+    </div>
+  );
+
+  if (requireLogin) return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950 p-4">
+      <div className="max-w-md w-full text-center bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-8 space-y-4">
+        <div className="w-12 h-12 rounded-full bg-violet-100 dark:bg-violet-900/30 flex items-center justify-center mx-auto">
+          <ShieldCheck className="w-6 h-6 text-violet-500" />
+        </div>
+        <h2 className="text-lg font-bold text-slate-800 dark:text-white">Yêu cầu đăng nhập</h2>
+        <p className="text-sm text-slate-500 dark:text-slate-400">
+          Phiếu phản biện này chỉ dành cho tài khoản nội bộ được phân công.<br />
+          Vui lòng đăng nhập bằng tài khoản của bạn để tiếp tục.
+        </p>
+        <a
+          href={`/login?redirect=${encodeURIComponent(`/review/${token}`)}`}
+          className="inline-block mt-2 px-6 py-2.5 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium rounded-lg transition"
+        >
+          Đăng nhập để xem phiếu
+        </a>
+        <p className="text-xs text-slate-400">ARiHA WorkHub · Phản biện kín NCKH cấp cơ sở</p>
       </div>
     </div>
   );
