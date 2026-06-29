@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
   try {
     const safeName  = sanitizeFilename(file.name);
     const finalName = `${folder}/${Date.now()}_${safeName}`;
-    const blob = await put(finalName, file, { access: "public" });
+    const blob = await put(finalName, file, { access: "private" });
     return NextResponse.json({ url: blob.url, name: file.name, size: file.size, type: file.type });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "Lỗi lưu file";
