@@ -33,14 +33,25 @@ export async function GET(req: NextRequest, { params }: { params: { token: strin
     const payload = authCookie ? verifyAuthToken(authCookie) : null;
     if (!payload) {
       return NextResponse.json(
-        { error: "Phiếu phản biện này yêu cầu đăng nhập bằng tài khoản được phân công.", requireLogin: true },
+        { error: "Phiếu phản biện này yêu cầu đăng nhập bằng tài khoản được phân công.", requireLogin: true, reviewerEmail: review.reviewerEmail },
         { status: 401 },
       );
     }
-    if (payload.userId !== review.reviewerId) {
+    // Khớp theo userId (đã liên kết) HOẶC theo email (lần đầu đăng nhập)
+    const user = await getUser(payload.userId);
+    const matchesById = review.reviewerId && payload.userId === review.reviewerId;
+    const matchesByEmail = !review.reviewerId && user?.email && user.email === review.reviewerEmail;
+    if (!matchesById && !matchesByEmail) {
       return NextResponse.json(
         { error: "Bạn không có quyền xem phiếu phản biện này — chỉ người được phân công mới truy cập được." },
         { status: 403 },
+      );
+    }
+    // Tự động liên kết userId lần đầu đăng nhập bằng email khớp
+    if (matchesByEmail) {
+      await ResearchTopicModel.updateOne(
+        { _id: String(doc._id), "reviews.token": token },
+        { $set: { "reviews.$.reviewerId": payload.userId } },
       );
     }
     isInternalReviewer = true;
@@ -110,7 +121,10 @@ export async function PATCH(req: NextRequest, { params }: { params: { token: str
         { status: 401 },
       );
     }
-    if (payload.userId !== review.reviewerId) {
+    const user = await getUser(payload.userId);
+    const matchesById = review.reviewerId && payload.userId === review.reviewerId;
+    const matchesByEmail = !review.reviewerId && user?.email && user.email === review.reviewerEmail;
+    if (!matchesById && !matchesByEmail) {
       return NextResponse.json(
         { error: "Bạn không có quyền nộp phiếu này — chỉ người được phân công mới có thể nộp." },
         { status: 403 },

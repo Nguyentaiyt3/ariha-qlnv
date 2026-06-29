@@ -101,6 +101,7 @@ export default function PublicReviewPage({ params }: { params: { token: string }
   const [loading, setLoading]       = useState(true);
   const [error, setError]           = useState<string | null>(null);
   const [requireLogin, setRequireLogin] = useState(false);
+  const [reviewerEmail, setReviewerEmail] = useState<string | null>(null);
   const [submitted, setSubmitted]   = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [alreadySubmitted, setAlreadySubmitted] = useState(false);
@@ -184,7 +185,7 @@ export default function PublicReviewPage({ params }: { params: { token: string }
     fetch(`/api/review/${token}`)
       .then(r => r.json())
       .then(data => {
-        if (data.requireLogin) { setRequireLogin(true); return; }
+        if (data.requireLogin) { setRequireLogin(true); setReviewerEmail(data.reviewerEmail ?? null); return; }
         if (data.error) { setError(data.error); return; }
         const t = data.topic;
         setTopicId(t.id ?? "");
@@ -301,27 +302,48 @@ export default function PublicReviewPage({ params }: { params: { token: string }
     </div>
   );
 
-  if (requireLogin) return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950 p-4">
-      <div className="max-w-md w-full text-center bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-8 space-y-4">
-        <div className="w-12 h-12 rounded-full bg-violet-100 dark:bg-violet-900/30 flex items-center justify-center mx-auto">
-          <ShieldCheck className="w-6 h-6 text-violet-500" />
+  if (requireLogin) {
+    const redirectParam = encodeURIComponent(`/review/${token}`);
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950 p-4">
+        <div className="max-w-md w-full text-center bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 p-8 space-y-4">
+          <div className="w-12 h-12 rounded-full bg-violet-100 dark:bg-violet-900/30 flex items-center justify-center mx-auto">
+            <ShieldCheck className="w-6 h-6 text-violet-500" />
+          </div>
+          <h2 className="text-lg font-bold text-slate-800 dark:text-white">Yêu cầu đăng nhập</h2>
+          <p className="text-sm text-slate-500 dark:text-slate-400">
+            Phiếu phản biện này chỉ dành cho tài khoản nội bộ được phân công.
+          </p>
+          {reviewerEmail && (
+            <div className="px-4 py-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl text-left">
+              <p className="text-xs font-semibold text-amber-700 dark:text-amber-400 mb-0.5">Đăng nhập bằng email được thông báo:</p>
+              <p className="text-sm font-mono text-amber-800 dark:text-amber-300 break-all">{reviewerEmail}</p>
+            </div>
+          )}
+          <div className="flex flex-col gap-2 pt-1">
+            <a
+              href={`/login?redirect=${redirectParam}`}
+              className="block px-6 py-2.5 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium rounded-lg transition text-center"
+            >
+              Đăng nhập
+            </a>
+            <a
+              href={`/login?redirect=${redirectParam}&mode=register`}
+              className="block px-6 py-2.5 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-sm font-medium rounded-lg border border-slate-200 dark:border-slate-600 transition text-center"
+            >
+              Chưa có tài khoản? Đăng ký ngay
+            </a>
+          </div>
+          {reviewerEmail && (
+            <p className="text-xs text-slate-400">
+              Đăng ký bằng đúng email <span className="font-medium">{reviewerEmail}</span> để hệ thống tự nhận diện bạn là phản biện viên được phân công.
+            </p>
+          )}
+          <p className="text-xs text-slate-400 pt-1">ARiHA WorkHub · Phản biện kín NCKH cấp cơ sở</p>
         </div>
-        <h2 className="text-lg font-bold text-slate-800 dark:text-white">Yêu cầu đăng nhập</h2>
-        <p className="text-sm text-slate-500 dark:text-slate-400">
-          Phiếu phản biện này chỉ dành cho tài khoản nội bộ được phân công.<br />
-          Vui lòng đăng nhập bằng tài khoản của bạn để tiếp tục.
-        </p>
-        <a
-          href={`/login?redirect=${encodeURIComponent(`/review/${token}`)}`}
-          className="inline-block mt-2 px-6 py-2.5 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium rounded-lg transition"
-        >
-          Đăng nhập để xem phiếu
-        </a>
-        <p className="text-xs text-slate-400">ARiHA WorkHub · Phản biện kín NCKH cấp cơ sở</p>
       </div>
-    </div>
-  );
+    );
+  }
 
   if (submitted || alreadySubmitted) return (
     <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950 p-4">
