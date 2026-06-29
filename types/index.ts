@@ -317,6 +317,8 @@ export interface ResearchAnnotation {
 
 export interface ResearchCouncilVote {
   memberId: string;
+  memberName?: string;  // bản sao tên khi bỏ phiếu (qua link email)
+  voteToken?: string;   // token link một lần (phiếu gửi qua email)
   vote: "approve" | "reject" | "abstain";
   comment?: string;
   votedAt: string;
