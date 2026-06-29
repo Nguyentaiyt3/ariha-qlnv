@@ -59,6 +59,7 @@ export default function LoginPage() {
     if (err) toast.error(`Lỗi đăng nhập Google: ${decodeURIComponent(err)}`);
     const redir = params.get("redirect");
     if (redir && redir.startsWith("/")) setRedirectAfterLogin(redir);
+    if (params.get("mode") === "register") setMode("register");
   }, []);
 
   // Shared fields
@@ -167,7 +168,7 @@ export default function LoginPage() {
       );
       setCurrentUser(user);
       toast.success("Đăng ký thành công! Tài khoản của bạn đang chờ Admin phân quyền.");
-      router.push("/dashboard");
+      router.push(redirectAfterLogin);
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : "Đăng ký thất bại. Vui lòng thử lại.");
     } finally {
