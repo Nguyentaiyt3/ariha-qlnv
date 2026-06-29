@@ -933,6 +933,7 @@ function B03ReviewPanel({ task, users, currentUser, canView, canUpdate }: Props)
           users={allSystemUsers as User[]}
           currentUser={currentUser}
           canManage={canUpdate}
+          canAssignReviewer={canUpdate}
           onClose={() => { setShowAssign(false); setSelected(new Set()); }}
           onTopicUpdate={handleTopicUpdate}
         />

@@ -317,6 +317,8 @@ export interface ResearchAnnotation {
 
 export interface ResearchCouncilVote {
   memberId: string;
+  memberName?: string;  // bản sao tên khi bỏ phiếu (qua link email)
+  voteToken?: string;   // token link một lần (phiếu gửi qua email)
   vote: "approve" | "reject" | "abstain";
   comment?: string;
   votedAt: string;
@@ -402,6 +404,10 @@ export interface ResearchCouncilMember {
   academicTitle?: string;
   /** true nếu đã xác nhận tham dự. */
   confirmed?: boolean;
+  /** Email để gửi phiếu biểu quyết (cho hội đồng ngoài hoặc online). */
+  email?: string;
+  /** Token 1 lần để biểu quyết qua link email. */
+  voteToken?: string;
 }
 
 /** Nhóm đề tài NCKH — 1 người thực hiện phụ trách nhiều đề tài trong cùng nhóm. */

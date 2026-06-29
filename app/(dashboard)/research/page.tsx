@@ -16,13 +16,14 @@ import { IntakeReviewModal } from "@/components/research/IntakeReviewModal";
 import { AssignReviewersModal } from "@/components/research/AssignReviewersModal";
 import { cn, generateId } from "@/lib/utils";
 import { findDuplicatePairs, isTopicAuthor } from "@/lib/researchUtils";
+import { researchFileUrl } from "@/lib/researchFileUrl";
 import type { DupPair } from "@/lib/researchUtils";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { hasPermission, getEffectiveRole, ROLE_RANK } from "@/lib/rbac/permissions";
 import { getResearchTopics, saveResearchTopic, updateResearchTopic, deleteResearchTopic } from "@/lib/firebase/firestore";
 import { RESEARCH_STEPS, STAGE_LABEL, buildInitialSteps, researchProgress, stepMeta } from "@/lib/research";
-import type { ResearchTopic, ResearchStage, ResearchReview, ResearchCouncilSession, IntakeLog, Task } from "@/types";
+import type { ResearchTopic, ResearchStage, ResearchReview, ResearchCouncilSession, IntakeLog, Task, ResearchDesignation, ResearchStepKey } from "@/types";
 import { toast } from "sonner";
 
 // ─── Constants ─────────────────────────────────────────────────
@@ -721,19 +722,44 @@ function ReviewManagementView({
             <div key={topic.id}
               className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden">
               {/* Topic header */}
-              <div className="px-4 py-3 bg-slate-50 dark:bg-slate-800/60 flex items-center gap-3 border-b border-slate-200 dark:border-slate-700">
-                {topic.code && (
-                  <span className="font-mono text-[11px] text-slate-400 shrink-0">{topic.code}</span>
-                )}
-                <p className="font-semibold text-sm text-slate-800 dark:text-white line-clamp-1 flex-1">{topic.title}</p>
-                <div className="flex items-center gap-1 shrink-0">
-                  {visibleReviews.map(r => (
-                    <span key={r.id}
-                      className={cn("w-2.5 h-2.5 rounded-full",
-                        r.status === "submitted" ? "bg-green-400" : "bg-amber-400"
-                      )}
-                      title={r.status === "submitted" ? "Đã nộp" : "Chưa nộp"} />
-                  ))}
+              <div className="px-4 py-3 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-700 space-y-1.5">
+                <div className="flex items-center gap-3">
+                  {topic.code && (
+                    <span className="font-mono text-[11px] text-slate-400 shrink-0">{topic.code}</span>
+                  )}
+                  <p className="font-semibold text-sm text-slate-800 dark:text-white line-clamp-1 flex-1">{topic.title}</p>
+                  <div className="flex items-center gap-1 shrink-0">
+                    {visibleReviews.map(r => (
+                      <span key={r.id}
+                        className={cn("w-2.5 h-2.5 rounded-full",
+                          r.status === "submitted" ? "bg-green-400" : "bg-amber-400"
+                        )}
+                        title={r.status === "submitted" ? "Đã nộp" : "Chưa nộp"} />
+                    ))}
+                  </div>
+                </div>
+                {/* PI + monitor + file */}
+                <div className="flex items-center gap-3 flex-wrap">
+                  {topic.principalInvestigatorName && (
+                    <div className="flex items-center gap-1.5">
+                      <AvatarBubble name={topic.principalInvestigatorName} size={18} />
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate max-w-[120px]">{topic.principalInvestigatorName}</span>
+                    </div>
+                  )}
+                  {topic.reviewAssignment?.delegatedName && (
+                    <div className="flex items-center gap-1 text-[11px] text-slate-400">
+                      <span className="text-slate-300">·</span>
+                      <AvatarBubble name={topic.reviewAssignment.delegatedName} size={16} />
+                      <span className="truncate max-w-[100px]">{topic.reviewAssignment.delegatedName}</span>
+                    </div>
+                  )}
+                  {topic.proposalFileUrl && (
+                    <a href={researchFileUrl(topic.proposalFileUrl)} target="_blank" rel="noopener noreferrer"
+                      className="ml-auto flex items-center gap-1 text-[11px] text-blue-500 hover:text-blue-700 font-medium"
+                      onClick={e => e.stopPropagation()}>
+                      <ExternalLink className="w-2.5 h-2.5" /> Xem file đề cương
+                    </a>
+                  )}
                 </div>
               </div>
 
@@ -1070,6 +1096,22 @@ function ReviewTab({
                       <td className="px-3 py-3">
                         {topic.code && <span className="font-mono text-[11px] text-slate-400 block">{topic.code}</span>}
                         <p className="font-medium text-slate-800 dark:text-white line-clamp-2 max-w-xs leading-snug">{topic.title}</p>
+                        {(topic.principalInvestigatorName || topic.reviewAssignment?.delegatedName) && (
+                          <div className="flex items-center gap-2 mt-1 flex-wrap">
+                            {topic.principalInvestigatorName && (
+                              <div className="flex items-center gap-1">
+                                <AvatarBubble name={topic.principalInvestigatorName} size={16} />
+                                <span className="text-[10px] text-slate-400 truncate max-w-[100px]">{topic.principalInvestigatorName}</span>
+                              </div>
+                            )}
+                            {topic.reviewAssignment?.delegatedName && (
+                              <div className="flex items-center gap-1 text-[10px] text-slate-400">
+                                <AvatarBubble name={topic.reviewAssignment.delegatedName} size={14} />
+                                <span className="truncate max-w-[90px]">{topic.reviewAssignment.delegatedName}</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </td>
                       <td className="px-3 py-3">
                         <span className={cn("text-[11px] px-2 py-0.5 rounded-full font-semibold",
@@ -1150,217 +1192,806 @@ function ReviewTab({
 // ─── Tab: "Hội đồng KH&CN" ────────────────────────────────────
 
 const DECISION_META = {
-  passed:  { label: "Thông qua",   cls: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",  icon: CheckCircle2 },
-  failed:  { label: "Không thông qua", cls: "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400",     icon: XCircle },
-  revise:  { label: "Yêu cầu sửa", cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300", icon: AlertCircle },
+  passed:  { label: "Thông qua",       cls: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",  icon: CheckCircle2 },
+  failed:  { label: "Không thông qua", cls: "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400",         icon: XCircle },
+  revise:  { label: "Yêu cầu sửa",    cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300", icon: AlertCircle },
 } as const;
 
 const VOTE_META = {
-  approve: { label: "Tán thành",   cls: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" },
+  approve: { label: "Tán thành",       cls: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" },
   reject:  { label: "Không tán thành", cls: "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400" },
-  abstain: { label: "Không ý kiến", cls: "bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400" },
+  abstain: { label: "Không ý kiến",    cls: "bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400" },
 } as const;
 
-interface CouncilRow {
-  topic: ResearchTopic;
-  session: ResearchCouncilSession;
+// Small avatar helper — initials in a colored circle
+function AvatarBubble({ name, size = 22 }: { name?: string; size?: number }) {
+  if (!name) return null;
+  const initials = name.split(" ").map(w => w[0]).filter(Boolean).slice(-2).join("").toUpperCase();
+  const colors = ["bg-violet-500","bg-blue-500","bg-emerald-500","bg-amber-500","bg-rose-500","bg-cyan-500"];
+  const color = colors[(name.charCodeAt(0) ?? 0) % colors.length];
+  return (
+    <span className={cn("inline-flex items-center justify-center rounded-full text-white font-bold shrink-0", color)}
+      style={{ width: size, height: size, fontSize: size * 0.42 }}
+      title={name}>
+      {initials}
+    </span>
+  );
 }
 
 function CouncilTab({
-  topics, users, currentUserId, onView,
+  topics, users, currentUser, canManage, canMonitor, onView, onTopicUpdate,
 }: {
   topics: ResearchTopic[];
-  users: { id: string; name: string }[];
-  currentUserId: string;
+  users: { id: string; name: string; email?: string }[];
+  currentUser: { id: string; researchDesignations?: ResearchDesignation[] };
+  canManage: boolean;
+  canMonitor: boolean;
   onView: (t: ResearchTopic) => void;
+  onTopicUpdate: (id: string, updates: Partial<ResearchTopic>) => void;
 }) {
-  const [stageFilter, setStageFilter] = useState<"all" | "proposal" | "recognition">("all");
+  const [subTab, setSubTab] = useState<"synthesis" | "vote">("synthesis");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [councilSelected, setCouncilSelected] = useState<Set<string>>(new Set());
+  const [advancing, setAdvancing] = useState(false);
   const [search, setSearch] = useState("");
+  const [yearFilter, setYearFilter] = useState<string>("all");
+  const [synthSearch, setSynthSearch] = useState("");
+  const [synthQuarterFilter, setSynthQuarterFilter] = useState<string>("all");
 
-  const rows = useMemo((): CouncilRow[] => {
-    const result: CouncilRow[] = [];
-    for (const topic of topics) {
-      for (const session of topic.councilSessions ?? []) {
-        if ((session.memberIds ?? []).includes(currentUserId)) {
-          result.push({ topic, session });
+  // Batch action modal for council steps
+  type BatchAction = "council_decision" | "ethics" | "proceed";
+  const [batchModal, setBatchModal] = useState<BatchAction | null>(null);
+  const [batchDecision, setBatchDecision] = useState<"passed" | "failed" | "revise">("passed");
+  const [batchNote, setBatchNote] = useState("");
+  const [batchDate, setBatchDate] = useState(new Date().toISOString().slice(0, 10));
+  const [batchSaving, setBatchSaving] = useState(false);
+
+  // ── Modal gửi phiếu biểu quyết qua email ──
+  const [tokenModal, setTokenModal] = useState<{ topicId: string; sessionId: string; tokens: { name: string; email?: string; link: string }[] } | null>(null);
+  const [sendingTokens, setSendingTokens] = useState<string | null>(null); // sessionId being processed
+
+  const isCouncilMember = (currentUser?.researchDesignations ?? []).some(d =>
+    ["councilMember", "councilChair", "councilSecretary"].includes(d)
+  );
+
+  // Steps that are at or beyond council — exclude from synthesis tab
+  const PAST_REVIEW_STEPS = new Set<ResearchStepKey>([
+    "p_council", "p_ethics", "p_agree",
+    "exec_start", "exec_midterm", "exec_submit",
+    "r_intake", "r_review", "r_council", "r_recognize",
+  ]);
+
+  // Sub-tab 1: proposals where both reviews passed, not yet at council
+  const synthesisTopics = useMemo(() => {
+    const base = topics.filter(t => {
+      if (PAST_REVIEW_STEPS.has(t.currentStep)) return false;
+      const reviews = (t.reviews ?? []).filter(r => r.stage === "proposal" && r.status === "submitted");
+      return reviews.length >= 2 && reviews.every(r => r.verdict === "pass" || r.verdict === "pass_if_revised");
+    });
+    if (!canManage && !canMonitor) {
+      return base.filter(t => t.reviewAssignment?.delegatedTo === currentUser.id);
+    }
+    return base;
+  }, [topics, canManage, canMonitor, currentUser.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const synthesisYears = useMemo(() => {
+    const yrs = [...new Set(synthesisTopics.map(t => t.year).filter(Boolean))].sort((a, b) => b! - a!);
+    return yrs as number[];
+  }, [synthesisTopics]);
+
+  const filteredSynthesis = useMemo(() => {
+    const sq = synthSearch.toLowerCase();
+    return synthesisTopics.filter(t => {
+      if (yearFilter !== "all" && String(t.year) !== yearFilter) return false;
+      if (synthQuarterFilter !== "all") {
+        const reviews = (t.reviews ?? []).filter(r => r.stage === "proposal" && r.status === "submitted");
+        const lastSubmit = reviews.map(r => r.submittedAt ?? "").filter(Boolean).sort().reverse()[0];
+        if (lastSubmit) {
+          const qNum = Math.floor(new Date(lastSubmit).getMonth() / 3) + 1;
+          if (String(qNum) !== synthQuarterFilter) return false;
         }
       }
-    }
-    return result;
-  }, [topics, currentUserId]);
+      if (!sq) return true;
+      return t.title.toLowerCase().includes(sq) ||
+        (t.code ?? "").toLowerCase().includes(sq) ||
+        (t.principalInvestigatorName ?? "").toLowerCase().includes(sq) ||
+        (t.reviewAssignment?.delegatedName ?? "").toLowerCase().includes(sq);
+    });
+  }, [synthesisTopics, yearFilter, synthSearch, synthQuarterFilter]);
 
-  const filtered = useMemo(() => rows.filter(r => {
-    if (stageFilter !== "all" && r.session.stage !== stageFilter) return false;
-    if (search) {
-      const q = search.toLowerCase();
-      if (!r.topic.title.toLowerCase().includes(q) && !(r.topic.code ?? "").toLowerCase().includes(q)) return false;
+  // Sub-tab 2: topics at p_council, p_ethics, or p_agree (full post-review pipeline)
+  const POST_COUNCIL_STEPS = new Set<ResearchStepKey>(["p_council", "p_ethics", "p_agree"]);
+  const councilTopics = useMemo(() => {
+    const all = topics.filter(t => POST_COUNCIL_STEPS.has(t.currentStep));
+    if (!canManage && !canMonitor) {
+      return all.filter(t =>
+        (t.councilSessions ?? []).some(s =>
+          (s.members ?? []).some(m => m.userId === currentUser.id)
+        )
+      );
     }
-    return true;
-  }), [rows, stageFilter, search]);
+    return all;
+  }, [topics, canManage, canMonitor, currentUser.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const stats = useMemo(() => {
-    const total      = rows.length;
-    const concluded  = rows.filter(r => !!r.session.decision).length;
-    const pending    = rows.filter(r => {
-      if (r.session.decision) return false;
-      if (r.session.mode === "online") {
-        return !(r.session.votes ?? []).find(v => v.memberId === currentUserId);
+  const filteredCouncil = useMemo(() => {
+    if (!search) return councilTopics;
+    const q = search.toLowerCase();
+    return councilTopics.filter(t =>
+      t.title.toLowerCase().includes(q) || (t.code ?? "").toLowerCase().includes(q)
+    );
+  }, [councilTopics, search]);
+
+  // Batch action for council step advancement
+  async function handleBatchCouncilAction() {
+    if (!batchModal || councilSelected.size === 0) return;
+    setBatchSaving(true);
+    const now = new Date().toISOString();
+    let ok = 0;
+    try {
+      for (const id of councilSelected) {
+        const topic = councilTopics.find(t => t.id === id);
+        if (!topic) continue;
+        let updates: Partial<ResearchTopic> = { updatedAt: now };
+        if (batchModal === "council_decision" && topic.currentStep === "p_council") {
+          // Record decision on first proposal session + advance to p_ethics
+          const sessionIdx = (topic.councilSessions ?? []).findIndex(s => s.stage === "proposal");
+          if (sessionIdx >= 0) {
+            const sessions = [...(topic.councilSessions ?? [])];
+            sessions[sessionIdx] = { ...sessions[sessionIdx], decision: batchDecision };
+            updates = { ...updates, councilSessions: sessions, currentStep: "p_ethics" };
+          } else {
+            updates = { ...updates, currentStep: "p_ethics" };
+          }
+        } else if (batchModal === "ethics" && topic.currentStep === "p_ethics") {
+          updates = { ...updates, currentStep: "p_agree" };
+        } else if (batchModal === "proceed" && topic.currentStep === "p_agree") {
+          updates = { ...updates, currentStep: "exec_start" };
+        } else {
+          continue; // skip topics not in the expected step
+        }
+        await fetch(`/api/research/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updates),
+        });
+        onTopicUpdate(id, updates);
+        ok++;
       }
-      return false;
-    }).length;
-    const notVoted   = rows.filter(r =>
-      r.session.mode === "online" &&
-      !r.session.decision &&
-      !(r.session.votes ?? []).find(v => v.memberId === currentUserId)
-    ).length;
-    const inPerson   = rows.filter(r => r.session.mode === "in_person").length;
-    const online     = rows.filter(r => r.session.mode === "online").length;
-    return { total, concluded, pending, notVoted, inPerson, online };
-  }, [rows, currentUserId]);
+      setCouncilSelected(new Set());
+      setBatchModal(null);
+      setBatchNote("");
+      toast.success(`Đã cập nhật ${ok} đề tài`);
+    } catch { toast.error("Có lỗi xảy ra"); }
+    finally { setBatchSaving(false); }
+  }
+
+  // Export Excel for synthesis tab
+  async function handleSynthesisExport(topicsToExport: ResearchTopic[]) {
+    try {
+      const { utils, writeFile } = await import("xlsx");
+      const rows = topicsToExport.map(t => {
+        const reviews = (t.reviews ?? []).filter(r => r.stage === "proposal" && r.status === "submitted");
+        const piName = t.principalInvestigatorName ?? users.find(u => u.id === t.principalInvestigatorId)?.name ?? "";
+        const monitorName = t.reviewAssignment?.delegatedName ?? users.find(u => u.id === t.reviewAssignment?.delegatedTo)?.name ?? "";
+        const lastSubmit = reviews.map(r => r.submittedAt ?? "").filter(Boolean).sort().reverse()[0];
+        return {
+          "Mã đề tài":      t.code ?? "",
+          "Tên đề tài":     t.title,
+          "Đơn vị":         t.department ?? "",
+          "Năm":            t.year ?? "",
+          "Chủ nhiệm":      piName,
+          "Người theo dõi": monitorName,
+          "Thành viên":     (t.memberNames ?? "").split("\n").filter(Boolean).join("; "),
+          "PB1 kết quả":    reviews[0] ? (reviews[0].verdict === "pass" ? "ĐẠT" : "ĐẠT (sửa)") : "",
+          "PB1 điểm":       reviews[0]?.score ?? "",
+          "PB2 kết quả":    reviews[1] ? (reviews[1].verdict === "pass" ? "ĐẠT" : "ĐẠT (sửa)") : "",
+          "PB2 điểm":       reviews[1]?.score ?? "",
+          "Ngày nộp":       lastSubmit ? new Date(lastSubmit).toLocaleDateString("vi-VN") : "",
+          "Nhiệm vụ":       t.taskId ?? "",
+        };
+      });
+      const ws = utils.json_to_sheet(rows);
+      const wb = utils.book_new();
+      utils.book_append_sheet(wb, ws, "Tổng hợp PB");
+      writeFile(wb, `TongHopPhanBien-${new Date().toISOString().slice(0, 10)}.xlsx`);
+      toast.success("Đã xuất Excel");
+    } catch { toast.error("Xuất Excel thất bại"); }
+  }
+
+  // Export Excel for council tab selected (or all)
+  async function handleCouncilExport(topicsToExport: ResearchTopic[]) {
+    try {
+      const { utils, writeFile } = await import("xlsx");
+      const STEP_LABEL: Record<string, string> = {
+        p_council: "Hội đồng thông qua", p_ethics: "Y đức", p_agree: "Quyết định triển khai",
+      };
+      const rows = topicsToExport.map(t => {
+        const pi = users.find(u => u.id === t.principalInvestigatorId);
+        const monitor = t.reviewAssignment?.delegatedTo ? users.find(u => u.id === t.reviewAssignment!.delegatedTo) : undefined;
+        const session = (t.councilSessions ?? []).find(s => s.stage === "proposal");
+        const reviews = (t.reviews ?? []).filter(r => r.stage === "proposal" && r.status === "submitted");
+        const reviewerNames = reviews.map((r, i) =>
+          `PB${i + 1}: ${r.reviewerName ?? users.find(u => u.id === r.reviewerId)?.name ?? ""}`
+        ).join("; ");
+        return {
+          "Mã đề tài":       t.code ?? "",
+          "Tên đề tài":      t.title,
+          "Đơn vị":          t.department ?? "",
+          "Lĩnh vực":        t.field ?? "",
+          "Năm":             t.year ?? "",
+          "Chủ nhiệm":       t.principalInvestigatorName ?? pi?.name ?? "",
+          "Người theo dõi":  monitor?.name ?? t.reviewAssignment?.delegatedName ?? "",
+          "Thành viên":      (t.memberNames ?? "").split("\n").filter(Boolean).join("; "),
+          "Phản biện":       reviewerNames,
+          "Bước":            STEP_LABEL[t.currentStep] ?? t.currentStep,
+          "Kết luận HĐ":    session?.decision ? { passed: "Thông qua", failed: "Không thông qua", revise: "Yêu cầu sửa" }[session.decision] ?? session.decision : "",
+          "Nhiệm vụ":        t.taskId ?? "",
+          "File đề cương":   t.proposalFileUrl ?? "",
+        };
+      });
+      const ws = utils.json_to_sheet(rows);
+      const wb = utils.book_new();
+      utils.book_append_sheet(wb, ws, "Hội đồng KHCN");
+      writeFile(wb, `HDKHCN-${new Date().toISOString().slice(0, 10)}.xlsx`);
+      toast.success("Đã xuất Excel");
+    } catch { toast.error("Xuất Excel thất bại"); }
+  }
+
+  // Batch advance selected to p_council
+  async function handleBatchAdvance() {
+    if (selected.size === 0) return;
+    setAdvancing(true);
+    const now = new Date().toISOString();
+    let ok = 0;
+    try {
+      for (const id of selected) {
+        const topic = synthesisTopics.find(t => t.id === id);
+        if (!topic) continue;
+        const steps = (topic.steps ?? []).map(s =>
+          s.key === "p_review"    ? { ...s, status: "passed" as const, completedAt: now }
+          : s.key === "p_council" ? { ...s, status: "in_progress" as const }
+          : s
+        );
+        const updates: Partial<ResearchTopic> = { steps, currentStep: "p_council", updatedAt: now };
+        await fetch(`/api/research/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updates),
+        });
+        onTopicUpdate(id, updates);
+        ok++;
+      }
+      setSelected(new Set());
+      toast.success(`Đã chuyển ${ok} đề cương sang Hội đồng thông qua`);
+    } catch { toast.error("Có lỗi khi chuyển bước"); }
+    finally { setAdvancing(false); }
+  }
+
+  // Generate vote tokens + send email for a session
+  async function handleSendVoteLinks(topicId: string, sessionId: string) {
+    setSendingTokens(sessionId);
+    try {
+      const res = await fetch(`/api/research/${topicId}/council-tokens`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId }),
+      });
+      const data = await res.json() as { tokens?: { name: string; email?: string; link: string }[]; emailErrors?: string[]; error?: string };
+      if (!res.ok) { alert(data.error ?? "Có lỗi xảy ra"); return; }
+      setTokenModal({ topicId, sessionId, tokens: data.tokens ?? [] });
+    } finally {
+      setSendingTokens(null);
+    }
+  }
+
+  const canSeeCouncil = canManage || canMonitor || isCouncilMember;
 
   return (
     <div className="space-y-4">
-      {/* Stat cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <StatCard label="Tổng phiên họp" value={stats.total} />
-        <StatCard label="Chưa biểu quyết" value={stats.notVoted} sub="Phiên họp trực tuyến"
-          variant={stats.notVoted > 0 ? "warning" : "default"} />
-        <StatCard label="Chưa kết luận" value={stats.total - stats.concluded}
-          variant={(stats.total - stats.concluded) > 0 ? "info" : "default"} />
-        <StatCard label="Đã kết luận" value={stats.concluded}
-          variant={stats.concluded > 0 ? "success" : "default"} />
+      {/* Sub-tab switcher */}
+      <div className="flex gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl w-fit">
+        {(canManage || canMonitor) && (
+          <button
+            onClick={() => setSubTab("synthesis")}
+            className={cn("px-4 py-1.5 text-sm font-medium rounded-lg transition",
+              subTab === "synthesis" ? "bg-white dark:bg-slate-700 shadow-sm text-violet-700 dark:text-violet-300" : "text-slate-500 hover:text-slate-700"
+            )}
+          >
+            Tổng hợp kết quả
+            {synthesisTopics.length > 0 && (
+              <span className="ml-1.5 px-1.5 py-0.5 text-[10px] font-bold bg-amber-100 text-amber-700 rounded-full">{synthesisTopics.length}</span>
+            )}
+          </button>
+        )}
+        {canSeeCouncil && (
+          <button
+            onClick={() => setSubTab("vote")}
+            className={cn("px-4 py-1.5 text-sm font-medium rounded-lg transition",
+              subTab === "vote" ? "bg-white dark:bg-slate-700 shadow-sm text-violet-700 dark:text-violet-300" : "text-slate-500 hover:text-slate-700"
+            )}
+          >
+            Hội đồng thông qua
+            {councilTopics.filter(t => !(t.councilSessions ?? []).some(s => s.decision)).length > 0 && (
+              <span className="ml-1.5 px-1.5 py-0.5 text-[10px] font-bold bg-violet-100 text-violet-700 rounded-full">
+                {councilTopics.filter(t => !(t.councilSessions ?? []).some(s => s.decision)).length}
+              </span>
+            )}
+          </button>
+        )}
       </div>
 
-      {/* Filters */}
-      <div className="flex flex-wrap gap-2 items-center">
-        <div className="relative flex-1 min-w-[200px] max-w-xs">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
-          <input value={search} onChange={e => setSearch(e.target.value)}
-            placeholder="Tìm mã, tên đề tài..."
-            className="w-full pl-8 pr-3 py-1.5 text-sm bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-400 dark:text-white" />
+      {/* ── Sub-tab 1: Tổng hợp kết quả thẩm định ── */}
+      {subTab === "synthesis" && (canManage || canMonitor) && (
+        <div className="space-y-3">
+          {/* Header + filters */}
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+                Đề cương chờ chuyển Hội đồng
+              </p>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Đã có đủ 2 phiếu phản biện đạt — chọn và chuyển sang Hội đồng thông qua. Hội đồng chỉ thấy sau khi được chuyển.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* Search */}
+              <div className="relative min-w-[180px]">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+                <input value={synthSearch} onChange={e => { setSynthSearch(e.target.value); setSelected(new Set()); }}
+                  placeholder="Tên đề tài, tác giả..."
+                  className="w-full pl-8 pr-3 py-1.5 text-sm bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-400 dark:text-white" />
+              </div>
+              {/* Year */}
+              <select value={yearFilter} onChange={e => { setYearFilter(e.target.value); setSelected(new Set()); }}
+                className="text-sm px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-400 dark:text-white">
+                <option value="all">Tất cả năm</option>
+                {synthesisYears.map(y => <option key={y} value={String(y)}>{y}</option>)}
+              </select>
+              {/* Quarter */}
+              <select value={synthQuarterFilter} onChange={e => { setSynthQuarterFilter(e.target.value); setSelected(new Set()); }}
+                className="text-sm px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-400 dark:text-white">
+                <option value="all">Tất cả quý</option>
+                <option value="1">Quý I</option>
+                <option value="2">Quý II</option>
+                <option value="3">Quý III</option>
+                <option value="4">Quý IV</option>
+              </select>
+              {/* Export */}
+              {filteredSynthesis.length > 0 && (
+                <button
+                  onClick={() => handleSynthesisExport(selected.size > 0 ? filteredSynthesis.filter(t => selected.has(t.id)) : filteredSynthesis)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 text-slate-600 dark:text-slate-300 rounded-lg transition">
+                  <Download className="w-3.5 h-3.5" /> Xuất Excel{selected.size > 0 ? ` (${selected.size})` : ""}
+                </button>
+              )}
+              {selected.size > 0 && (
+                <button
+                  onClick={handleBatchAdvance}
+                  disabled={advancing}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-semibold rounded-lg transition"
+                >
+                  {advancing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Vote className="w-3.5 h-3.5" />}
+                  Chuyển sang Hội đồng ({selected.size})
+                </button>
+              )}
+            </div>
+          </div>
+
+          {synthesisTopics.length === 0 ? (
+            <div className="text-center py-16 text-slate-400">
+              <CheckCircle2 className="w-8 h-8 mx-auto mb-2 text-slate-300" />
+              <p className="text-sm">Không có đề cương nào đang chờ tổng hợp.</p>
+            </div>
+          ) : filteredSynthesis.length === 0 ? (
+            <div className="text-center py-10 text-slate-400">
+              <p className="text-sm">Không có đề cương nào khớp bộ lọc.</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-slate-50 dark:bg-slate-800/60 text-left">
+                    <th className="px-3 py-2.5 w-8">
+                      <input type="checkbox"
+                        checked={selected.size === filteredSynthesis.length && filteredSynthesis.length > 0}
+                        onChange={e => setSelected(e.target.checked ? new Set(filteredSynthesis.map(t => t.id)) : new Set())}
+                        className="rounded"
+                      />
+                    </th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500">Đề tài</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Đơn vị</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Chủ nhiệm</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Theo dõi</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-32">Thành viên</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-24">PB1</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-24">PB2</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-16">Năm</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Ngày nộp</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
+                  {filteredSynthesis.map(topic => {
+                    const reviews = (topic.reviews ?? []).filter(r => r.stage === "proposal" && r.status === "submitted");
+                    const isChecked = selected.has(topic.id);
+                    const lastSubmit = reviews.map(r => r.submittedAt ?? "").sort().reverse()[0];
+                    const piName = topic.principalInvestigatorName ?? users.find(u => u.id === topic.principalInvestigatorId)?.name;
+                    const monitorName = topic.reviewAssignment?.delegatedName ?? users.find(u => u.id === topic.reviewAssignment?.delegatedTo)?.name;
+                    const fileUrl = topic.proposalFileUrl ? researchFileUrl(topic.proposalFileUrl) : "";
+                    return (
+                      <tr key={topic.id}
+                        className={cn("transition cursor-pointer", isChecked ? "bg-violet-50/60 dark:bg-violet-900/10" : "hover:bg-slate-50 dark:hover:bg-slate-800/40")}
+                        onClick={() => setSelected(prev => { const n = new Set(prev); n.has(topic.id) ? n.delete(topic.id) : n.add(topic.id); return n; })}
+                      >
+                        <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                          <input type="checkbox" checked={isChecked}
+                            onChange={e => setSelected(prev => { const n = new Set(prev); e.target.checked ? n.add(topic.id) : n.delete(topic.id); return n; })}
+                            className="rounded" />
+                        </td>
+                        <td className="px-3 py-3">
+                          <div className="flex items-center gap-1.5 mb-0.5">
+                            {topic.code && <span className="font-mono text-[11px] text-slate-400">{topic.code}</span>}
+                            {fileUrl && (
+                              <a href={fileUrl} target="_blank" rel="noopener noreferrer"
+                                onClick={e => e.stopPropagation()}
+                                className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 hover:bg-blue-100 font-medium border border-blue-100 flex items-center gap-0.5">
+                                <ExternalLink className="w-2.5 h-2.5" /> Đề cương
+                              </a>
+                            )}
+                          </div>
+                          <p className="font-medium text-slate-800 dark:text-white leading-snug">{topic.title}</p>
+                          {topic.field && <p className="text-[11px] text-slate-400">{topic.field}</p>}
+                        </td>
+                        <td className="px-3 py-3 text-[11px] text-slate-500">{topic.department ?? "—"}</td>
+                        <td className="px-3 py-3">
+                          {piName && (
+                            <div className="flex items-center gap-1.5">
+                              <AvatarBubble name={piName} size={20} />
+                              <span className="text-[11px] text-slate-600 dark:text-slate-300 truncate max-w-[80px]">{piName}</span>
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-3 py-3">
+                          {monitorName && (
+                            <div className="flex items-center gap-1.5">
+                              <AvatarBubble name={monitorName} size={18} />
+                              <span className="text-[11px] text-slate-500 truncate max-w-[80px]">{monitorName}</span>
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-3 py-3">
+                          <div className="flex flex-col gap-0.5">
+                            {(topic.memberNames ?? "").split("\n").filter(Boolean).map((name, i) => (
+                              <div key={i} className="flex items-center gap-1">
+                                <AvatarBubble name={name.trim()} size={16} />
+                                <span className="text-[10px] text-slate-400 truncate max-w-[80px]">{name.trim()}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </td>
+                        {reviews.slice(0, 2).map((r, i) => (
+                          <td key={i} className="px-3 py-3">
+                            <span className={cn("text-[11px] px-1.5 py-0.5 rounded-full font-semibold block w-fit",
+                              r.verdict === "pass" ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
+                            )}>
+                              {r.verdict === "pass" ? "ĐẠT" : "ĐẠT (sửa)"}
+                            </span>
+                            {typeof r.score === "number" && (
+                              <span className="text-[11px] text-slate-400 mt-0.5 block">{r.score}/35</span>
+                            )}
+                          </td>
+                        ))}
+                        {reviews.length < 2 && <td colSpan={2 - reviews.length} />}
+                        <td className="px-3 py-3 text-xs text-slate-500 font-mono">{topic.year ?? "—"}</td>
+                        <td className="px-3 py-3 text-xs text-slate-400">
+                          {lastSubmit ? new Date(lastSubmit).toLocaleDateString("vi-VN") : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
-        <select value={stageFilter} onChange={e => setStageFilter(e.target.value as typeof stageFilter)}
-          className="text-sm px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-400 dark:text-white">
-          <option value="all">Tất cả giai đoạn</option>
-          <option value="proposal">Thẩm định đề cương</option>
-          <option value="recognition">Công nhận đề tài</option>
-        </select>
-        <span className="text-xs text-slate-400 ml-auto">{filtered.length} phiên họp</span>
-      </div>
+      )}
 
-      <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-slate-50 dark:bg-slate-800/60 text-left">
-              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-8">#</th>
-              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500">Đề tài</th>
-              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-36">Giai đoạn</th>
-              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Hình thức</th>
-              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-32">Ngày họp</th>
-              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Thành viên</th>
-              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-32">Kết luận HĐ</th>
-              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-32">Biểu quyết của tôi</th>
-              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-20"></th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
-            {filtered.length === 0 ? (
-              <tr><td colSpan={9} className="py-16 text-center">
-                <Vote className="w-8 h-8 text-slate-300 mx-auto mb-2" />
-                <p className="text-sm text-slate-400">
-                  {rows.length === 0 ? "Bạn chưa được phân công vào hội đồng nào." : "Không có phiên họp khớp bộ lọc."}
-                </p>
-              </td></tr>
-            ) : filtered.map(({ topic, session }, i) => {
-              const myVote = (session.votes ?? []).find(v => v.memberId === currentUserId);
-              const scheduledDate = session.scheduledAt ? new Date(session.scheduledAt) : null;
-              const memberCount = (session.memberIds ?? []).length;
-              return (
-                <tr key={session.id}
-                  className="hover:bg-violet-50/40 dark:hover:bg-violet-900/10 transition cursor-pointer group"
-                  onClick={() => onView(topic)}>
-                  <td className="px-3 py-3 text-xs text-slate-400">{i + 1}</td>
-                  <td className="px-3 py-3">
-                    {topic.code && <span className="font-mono text-[11px] text-slate-400 block">{topic.code}</span>}
-                    <p className="font-medium text-slate-800 dark:text-white line-clamp-2 max-w-xs leading-snug">{topic.title}</p>
-                  </td>
-                  <td className="px-3 py-3">
-                    <span className={cn("text-[11px] px-2 py-0.5 rounded-full font-semibold",
-                      session.stage === "proposal"
-                        ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
-                        : "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300"
-                    )}>
-                      {session.stage === "proposal" ? "Thẩm định đề cương" : "Công nhận đề tài"}
+      {/* ── Sub-tab 2: Hội đồng thông qua ── */}
+      {subTab === "vote" && canSeeCouncil && (
+        <div className="space-y-3">
+          {/* Toolbar */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="relative flex-1 min-w-[180px] max-w-xs">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+              <input value={search} onChange={e => setSearch(e.target.value)}
+                placeholder="Tìm mã, tên đề tài..."
+                className="w-full pl-8 pr-3 py-1.5 text-sm bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-400 dark:text-white" />
+            </div>
+            {councilSelected.size > 0 && (canManage || canMonitor) && (
+              <>
+                {[...councilSelected].some(id => councilTopics.find(t => t.id === id)?.currentStep === "p_council") && (
+                  <button onClick={() => { setBatchDecision("passed"); setBatchModal("council_decision"); }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-violet-600 hover:bg-violet-700 text-white rounded-lg transition">
+                    <Vote className="w-3.5 h-3.5" /> Ghi kết quả HĐ
+                  </button>
+                )}
+                {[...councilSelected].some(id => councilTopics.find(t => t.id === id)?.currentStep === "p_ethics") && (
+                  <button onClick={() => setBatchModal("ethics")}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition">
+                    <CheckCircle2 className="w-3.5 h-3.5" /> Chứng nhận y đức
+                  </button>
+                )}
+                {[...councilSelected].some(id => councilTopics.find(t => t.id === id)?.currentStep === "p_agree") && (
+                  <button onClick={() => setBatchModal("proceed")}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition">
+                    <ChevronRight className="w-3.5 h-3.5" /> Quyết định triển khai
+                  </button>
+                )}
+                <button onClick={() => handleCouncilExport([...councilSelected].map(id => councilTopics.find(t => t.id === id)!).filter(Boolean))}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 text-slate-700 dark:text-slate-300 rounded-lg transition">
+                  <Download className="w-3.5 h-3.5" /> Xuất Excel ({councilSelected.size})
+                </button>
+              </>
+            )}
+            {councilSelected.size === 0 && (canManage || canMonitor) && filteredCouncil.length > 0 && (
+              <button onClick={() => handleCouncilExport(filteredCouncil)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 text-slate-600 dark:text-slate-300 rounded-lg transition ml-auto">
+                <Download className="w-3.5 h-3.5" /> Xuất Excel
+              </button>
+            )}
+            <span className="text-xs text-slate-400 ml-auto">{filteredCouncil.length} đề tài</span>
+          </div>
+
+          {filteredCouncil.length === 0 ? (
+            <div className="text-center py-16 text-slate-400">
+              <Vote className="w-8 h-8 mx-auto mb-2 text-slate-300" />
+              <p className="text-sm">{councilTopics.length === 0 ? "Chưa có đề tài nào chờ Hội đồng thông qua." : "Không có đề tài khớp bộ lọc."}</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-slate-50 dark:bg-slate-800/60 text-left">
+                    <th className="px-3 py-2.5 w-8">
+                      {(canManage || canMonitor) && (
+                        <input type="checkbox"
+                          checked={councilSelected.size === filteredCouncil.length && filteredCouncil.length > 0}
+                          onChange={e => setCouncilSelected(e.target.checked ? new Set(filteredCouncil.map(t => t.id)) : new Set())}
+                          className="rounded" />
+                      )}
+                    </th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500">Đề tài</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-24">Đơn vị</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Chủ nhiệm</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Theo dõi</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-32">Thành viên</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Phản biện</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Bước</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Kết luận HĐ</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-20"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
+                  {filteredCouncil.map(topic => {
+                    const session = (topic.councilSessions ?? []).find(s => s.stage === "proposal");
+                    const voteCount = session ? (session.votes ?? []).length : 0;
+                    const memberCount = session ? (session.members ?? []).length : 0;
+                    const reviews = (topic.reviews ?? []).filter(r => r.stage === "proposal" && r.status === "submitted");
+                    const piName = topic.principalInvestigatorName ?? users.find(u => u.id === topic.principalInvestigatorId)?.name;
+                    const monitorName = topic.reviewAssignment?.delegatedName ?? users.find(u => u.id === topic.reviewAssignment?.delegatedTo)?.name;
+                    const isChecked = councilSelected.has(topic.id);
+                    const fileUrl = topic.proposalFileUrl ? researchFileUrl(topic.proposalFileUrl) : "";
+                    const STEP_INFO: Record<string, { label: string; cls: string }> = {
+                      p_council: { label: "Hội đồng thông qua", cls: "bg-violet-100 text-violet-700" },
+                      p_ethics:  { label: "Chứng nhận y đức",  cls: "bg-emerald-100 text-emerald-700" },
+                      p_agree:   { label: "Quyết định triển khai", cls: "bg-blue-100 text-blue-700" },
+                    };
+                    const stepInfo = STEP_INFO[topic.currentStep] ?? { label: topic.currentStep, cls: "bg-slate-100 text-slate-500" };
+                    return (
+                      <tr key={topic.id}
+                        className={cn("transition cursor-pointer group", isChecked ? "bg-violet-50/60 dark:bg-violet-900/10" : "hover:bg-slate-50 dark:hover:bg-slate-800/40")}
+                        onClick={() => setCouncilSelected(prev => { const n = new Set(prev); n.has(topic.id) ? n.delete(topic.id) : n.add(topic.id); return n; })}
+                      >
+                        <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                          {(canManage || canMonitor) && (
+                            <input type="checkbox" checked={isChecked}
+                              onChange={e => setCouncilSelected(prev => { const n = new Set(prev); e.target.checked ? n.add(topic.id) : n.delete(topic.id); return n; })}
+                              className="rounded" />
+                          )}
+                        </td>
+                        <td className="px-3 py-3">
+                          <div className="flex items-center gap-1.5 mb-0.5">
+                            {topic.code && <span className="font-mono text-[11px] text-slate-400">{topic.code}</span>}
+                            {fileUrl && (
+                              <a href={fileUrl} target="_blank" rel="noopener noreferrer"
+                                onClick={e => e.stopPropagation()}
+                                className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 hover:bg-blue-100 font-medium border border-blue-100 flex items-center gap-0.5">
+                                <ExternalLink className="w-2.5 h-2.5" /> Đề cương
+                              </a>
+                            )}
+                          </div>
+                          <p className="font-medium text-slate-800 dark:text-white leading-snug">{topic.title}</p>
+                          <p className="text-[11px] text-slate-400">{topic.field}{topic.year ? ` · ${topic.year}` : ""}</p>
+                          {session && memberCount > 0 && (
+                            <p className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1">
+                              <Users className="w-2.5 h-2.5" />
+                              {voteCount}/{memberCount} biểu quyết
+                            </p>
+                          )}
+                        </td>
+                        <td className="px-3 py-3 text-[11px] text-slate-500">{topic.department ?? "—"}</td>
+                        <td className="px-3 py-3">
+                          {piName && (
+                            <div className="flex items-center gap-1.5">
+                              <AvatarBubble name={piName} size={20} />
+                              <span className="text-[11px] text-slate-600 dark:text-slate-300 truncate max-w-[80px]">{piName}</span>
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-3 py-3">
+                          {monitorName && (
+                            <div className="flex items-center gap-1.5">
+                              <AvatarBubble name={monitorName} size={18} />
+                              <span className="text-[11px] text-slate-500 truncate max-w-[80px]">{monitorName}</span>
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-3 py-3">
+                          <div className="flex flex-col gap-0.5">
+                            {(topic.memberNames ?? "").split("\n").filter(Boolean).map((name, i) => (
+                              <div key={i} className="flex items-center gap-1">
+                                <AvatarBubble name={name.trim()} size={16} />
+                                <span className="text-[10px] text-slate-400 truncate max-w-[90px]">{name.trim()}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </td>
+                        <td className="px-3 py-3">
+                          <div className="flex flex-col gap-0.5">
+                            {reviews.map((r, i) => (
+                              <span key={i} className={cn("text-[10px] px-1.5 py-0.5 rounded-full font-semibold w-fit",
+                                r.verdict === "pass" ? "bg-green-100 text-green-700" :
+                                r.verdict === "pass_if_revised" ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-600"
+                              )}>
+                                PB{i + 1}: {r.verdict === "pass" ? "ĐẠT" : r.verdict === "pass_if_revised" ? "ĐẠT(sửa)" : "KHÔNG ĐẠT"}
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+                        <td className="px-3 py-3">
+                          <span className={cn("text-[10px] px-2 py-0.5 rounded-full font-semibold", stepInfo.cls)}>
+                            {stepInfo.label}
+                          </span>
+                          {session?.scheduledAt && (
+                            <p className="text-[10px] text-slate-400 mt-1 flex items-center gap-0.5">
+                              <Calendar className="w-2.5 h-2.5" />
+                              {new Date(session.scheduledAt).toLocaleDateString("vi-VN")}
+                            </p>
+                          )}
+                        </td>
+                        <td className="px-3 py-3">
+                          {session?.decision ? (() => {
+                            const dm = DECISION_META[session.decision];
+                            const DIcon = dm.icon;
+                            return <span className={cn("inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full font-semibold", dm.cls)}>
+                              <DIcon className="w-2.5 h-2.5" /> {dm.label}
+                            </span>;
+                          })() : (
+                            topic.currentStep === "p_council"
+                              ? <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-amber-100 text-amber-700">Chờ kết luận</span>
+                              : <span className="text-[10px] text-slate-400">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3">
+                          <button
+                            onClick={e => { e.stopPropagation(); onView(topic); }}
+                            className="opacity-0 group-hover:opacity-100 transition flex items-center gap-1 text-xs text-violet-600 hover:text-violet-700 font-medium">
+                            <Eye className="w-3.5 h-3.5" /> Chi tiết
+                          </button>
+                          {session && !session.decision && (canManage || canMonitor) && (
+                            <button
+                              onClick={e => { e.stopPropagation(); handleSendVoteLinks(topic.id, session.id); }}
+                              disabled={sendingTokens === session.id}
+                              className="opacity-0 group-hover:opacity-100 transition flex items-center gap-1 text-[10px] text-slate-400 hover:text-violet-500 mt-1 disabled:opacity-30">
+                              {sendingTokens === session.id ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Mail className="w-2.5 h-2.5" />}
+                              Gửi email
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Modal: batch council actions ── */}
+      {batchModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={() => setBatchModal(null)}>
+          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-700 max-w-md w-full p-6 space-y-4" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-slate-800 dark:text-white">
+                {batchModal === "council_decision" && "Ghi kết quả Hội đồng"}
+                {batchModal === "ethics" && "Chứng nhận y đức"}
+                {batchModal === "proceed" && "Quyết định cho triển khai"}
+              </h3>
+              <button onClick={() => setBatchModal(null)} className="text-slate-400 hover:text-slate-600"><XCircle className="w-5 h-5" /></button>
+            </div>
+            <p className="text-xs text-slate-400">
+              Áp dụng cho {councilSelected.size} đề tài đã chọn phù hợp với bước này.
+            </p>
+            {batchModal === "council_decision" && (
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-slate-700 dark:text-slate-200">Kết luận Hội đồng</p>
+                {(["passed", "revise", "failed"] as const).map(d => (
+                  <label key={d} className={cn("flex items-center gap-2.5 px-4 py-2.5 rounded-xl border-2 cursor-pointer transition",
+                    batchDecision === d ? "border-violet-400 bg-violet-50 dark:bg-violet-900/20" : "border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800"
+                  )}>
+                    <input type="radio" name="decision" value={d} checked={batchDecision === d}
+                      onChange={() => setBatchDecision(d)} className="accent-violet-600" />
+                    <span className="text-sm font-medium">
+                      {d === "passed" ? "✅ Thông qua" : d === "revise" ? "⚠️ Yêu cầu sửa đổi" : "❌ Không thông qua"}
                     </span>
-                  </td>
-                  <td className="px-3 py-3">
-                    <span className={cn("text-[11px] px-2 py-0.5 rounded-full font-semibold",
-                      session.mode === "in_person"
-                        ? "bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300"
-                        : "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300"
-                    )}>
-                      {session.mode === "in_person" ? "Họp trực tiếp" : "Trực tuyến"}
-                    </span>
-                  </td>
-                  <td className="px-3 py-3">
-                    {scheduledDate ? (
-                      <span className="text-xs text-slate-600 dark:text-slate-300 flex items-center gap-1">
-                        <Calendar className="w-3 h-3 text-slate-400" />
-                        {scheduledDate.toLocaleDateString("vi-VN")}
-                      </span>
-                    ) : <span className="text-xs text-slate-300 italic">Chưa ấn định</span>}
-                    {session.location && (
-                      <p className="text-[11px] text-slate-400 mt-0.5 truncate max-w-[110px]">{session.location}</p>
-                    )}
-                  </td>
-                  <td className="px-3 py-3">
-                    <span className="flex items-center gap-1 text-xs text-slate-500">
-                      <Users className="w-3 h-3" /> {memberCount} người
-                    </span>
-                    {session.mode === "online" && (
-                      <p className="text-[11px] text-slate-400 mt-0.5">
-                        {(session.votes ?? []).length}/{memberCount} đã bỏ phiếu
-                      </p>
-                    )}
-                  </td>
-                  <td className="px-3 py-3">
-                    {session.decision ? (() => {
-                      const dm = DECISION_META[session.decision];
-                      const DIcon = dm.icon;
-                      return (
-                        <span className={cn("inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full font-semibold", dm.cls)}>
-                          <DIcon className="w-2.5 h-2.5" /> {dm.label}
-                        </span>
-                      );
-                    })() : <span className="text-xs text-slate-400 italic">Chưa có</span>}
-                  </td>
-                  <td className="px-3 py-3">
-                    {session.mode === "in_person" ? (
-                      <span className="text-xs text-slate-400 italic">Trực tiếp</span>
-                    ) : myVote ? (
-                      <span className={cn("text-[11px] px-2 py-0.5 rounded-full font-semibold", VOTE_META[myVote.vote].cls)}>
-                        {VOTE_META[myVote.vote].label}
-                      </span>
-                    ) : (
-                      <span className="text-[11px] px-2 py-0.5 rounded-full font-semibold bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
-                        Chưa bỏ phiếu
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-3 py-3">
-                    <button
-                      onClick={e => { e.stopPropagation(); onView(topic); }}
-                      className="opacity-0 group-hover:opacity-100 transition flex items-center gap-1 text-xs text-violet-600 hover:text-violet-700 font-medium">
-                      <Eye className="w-3.5 h-3.5" />
-                      {!myVote && session.mode === "online" && !session.decision ? "Biểu quyết" : "Xem"}
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+                  </label>
+                ))}
+              </div>
+            )}
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-slate-500">Ngày họp</label>
+              <input type="date" value={batchDate} onChange={e => setBatchDate(e.target.value)}
+                className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-violet-400" />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-slate-500">Ghi chú (tùy chọn)</label>
+              <textarea value={batchNote} onChange={e => setBatchNote(e.target.value)} rows={2}
+                placeholder="Nhập ghi chú..."
+                className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-violet-400 resize-none" />
+            </div>
+            <div className="flex gap-2 pt-1">
+              <button onClick={() => setBatchModal(null)}
+                className="flex-1 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition">
+                Hủy
+              </button>
+              <button onClick={handleBatchCouncilAction} disabled={batchSaving}
+                className="flex-1 py-2 text-sm font-semibold bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white rounded-lg transition flex items-center justify-center gap-1.5">
+                {batchSaving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                Xác nhận
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal: link biểu quyết qua email ── */}
+      {tokenModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={() => setTokenModal(null)}>
+          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-700 max-w-lg w-full p-6 space-y-4" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-slate-800 dark:text-white">Link biểu quyết</h3>
+              <button onClick={() => setTokenModal(null)} className="text-slate-400 hover:text-slate-600"><XCircle className="w-5 h-5" /></button>
+            </div>
+            <p className="text-xs text-slate-400">Mỗi link chỉ dùng được 1 lần. Email đã được gửi tới thành viên có email.</p>
+            <div className="space-y-2 max-h-64 overflow-y-auto">
+              {tokenModal.tokens.map((t, i) => (
+                <div key={i} className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800 rounded-lg px-3 py-2">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-semibold text-slate-700 dark:text-slate-200 truncate">{t.name}</p>
+                    {t.email && <p className="text-[11px] text-slate-400 truncate">{t.email}</p>}
+                    <p className="text-[10px] font-mono text-violet-600 truncate mt-0.5">{t.link}</p>
+                  </div>
+                  <button
+                    onClick={() => { navigator.clipboard.writeText(t.link).catch(() => {}); }}
+                    className="shrink-0 text-[10px] text-slate-500 hover:text-violet-600 border border-slate-200 rounded px-1.5 py-0.5"
+                  >Copy</button>
+                </div>
+              ))}
+            </div>
+            <button onClick={() => setTokenModal(null)} className="w-full py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-sm font-medium rounded-lg transition">Đóng</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1474,11 +2105,12 @@ function TaskLinkCell({
 // ─── Tab: "Giám sát tiến độ" ──────────────────────────────────
 
 function MonitorTab({
-  topics, users, canManage, currentUser, onEdit, onDelete, onView, onTopicUpdate,
+  topics, users, canManage, canAssignReviewer, currentUser, onEdit, onDelete, onView, onTopicUpdate,
 }: {
   topics: ResearchTopic[];
   users: { id: string; name: string; email?: string }[];
   canManage: boolean;
+  canAssignReviewer: boolean;
   currentUser: { id: string; name: string; email?: string };
   onEdit: (t: ResearchTopic) => void;
   onDelete: (t: ResearchTopic) => void;
@@ -2077,6 +2709,8 @@ function MonitorTab({
                   const isSelected = selectedForReview.has(topic.id);
                   const isDelegatedToMe = topic.reviewAssignment?.delegatedTo === currentUser.id;
                   const delegateName = topic.reviewAssignment?.delegatedName;
+                  const isOwnTopic = topic.principalInvestigatorId === currentUser.id ||
+                    (topic.memberIds ?? []).includes(currentUser.id);
 
                   return (
                     <tr
@@ -2137,7 +2771,8 @@ function MonitorTab({
                       <td className="px-3 py-2.5 text-center" onClick={e => e.stopPropagation()}>
                         <button
                           onClick={() => { setSelectedForReview(new Set([topic.id])); setShowAssignModal(true); }}
-                          disabled={!canManage && !isDelegatedToMe}
+                          disabled={isOwnTopic || (!canManage && !canAssignReviewer && !isDelegatedToMe)}
+                          title={isOwnTopic ? "Không thể phân công cho đề tài của chính mình" : undefined}
                           className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold rounded-lg border border-violet-300 dark:border-violet-700 bg-violet-50 dark:bg-violet-900/20 text-violet-700 dark:text-violet-300 hover:bg-violet-100 dark:hover:bg-violet-900/40 disabled:opacity-40 disabled:cursor-not-allowed transition"
                         >
                           <UserPlus className="w-3 h-3" />
@@ -2160,6 +2795,7 @@ function MonitorTab({
           users={users as any}
           currentUser={currentUser}
           canManage={canManage}
+          canAssignReviewer={canAssignReviewer}
           onClose={() => { setShowAssignModal(false); setSelectedForReview(new Set()); }}
           onTopicUpdate={onTopicUpdate}
         />
@@ -2357,8 +2993,9 @@ export default function ResearchPage() {
   const [showImportTopics, setShowImportTopics] = useState(false);
   const [exporting, setExporting] = useState(false);
 
-  const canCreate  = !!currentUser && hasPermission(currentUser.role, "research:create");
-  const canManage  = !!currentUser && hasPermission(currentUser.role, "research:manage");
+  const canCreate         = !!currentUser && hasPermission(currentUser.role, "research:create");
+  const canManage         = !!currentUser && hasPermission(currentUser.role, "research:manage");
+  const canAssignReviewer = !!currentUser && (canManage || hasPermission(currentUser.role, "research:assignReviewer"));
   const roleCanMonitor = !!currentUser && (canManage || hasPermission(currentUser.role, "research:monitor"));
   // researchManager designation also grants monitor access (without full canManage)
   const hasResearchManagerDesig = !!(currentUser?.researchDesignations ?? []).includes("researchManager");
@@ -2414,9 +3051,19 @@ export default function ResearchPage() {
     sum + (t.reviews ?? []).filter(r => r.reviewerId === currentUser.id).length, 0
   ) : 0, [visibleTopics, currentUser]);
 
-  const councilCount = useMemo(() => currentUser ? visibleTopics.reduce((sum, t) =>
-    sum + (t.councilSessions ?? []).filter(s => (s.memberIds ?? []).includes(currentUser.id)).length, 0
-  ) : 0, [visibleTopics, currentUser]);
+  const councilCount = useMemo(() => {
+    if (!currentUser) return 0;
+    const pastReviewSteps = new Set(["p_council", "p_ethics", "p_agree", "exec_start", "exec_midterm", "exec_submit", "r_intake", "r_review", "r_council", "r_recognize"]);
+    const pendingSynthesis = visibleTopics.filter(t => {
+      if (pastReviewSteps.has(t.currentStep)) return false;
+      const reviews = (t.reviews ?? []).filter(r => r.stage === "proposal" && r.status === "submitted");
+      return reviews.length >= 2 && reviews.every(r => r.verdict === "pass" || r.verdict === "pass_if_revised");
+    }).length;
+    const pendingCouncil = visibleTopics.filter(t =>
+      t.currentStep === "p_council" && !(t.councilSessions ?? []).some(s => s.decision)
+    ).length;
+    return pendingSynthesis + pendingCouncil;
+  }, [visibleTopics, currentUser]);
 
   useEffect(() => {
     // Always load regular topics; also merge in intake-pending no-task topics
@@ -2627,15 +3274,19 @@ export default function ResearchPage() {
             <CouncilTab
               topics={visibleTopics}
               users={users}
-              currentUserId={currentUser.id}
+              currentUser={currentUser}
+              canManage={canManage}
+              canMonitor={canMonitor}
               onView={t => router.push(`/research/${t.id}`)}
+              onTopicUpdate={handleTopicUpdate}
             />
           )}
           {activeTab === "monitor" && canMonitor && (
             <MonitorTab
-              topics={visibleTopics}
+              topics={canManage ? visibleTopics : visibleTopics.filter(t => t.reviewAssignment?.delegatedTo === currentUser?.id)}
               users={users}
               canManage={canManage}
+              canAssignReviewer={canAssignReviewer}
               currentUser={currentUser}
               onEdit={setEditTopic}
               onDelete={setDeleteTarget}

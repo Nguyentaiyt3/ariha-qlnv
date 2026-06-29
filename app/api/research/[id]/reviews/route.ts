@@ -38,10 +38,11 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 
   const topic = { ...doc, id: String(doc._id) } as ResearchTopic;
 
-  // Quyền: manager, hoặc nhân viên được giao (reviewAssignment.delegatedTo)
+  // Quyền: manager, người có quyền assignReviewer, hoặc nhân viên được giao
   const isManager = hasPermission(me.role, "research:manage");
+  const canAssign = isManager || hasPermission(me.role, "research:assignReviewer");
   const isDelegated = topic.reviewAssignment?.delegatedTo === me.id;
-  if (!isManager && !isDelegated) {
+  if (!canAssign && !isDelegated) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
