@@ -265,6 +265,10 @@ export async function updateResearchTopic(id: string, updates: Partial<ResearchT
 export async function deleteResearchTopic(id: string): Promise<void> {
   await api(`/api/research/${id}`, { method: "DELETE" });
 }
+/** Sinh Task per-đề-tài (hub tích hợp) khi đề tài vào GĐ Triển khai. Idempotent. */
+export async function generateResearchTask(id: string): Promise<{ taskId: string; created: boolean } | null> {
+  return api<{ taskId: string; created: boolean }>(`/api/research/${id}/generate-task`, { method: "POST" });
+}
 
 // ─── RESEARCH GROUPS ──────────────────────────────────────────
 

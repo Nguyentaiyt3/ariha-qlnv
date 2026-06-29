@@ -1,6 +1,8 @@
 import type {
   ResearchTopic, ResearchStepKey, ResearchStepState, ResearchStage, ResearchReview,
+  TaskStep, TaskStatus,
 } from "@/types";
+import { generateId } from "@/lib/utils";
 
 /** Danh mục bước cố định của quy trình đề tài NCKH cấp cơ sở. */
 export const RESEARCH_STEPS: {
@@ -64,6 +66,44 @@ export function researchProgress(topic: ResearchTopic): number {
   const total = RESEARCH_STEPS.length;
   const done = topic.steps.filter((s) => s.status === "passed").length;
   return total > 0 ? Math.round((done / total) * 100) : 0;
+}
+
+// ─── Liên kết Task per-đề-tài (hub tích hợp progress/risk/3T/plan) ─────────────
+
+/**
+ * Sinh các bước nhiệm vụ (TaskStep) cho Task per-đề-tài: gồm GĐ Triển khai + GĐ2 Nghiệm thu.
+ * Chuỗi tuyến tính (mỗi bước phụ thuộc bước liền trước), gán cho người thực hiện chính.
+ */
+export function buildResearchTaskSteps(topic: ResearchTopic): TaskStep[] {
+  const assignee = topic.mainPerformerId || topic.principalInvestigatorId || "";
+  const keys = RESEARCH_STEPS.filter((s) => s.stage === "executing" || s.stage === "recognition");
+  const ids = keys.map(() => generateId("step"));
+  return keys.map((s, i) => ({
+    id: ids[i],
+    name: s.label,
+    assigneeId: assignee,
+    status: "pending" as const,
+    progress: 0,
+    kpiTarget: 0,
+    kpiCurrent: 0,
+    kpiUnit: "bước",
+    proofs: [],
+    dependsOn: i > 0 ? [ids[i - 1]] : [],
+  }));
+}
+
+/**
+ * Suy ra trạng thái + tiến độ của Task liên kết từ trạng thái pipeline của đề tài.
+ * Dùng để đồng bộ mỗi khi đề tài chuyển bước → task vào heatmap/risk-flag/Hiệu suất.
+ */
+export function researchTaskSync(topic: ResearchTopic): { progress: number; status: TaskStatus } {
+  const progress = researchProgress(topic);
+  const status: TaskStatus =
+    topic.stage === "completed" ? "done"
+    : topic.stage === "rejected" ? "cancelled"
+    : progress > 0 ? "in_progress"
+    : "todo";
+  return { progress, status };
 }
 
 /** Ẩn danh tính phản biện viên (dùng khi trả cho người không có quyền quản trị). */

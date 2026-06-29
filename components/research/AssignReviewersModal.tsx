@@ -181,6 +181,12 @@ export function AssignReviewersModal({ topics, users, currentUser, canManage, on
   const [delegateDue, setDelegateDue] = useState("");
   const [delegateSaving, setDelegateSaving] = useState(false);
 
+  // COI: các đề tài mà người được giao là chính chủ nhiệm / thành viên
+  const delegateCOITopics = useMemo(
+    () => delegateTo ? topics.filter(t => isTopicAuthor({ id: delegateTo.id }, t)) : [],
+    [delegateTo, topics],
+  );
+
   const addPending = useCallback((topicId: string, entry: (typeof pending)[string][number]) => {
     setPending(prev => {
       const cur = prev[topicId] ?? [];
@@ -284,6 +290,12 @@ export function AssignReviewersModal({ topics, users, currentUser, canManage, on
 
   async function handleDelegate() {
     if (!delegateTo) { toast.error("Chưa chọn nhân viên"); return; }
+    if (delegateCOITopics.length > 0) {
+      toast.error(
+        `${delegateTo.name} là chủ nhiệm/thành viên của ${delegateCOITopics.length} đề tài trong danh sách — không thể tự phân công phản biện cho đề tài của mình`
+      );
+      return;
+    }
     setDelegateSaving(true);
     try {
       const now = new Date().toISOString();
@@ -512,8 +524,16 @@ export function AssignReviewersModal({ topics, users, currentUser, canManage, on
               <div className="space-y-2">
                 <label className="text-sm font-medium text-slate-700 dark:text-slate-300">Giao cho nhân viên *</label>
                 {delegateTo ? (
-                  <div className="flex items-center gap-2 p-3 rounded-xl border border-violet-200 dark:border-violet-700 bg-violet-50 dark:bg-violet-900/10">
-                    <div className="w-7 h-7 rounded-full bg-violet-600 text-white text-xs font-bold flex items-center justify-center">
+                  <div className={cn(
+                    "flex items-center gap-2 p-3 rounded-xl border",
+                    delegateCOITopics.length > 0
+                      ? "border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/10"
+                      : "border-violet-200 dark:border-violet-700 bg-violet-50 dark:bg-violet-900/10"
+                  )}>
+                    <div className={cn(
+                      "w-7 h-7 rounded-full text-white text-xs font-bold flex items-center justify-center",
+                      delegateCOITopics.length > 0 ? "bg-red-500" : "bg-violet-600"
+                    )}>
                       {delegateTo.name.charAt(0)}
                     </div>
                     <div className="flex-1">
@@ -534,6 +554,31 @@ export function AssignReviewersModal({ topics, users, currentUser, canManage, on
                     onSelect={u => setDelegateTo(u)}
                     placeholder="Tìm nhân viên phụ trách..."
                   />
+                )}
+
+                {/* COI warning */}
+                {delegateCOITopics.length > 0 && (
+                  <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/10 p-3 space-y-1.5">
+                    <div className="flex items-center gap-2 text-sm font-semibold text-red-600 dark:text-red-400">
+                      <ShieldAlert className="w-4 h-4 shrink-0" />
+                      Xung đột lợi ích — không thể giao
+                    </div>
+                    <p className="text-xs text-red-500 dark:text-red-400">
+                      <strong>{delegateTo!.name}</strong> là chủ nhiệm / thành viên của {delegateCOITopics.length} đề tài trong danh sách này.
+                      Chủ nhiệm đề tài không được phân công phản biện cho đề tài của chính mình.
+                    </p>
+                    <ul className="mt-1 space-y-0.5">
+                      {delegateCOITopics.map(t => (
+                        <li key={t.id} className="text-[11px] text-red-500 flex items-center gap-1">
+                          <AlertTriangle className="w-3 h-3 shrink-0" />
+                          {t.title}
+                        </li>
+                      ))}
+                    </ul>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
+                      Hãy bỏ chọn các đề tài xung đột hoặc chọn nhân viên khác.
+                    </p>
+                  </div>
                 )}
               </div>
 
@@ -590,7 +635,7 @@ export function AssignReviewersModal({ topics, users, currentUser, canManage, on
           {tab === "delegate" && (
             <button
               onClick={handleDelegate}
-              disabled={delegateSaving || !delegateTo}
+              disabled={delegateSaving || !delegateTo || delegateCOITopics.length > 0}
               className="flex items-center gap-2 px-5 py-2 text-sm font-semibold rounded-xl bg-violet-600 hover:bg-violet-700 text-white transition disabled:opacity-50"
             >
               {delegateSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Users className="w-4 h-4" />}

@@ -16,6 +16,8 @@ interface Props {
   existingReviews: ResearchReview[];
   /** Số phản biện còn được thêm (max 2) */
   slotsLeft: number;
+  /** Giai đoạn phản biện (proposal = thẩm định đề cương, recognition = nghiệm thu). */
+  stage?: "proposal" | "recognition";
   onAssign: (review: ResearchReview) => Promise<void>;
   onClose: () => void;
 }
@@ -45,7 +47,7 @@ function MiniAvatar({ user }: { user: User }) {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export function AssignReviewerModal({ users, existingReviews, slotsLeft, onAssign, onClose }: Props) {
+export function AssignReviewerModal({ users, existingReviews, slotsLeft, stage = "proposal", onAssign, onClose }: Props) {
   const [tab, setTab] = useState<Tab>("internal");
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState("");
@@ -88,7 +90,7 @@ export function AssignReviewerModal({ users, existingReviews, slotsLeft, onAssig
     setSaving(true);
     const review: ResearchReview = {
       id: generateId("rev"),
-      stage: "proposal",
+      stage,
       reviewerType: "internal",
       reviewerId: selectedId,
       reviewerName: selected?.name ?? "",
@@ -106,7 +108,7 @@ export function AssignReviewerModal({ users, existingReviews, slotsLeft, onAssig
     setSaving(true);
     const review: ResearchReview = {
       id: generateId("rev"),
-      stage: "proposal",
+      stage,
       reviewerType: "external",
       reviewerName: extName.trim(),
       reviewerEmail: extEmail.trim() || undefined,
@@ -129,7 +131,7 @@ export function AssignReviewerModal({ users, existingReviews, slotsLeft, onAssig
             <h2 className="text-base font-bold text-[var(--foreground)]">Chỉ định phản biện viên</h2>
             <p className="text-xs text-slate-400 mt-0.5">
               {slotsLeft > 0
-                ? `Còn ${slotsLeft} vị trí phản biện · Phản biện kín GĐ1`
+                ? `Còn ${slotsLeft} vị trí phản biện · Phản biện kín ${stage === "recognition" ? "GĐ2 Nghiệm thu" : "GĐ1 Đề cương"}`
                 : "Đã đủ 2 phản biện viên"}
             </p>
           </div>

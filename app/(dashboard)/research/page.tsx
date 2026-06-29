@@ -5,9 +5,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import {
   Microscope, Plus, Loader2, X, FlaskConical, ArrowLeft,
   Pencil, Trash2, AlertTriangle, Search, ChevronRight, ChevronDown,
-  Users, BarChart2, Eye, ClipboardList, ClipboardCheck, Vote, Clock, CheckCircle2, XCircle, AlertCircle, Calendar, Upload, Lock, Mail, ShieldAlert, UserPlus,
+  Users, BarChart2, Eye, ClipboardList, ClipboardCheck, Vote, Clock, CheckCircle2, XCircle, AlertCircle, Calendar, Upload, Lock, Mail, ShieldAlert, UserPlus, ExternalLink,
 } from "lucide-react";
-import { ReviewFormModal } from "@/components/research/ReviewFormModal";
 import { ImportReviewsModal } from "@/components/research/ImportReviewsModal";
 import { RegisterTopicModal } from "@/components/research/RegisterTopicModal";
 import { ImportTopicsModal } from "@/components/research/ImportTopicsModal";
@@ -449,71 +448,240 @@ interface ReviewRow {
   review: ResearchReview;
 }
 
-function ReviewTab({
-  topics, currentUserId, onView, onSubmitReview,
+// ─── Email modal target ────────────────────────────────────────
+interface ReviewEmailTarget {
+  topicId: string;
+  reviewId: string;
+  topicTitle: string;
+  reviewerName: string;
+  reviewerEmail: string;
+  reviewFormUrl: string;
+  isReminder: boolean;
+  reminderCount?: number;
+}
+
+// ─── Modal soạn mail mời / nhắc nhở phản biện ─────────────────
+function ReviewEmailModal({
+  target, senderName, onClose, onSent,
+}: {
+  target: ReviewEmailTarget;
+  senderName: string;
+  onClose: () => void;
+  onSent: (topicId: string, reviewId: string, isReminder: boolean) => void;
+}) {
+  const defaultSubject = target.isReminder
+    ? "[ARiHA] Nhắc nhở hoàn thành phiếu phản biện đề cương NCKH"
+    : "[ARiHA] Đề nghị phản biện đề cương nghiên cứu khoa học";
+
+  const defaultBody = target.isReminder
+    ? `Kính gửi ${target.reviewerName},\n\nChúng tôi xin nhắc nhở Quý thầy/cô hoàn thành phiếu phản biện cho đề cương:\n"${target.topicTitle}"\n\nVui lòng truy cập đường link dưới đây để nộp phiếu phản biện:\n${target.reviewFormUrl}\n\nTrân trọng cảm ơn,\n${senderName}`
+    : `Kính gửi ${target.reviewerName},\n\nBan Quản lý NCKH kính đề nghị Quý thầy/cô tham gia phản biện đề cương nghiên cứu khoa học:\n"${target.topicTitle}"\n\nVui lòng truy cập đường link dưới đây để thực hiện phản biện (không cần đăng nhập hệ thống):\n${target.reviewFormUrl}\n\nLưu ý: Phản biện được thực hiện theo nguyên tắc kín — thông tin tác giả và các phản biện viên khác sẽ không được tiết lộ.\n\nTrân trọng cảm ơn sự tham gia của Quý thầy/cô,\n${senderName}`;
+
+  const [subject, setSubject] = useState(defaultSubject);
+  const [body, setBody] = useState(defaultBody);
+  const [sending, setSending] = useState(false);
+
+  async function handleSend() {
+    if (!target.reviewerEmail) { toast.error("Phản biện viên chưa có địa chỉ email"); return; }
+    setSending(true);
+    try {
+      const res = await fetch("/api/email/custom", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          recipients: [{ id: "", name: target.reviewerName, email: target.reviewerEmail }],
+          subject,
+          body,
+        }),
+      });
+      if (!res.ok) { toast.error("Gửi mail thất bại"); return; }
+      onSent(target.topicId, target.reviewId, target.isReminder);
+      toast.success(`Đã gửi email đến ${target.reviewerEmail}`);
+      onClose();
+    } catch { toast.error("Lỗi kết nối"); }
+    finally { setSending(false); }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 dark:border-slate-700">
+          <div className="flex items-center gap-2">
+            <Mail className="w-4 h-4 text-violet-500" />
+            <h2 className="font-semibold text-slate-800 dark:text-white text-sm">
+              {target.isReminder ? "Gửi mail nhắc nhở" : "Gửi mail đề nghị phản biện"}
+            </h2>
+          </div>
+          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600 transition">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+          <div className="flex items-center gap-3 px-3 py-2.5 bg-slate-50 dark:bg-slate-800 rounded-xl">
+            <Users className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+            <div className="min-w-0">
+              <p className="text-xs font-semibold text-slate-700 dark:text-slate-200 truncate">{target.reviewerName}</p>
+              <p className="text-[11px] text-slate-400 truncate">{target.reviewerEmail || "Chưa có email"}</p>
+            </div>
+            <span className={cn(
+              "ml-auto shrink-0 text-[10px] font-semibold px-2 py-0.5 rounded-full",
+              target.isReminder
+                ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+                : "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+            )}>
+              {target.isReminder ? `Nhắc lần ${(target.reminderCount ?? 0) + 1}` : "Mời lần đầu"}
+            </span>
+          </div>
+
+          <div className="px-3 py-2.5 bg-violet-50 dark:bg-violet-900/10 rounded-xl border border-violet-200 dark:border-violet-800">
+            <p className="text-[10px] text-violet-500 font-semibold uppercase tracking-wide mb-1">Link phiếu phản biện (đã nhúng trong email)</p>
+            <p className="text-xs text-violet-700 dark:text-violet-300 break-all font-mono">{target.reviewFormUrl}</p>
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-slate-600 dark:text-slate-400">Tiêu đề email</label>
+            <input
+              value={subject}
+              onChange={e => setSubject(e.target.value)}
+              className="w-full text-sm px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-violet-400"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-slate-600 dark:text-slate-400">Nội dung email</label>
+            <textarea
+              value={body}
+              onChange={e => setBody(e.target.value)}
+              rows={12}
+              className="w-full text-xs px-3 py-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-violet-400 resize-none font-mono leading-relaxed"
+            />
+          </div>
+        </div>
+
+        <div className="px-5 py-3 border-t border-slate-200 dark:border-slate-700 flex items-center justify-between gap-3">
+          <p className="text-[11px] text-slate-400">Email gửi qua hệ thống ARiHA WorkHub</p>
+          <div className="flex gap-2">
+            <button type="button" onClick={onClose}
+              className="px-4 py-2 text-sm font-medium border border-slate-200 dark:border-slate-700 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition">
+              Huỷ
+            </button>
+            <button
+              type="button"
+              onClick={handleSend}
+              disabled={sending || !target.reviewerEmail}
+              className="flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-xl bg-violet-600 hover:bg-violet-700 text-white transition disabled:opacity-50"
+            >
+              {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
+              Gửi email
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Panel quản lý phân công phản biện (dành cho Quản lý KHCN) ─
+function ReviewManagementView({
+  topics, currentUser, onTopicUpdate,
 }: {
   topics: ResearchTopic[];
-  currentUserId: string;
-  onView: (t: ResearchTopic) => void;
-  onSubmitReview: (topic: ResearchTopic, review: ResearchReview) => void;
+  currentUser: { id: string; name: string; email?: string };
+  onTopicUpdate: (id: string, updates: Partial<ResearchTopic>) => void;
 }) {
-  const [stageFilter, setStageFilter] = useState<"all" | "proposal" | "recognition">("all");
-  const [statusFilter, setStatusFilter] = useState<"all" | "assigned" | "submitted">("all");
   const [search, setSearch] = useState("");
+  const [stageFilter, setStageFilter] = useState<"all" | "proposal" | "recognition">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "pending" | "done">("all");
+  const [emailTarget, setEmailTarget] = useState<ReviewEmailTarget | null>(null);
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const appUrl = typeof window !== "undefined" ? window.location.origin : "";
 
-  const rows = useMemo((): ReviewRow[] => {
-    const result: ReviewRow[] = [];
-    for (const topic of topics) {
-      for (const review of topic.reviews ?? []) {
-        if (review.reviewerId === currentUserId) {
-          result.push({ topic, review });
+  const reviewTopics = useMemo(() =>
+    topics.filter(t => (t.reviews ?? []).length > 0),
+    [topics]
+  );
+
+  const stats = useMemo(() => {
+    let slots = 0, emailNotSent = 0, submitted = 0, passed = 0;
+    for (const t of reviewTopics) {
+      for (const r of t.reviews ?? []) {
+        if (stageFilter !== "all" && r.stage !== stageFilter) continue;
+        slots++;
+        if (!r.emailSentAt && r.status === "assigned") emailNotSent++;
+        if (r.status === "submitted") {
+          submitted++;
+          if (r.verdict === "pass" || r.verdict === "pass_if_revised") passed++;
         }
       }
     }
-    return result;
-  }, [topics, currentUserId]);
+    return { topics: reviewTopics.length, slots, emailNotSent, submitted, passed };
+  }, [reviewTopics, stageFilter]);
 
-  const filtered = useMemo(() => rows.filter(r => {
-    if (stageFilter !== "all" && r.review.stage !== stageFilter) return false;
-    if (statusFilter !== "all" && r.review.status !== statusFilter) return false;
+  const filtered = useMemo(() => reviewTopics.filter(t => {
+    const reviews = (t.reviews ?? []).filter(r => stageFilter === "all" || r.stage === stageFilter);
+    if (reviews.length === 0) return false;
+    if (statusFilter === "pending" && reviews.every(r => r.status === "submitted")) return false;
+    if (statusFilter === "done" && reviews.some(r => r.status === "assigned")) return false;
     if (search) {
       const q = search.toLowerCase();
-      if (!r.topic.title.toLowerCase().includes(q) && !(r.topic.code ?? "").toLowerCase().includes(q)) return false;
+      return t.title.toLowerCase().includes(q) || (t.code ?? "").toLowerCase().includes(q);
     }
     return true;
-  }), [rows, stageFilter, statusFilter, search]);
+  }), [reviewTopics, stageFilter, statusFilter, search]);
 
-  const stats = useMemo(() => {
-    const now = new Date();
-    const pending  = rows.filter(r => r.review.status === "assigned").length;
-    const overdue  = rows.filter(r => r.review.status === "assigned" && r.review.dueAt && new Date(r.review.dueAt) < now).length;
-    const submitted = rows.filter(r => r.review.status === "submitted").length;
-    const passed   = rows.filter(r => r.review.recommendation === "pass").length;
-    return { total: rows.length, pending, overdue, submitted, passed };
-  }, [rows]);
+  async function handleEmailSent(topicId: string, reviewId: string, isReminder: boolean) {
+    setSavingId(`${topicId}-${reviewId}`);
+    const topic = topics.find(t => t.id === topicId);
+    if (!topic) { setSavingId(null); return; }
+    const now = new Date().toISOString();
+    const updatedReviews = (topic.reviews ?? []).map(r => {
+      if (r.id !== reviewId) return r;
+      if (isReminder) return { ...r, lastReminderAt: now, reminderCount: (r.reminderCount ?? 0) + 1 };
+      return { ...r, emailSentAt: now };
+    });
+    try {
+      await fetch(`/api/research/${topicId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reviews: updatedReviews, updatedAt: now }),
+      });
+      onTopicUpdate(topicId, { reviews: updatedReviews });
+    } catch { /* email sent — tracking failure is non-critical */ }
+    finally { setSavingId(null); }
+  }
+
+  function openEmail(topic: ResearchTopic, review: ResearchReview) {
+    setEmailTarget({
+      topicId: topic.id,
+      reviewId: review.id,
+      topicTitle: topic.title,
+      reviewerName: review.reviewerName ?? "Phản biện viên",
+      reviewerEmail: review.reviewerEmail ?? "",
+      reviewFormUrl: review.token ? `${appUrl}/review/${review.token}` : "",
+      isReminder: !!review.emailSentAt,
+      reminderCount: review.reminderCount,
+    });
+  }
 
   return (
     <div className="space-y-4">
-      {/* Stat cards */}
+      {/* Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <StatCard label="Tổng phiếu phản biện" value={stats.total}
-          active={statusFilter === "all"}
-          onClick={() => setStatusFilter("all")} />
-        <StatCard label="Chưa nộp" value={stats.pending} sub="Cần hoàn thành"
-          variant={stats.pending > 0 ? "warning" : "default"}
-          active={statusFilter === "assigned"}
-          onClick={() => setStatusFilter("assigned")} />
-        <StatCard label="Quá hạn" value={stats.overdue} sub="Đã qua hạn nộp"
-          variant={stats.overdue > 0 ? "danger" : "default"} />
-        <StatCard label="Đã nộp" value={stats.submitted}
-          variant={stats.submitted > 0 ? "success" : "default"}
-          active={statusFilter === "submitted"}
-          onClick={() => setStatusFilter("submitted")} />
+        <StatCard label="Đề tài có phản biện" value={stats.topics} />
+        <StatCard label="Chưa gửi mail mời" value={stats.emailNotSent}
+          variant={stats.emailNotSent > 0 ? "warning" : "default"}
+          sub="Phản biện chưa nhận mail" />
+        <StatCard label="Đã nộp phiếu" value={stats.submitted}
+          variant={stats.submitted > 0 ? "success" : "default"} />
+        <StatCard label="Kết luận ĐẠT" value={stats.passed}
+          variant={stats.passed > 0 ? "success" : "default"}
+          sub="ĐẠT + ĐẠT nếu sửa" />
       </div>
 
       {/* Filters */}
       <div className="flex flex-wrap gap-2 items-center">
-        <div className="relative flex-1 min-w-[200px] max-w-xs">
+        <div className="relative flex-1 min-w-[180px] max-w-xs">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
           <input value={search} onChange={e => setSearch(e.target.value)}
             placeholder="Tìm mã, tên đề tài..."
@@ -528,101 +696,453 @@ function ReviewTab({
         <select value={statusFilter} onChange={e => setStatusFilter(e.target.value as typeof statusFilter)}
           className="text-sm px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-400 dark:text-white">
           <option value="all">Tất cả trạng thái</option>
-          <option value="assigned">Chưa nộp</option>
-          <option value="submitted">Đã nộp</option>
+          <option value="pending">Còn phiếu chưa nộp</option>
+          <option value="done">Đã nộp đủ</option>
         </select>
-        <span className="text-xs text-slate-400 ml-auto">{filtered.length} phiếu</span>
+        <span className="text-xs text-slate-400 ml-auto">{filtered.length} đề tài</span>
       </div>
 
-      <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-slate-50 dark:bg-slate-800/60 text-left">
-              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-8">#</th>
-              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500">Đề tài</th>
-              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-36">Giai đoạn</th>
-              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Hạn nộp</th>
-              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Trạng thái</th>
-              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Khuyến nghị</th>
-              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-16">Điểm</th>
-              <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-20"></th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
-            {filtered.length === 0 ? (
-              <tr><td colSpan={8} className="py-16 text-center">
-                <ClipboardList className="w-8 h-8 text-slate-300 mx-auto mb-2" />
-                <p className="text-sm text-slate-400">
-                  {rows.length === 0 ? "Bạn chưa được phân công phản biện đề tài nào." : "Không có phiếu khớp bộ lọc."}
-                </p>
-              </td></tr>
-            ) : filtered.map(({ topic, review }, i) => {
-              const statusMeta = REVIEW_STATUS_META[review.status];
-              const StatusIcon = statusMeta.icon;
-              const dueDate = review.dueAt ? new Date(review.dueAt) : null;
-              const isOverdue = dueDate && review.status === "assigned" && dueDate < new Date();
-              return (
-                <tr key={review.id}
-                  className="hover:bg-violet-50/40 dark:hover:bg-violet-900/10 transition cursor-pointer group"
-                  onClick={() => onView(topic)}>
-                  <td className="px-3 py-3 text-xs text-slate-400">{i + 1}</td>
-                  <td className="px-3 py-3">
-                    {topic.code && <span className="font-mono text-[11px] text-slate-400 block">{topic.code}</span>}
-                    <p className="font-medium text-slate-800 dark:text-white line-clamp-2 max-w-xs leading-snug">{topic.title}</p>
-                  </td>
-                  <td className="px-3 py-3">
-                    <span className={cn("text-[11px] px-2 py-0.5 rounded-full font-semibold",
-                      review.stage === "proposal"
-                        ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
-                        : "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300"
+      {/* Topic cards */}
+      <div className="space-y-3">
+        {filtered.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-16 text-slate-400">
+            <ClipboardList className="w-8 h-8 mb-2 opacity-40" />
+            <p className="text-sm">
+              {reviewTopics.length === 0
+                ? "Chưa có đề tài nào được phân công phản biện."
+                : "Không có đề tài khớp bộ lọc."}
+            </p>
+          </div>
+        ) : filtered.map(topic => {
+          const visibleReviews = (topic.reviews ?? []).filter(r =>
+            stageFilter === "all" || r.stage === stageFilter
+          );
+          return (
+            <div key={topic.id}
+              className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden">
+              {/* Topic header */}
+              <div className="px-4 py-3 bg-slate-50 dark:bg-slate-800/60 flex items-center gap-3 border-b border-slate-200 dark:border-slate-700">
+                {topic.code && (
+                  <span className="font-mono text-[11px] text-slate-400 shrink-0">{topic.code}</span>
+                )}
+                <p className="font-semibold text-sm text-slate-800 dark:text-white line-clamp-1 flex-1">{topic.title}</p>
+                <div className="flex items-center gap-1 shrink-0">
+                  {visibleReviews.map(r => (
+                    <span key={r.id}
+                      className={cn("w-2.5 h-2.5 rounded-full",
+                        r.status === "submitted" ? "bg-green-400" : "bg-amber-400"
+                      )}
+                      title={r.status === "submitted" ? "Đã nộp" : "Chưa nộp"} />
+                  ))}
+                </div>
+              </div>
+
+              {/* Reviewer cards */}
+              <div className={cn(
+                "p-3 grid gap-3",
+                visibleReviews.length >= 2 ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1"
+              )}>
+                {visibleReviews.map((review, ri) => {
+                  const isSubmitted = review.status === "submitted";
+                  const emailSent = !!review.emailSentAt;
+                  const hasEmail = !!review.reviewerEmail;
+                  const formUrl = review.token ? `${appUrl}/review/${review.token}` : "";
+                  const isSaving = savingId === `${topic.id}-${review.id}`;
+
+                  const verdictMeta =
+                    review.verdict === "pass"
+                      ? { label: "ĐẠT", cls: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" }
+                      : review.verdict === "pass_if_revised"
+                      ? { label: "ĐẠT (sửa)", cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300" }
+                      : review.verdict === "fail"
+                      ? { label: "KHÔNG ĐẠT", cls: "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400" }
+                      : null;
+
+                  return (
+                    <div key={review.id} className={cn(
+                      "flex flex-col gap-2 p-3 rounded-xl border",
+                      isSubmitted
+                        ? "border-green-200 dark:border-green-800 bg-green-50/40 dark:bg-green-900/10"
+                        : "border-slate-200 dark:border-slate-700"
                     )}>
-                      {review.stage === "proposal" ? "Thẩm định đề cương" : "Công nhận đề tài"}
-                    </span>
-                  </td>
-                  <td className="px-3 py-3">
-                    {dueDate ? (
-                      <span className={cn("text-xs flex items-center gap-1", isOverdue ? "text-red-500 font-medium" : "text-slate-500")}>
-                        <Calendar className="w-3 h-3" />
-                        {dueDate.toLocaleDateString("vi-VN")}
-                        {isOverdue && <span className="text-[10px]">(Quá hạn)</span>}
-                      </span>
-                    ) : <span className="text-slate-300 text-xs">—</span>}
-                  </td>
-                  <td className="px-3 py-3">
-                    <span className={cn("inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full font-semibold", statusMeta.cls)}>
-                      <StatusIcon className="w-2.5 h-2.5" />
-                      {statusMeta.label}
-                    </span>
-                  </td>
-                  <td className="px-3 py-3">
-                    {review.recommendation ? (
-                      <span className={cn("text-[11px] px-2 py-0.5 rounded-full font-semibold", RECOMMENDATION_META[review.recommendation].cls)}>
-                        {RECOMMENDATION_META[review.recommendation].label}
-                      </span>
-                    ) : <span className="text-slate-300 text-xs italic">Chưa có</span>}
-                  </td>
-                  <td className="px-3 py-3 text-xs text-slate-600 dark:text-slate-300 font-medium">
-                    {review.score != null ? review.score : <span className="text-slate-300">—</span>}
-                  </td>
-                  <td className="px-3 py-3">
-                    <button
-                      onClick={e => {
-                        e.stopPropagation();
-                        if (review.status === "assigned") onSubmitReview(topic, review);
-                        else onView(topic);
-                      }}
-                      className="opacity-0 group-hover:opacity-100 transition flex items-center gap-1 text-xs text-violet-600 hover:text-violet-700 font-medium"
-                    >
-                      <Eye className="w-3.5 h-3.5" />
-                      {review.status === "assigned" ? "Nộp phiếu" : "Xem"}
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                      {/* Header row */}
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold text-slate-800 dark:text-white truncate">
+                            PB{ri + 1}: {review.reviewerName ?? "—"}
+                          </p>
+                          {review.reviewerEmail && (
+                            <p className="text-[11px] text-slate-400 truncate">{review.reviewerEmail}</p>
+                          )}
+                          {review.reviewerOrg && (
+                            <p className="text-[11px] text-slate-400 truncate">{review.reviewerOrg}</p>
+                          )}
+                        </div>
+                        <div className="flex flex-col items-end gap-1 shrink-0">
+                          <span className={cn(
+                            "text-[10px] px-1.5 py-0.5 rounded-full font-semibold",
+                            isSubmitted
+                              ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                              : "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+                          )}>
+                            {isSubmitted ? "Đã nộp" : "Chưa nộp"}
+                          </span>
+                          {verdictMeta && (
+                            <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full font-semibold", verdictMeta.cls)}>
+                              {verdictMeta.label}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Email status */}
+                      <div className="flex items-center gap-1.5 text-[11px]">
+                        <Mail className="w-3 h-3 text-slate-400 shrink-0" />
+                        {emailSent ? (
+                          <span className="text-green-600 dark:text-green-400">
+                            Đã gửi mail {new Date(review.emailSentAt!).toLocaleDateString("vi-VN")}
+                            {(review.reminderCount ?? 0) > 0 && ` · Nhắc ${review.reminderCount} lần`}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400">Chưa gửi mail mời</span>
+                        )}
+                      </div>
+
+                      {/* Due / submitted date */}
+                      {isSubmitted && review.submittedAt && (
+                        <p className="text-[11px] text-slate-400">
+                          Nộp: {new Date(review.submittedAt).toLocaleString("vi-VN", {
+                            day: "2-digit", month: "2-digit", year: "2-digit",
+                            hour: "2-digit", minute: "2-digit",
+                          })}
+                        </p>
+                      )}
+                      {!isSubmitted && review.dueAt && (
+                        <p className={cn(
+                          "text-[11px] flex items-center gap-1",
+                          new Date(review.dueAt) < new Date() ? "text-red-500 font-medium" : "text-slate-400"
+                        )}>
+                          <Calendar className="w-3 h-3" />
+                          Hạn: {new Date(review.dueAt).toLocaleDateString("vi-VN")}
+                          {new Date(review.dueAt) < new Date() && " (Quá hạn)"}
+                        </p>
+                      )}
+
+                      {/* Actions */}
+                      <div className="flex items-center gap-1.5 flex-wrap mt-auto pt-1.5 border-t border-slate-100 dark:border-slate-800">
+                        {!isSubmitted && hasEmail && (
+                          <button
+                            type="button"
+                            onClick={() => openEmail(topic, review)}
+                            disabled={isSaving}
+                            className={cn(
+                              "flex items-center gap-1 px-2 py-1 text-[11px] font-semibold rounded-lg transition",
+                              emailSent
+                                ? "bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-700 hover:bg-amber-100"
+                                : "bg-blue-600 hover:bg-blue-700 text-white"
+                            )}
+                          >
+                            <Mail className="w-3 h-3" />
+                            {emailSent ? "Nhắc nhở" : "Gửi mail mời"}
+                          </button>
+                        )}
+                        {!hasEmail && !isSubmitted && (
+                          <span className="text-[11px] text-slate-400 italic">Không có email</span>
+                        )}
+                        {formUrl && (
+                          <>
+                            <a
+                              href={formUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded-lg border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-violet-600 hover:border-violet-300 dark:hover:border-violet-600 transition"
+                            >
+                              <ExternalLink className="w-3 h-3" />
+                              Xem phiếu
+                            </a>
+                            <button
+                              type="button"
+                              onClick={() => { navigator.clipboard.writeText(formUrl); toast.success("Đã sao chép link phiếu PB"); }}
+                              className="flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded-lg border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-violet-600 hover:border-violet-300 dark:hover:border-violet-600 transition"
+                              title="Sao chép link phiếu phản biện"
+                            >
+                              <ClipboardCheck className="w-3 h-3" />
+                              Sao chép link
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
       </div>
+
+      {emailTarget && (
+        <ReviewEmailModal
+          target={emailTarget}
+          senderName={currentUser.name}
+          onClose={() => setEmailTarget(null)}
+          onSent={handleEmailSent}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── Tab: "Phản biện của tôi" (dual-mode) ─────────────────────
+function ReviewTab({
+  topics, currentUserId, currentUser, canManage, onView, onTopicUpdate,
+}: {
+  topics: ResearchTopic[];
+  currentUserId: string;
+  currentUser: { id: string; name: string; email?: string };
+  canManage: boolean;
+  onView: (t: ResearchTopic) => void;
+  onTopicUpdate: (id: string, updates: Partial<ResearchTopic>) => void;
+}) {
+  const [stageFilter, setStageFilter] = useState<"all" | "proposal" | "recognition">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "assigned" | "submitted">("all");
+  const [search, setSearch] = useState("");
+
+  const myEmail = currentUser.email;
+  const isMyReview = (r: ResearchReview) =>
+    (!!r.reviewerId && r.reviewerId === currentUserId) ||
+    (!!myEmail && !!r.reviewerEmail && r.reviewerEmail.toLowerCase() === myEmail.toLowerCase());
+
+  const myRows = useMemo((): ReviewRow[] => {
+    const result: ReviewRow[] = [];
+    for (const topic of topics) {
+      for (const review of topic.reviews ?? []) {
+        if (isMyReview(review)) result.push({ topic, review });
+      }
+    }
+    return result;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [topics, currentUserId, myEmail]);
+
+  // Lazy init: managers with no personal reviews start on management tab.
+  // Computed synchronously so there's no async flicker.
+  const [subTab, setSubTab] = useState<"my" | "manage">(() => {
+    if (!canManage) return "my";
+    const hasMyReviews = topics.some(t =>
+      (t.reviews ?? []).some(r => isMyReview(r))
+    );
+    return hasMyReviews ? "my" : "manage";
+  });
+
+  const filtered = useMemo(() => myRows.filter(r => {
+    if (stageFilter !== "all" && r.review.stage !== stageFilter) return false;
+    if (statusFilter !== "all" && r.review.status !== statusFilter) return false;
+    if (search) {
+      const q = search.toLowerCase();
+      if (!r.topic.title.toLowerCase().includes(q) && !(r.topic.code ?? "").toLowerCase().includes(q)) return false;
+    }
+    return true;
+  }), [myRows, stageFilter, statusFilter, search]);
+
+  const stats = useMemo(() => {
+    const now = new Date();
+    const pending   = myRows.filter(r => r.review.status === "assigned").length;
+    const overdue   = myRows.filter(r => r.review.status === "assigned" && r.review.dueAt && new Date(r.review.dueAt) < now).length;
+    const submitted = myRows.filter(r => r.review.status === "submitted").length;
+    return { total: myRows.length, pending, overdue, submitted };
+  }, [myRows]);
+
+  return (
+    <div className="space-y-4">
+      {/* Sub-tab switcher */}
+      {canManage && (
+        <div className="flex gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl w-fit">
+          <button
+            type="button"
+            onClick={() => setSubTab("my")}
+            className={cn(
+              "flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition",
+              subTab === "my"
+                ? "bg-white dark:bg-slate-700 text-slate-800 dark:text-white shadow-sm"
+                : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+            )}
+          >
+            <ClipboardList className="w-3.5 h-3.5" />
+            Phiếu của tôi
+            {myRows.length > 0 && (
+              <span className={cn(
+                "px-1.5 py-0.5 rounded-full text-[10px] font-bold",
+                subTab === "my"
+                  ? "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300"
+                  : "bg-slate-200 text-slate-500 dark:bg-slate-700 dark:text-slate-400"
+              )}>{myRows.length}</span>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => setSubTab("manage")}
+            className={cn(
+              "flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition",
+              subTab === "manage"
+                ? "bg-white dark:bg-slate-700 text-slate-800 dark:text-white shadow-sm"
+                : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+            )}
+          >
+            <Users className="w-3.5 h-3.5" />
+            Quản lý phân công
+          </button>
+        </div>
+      )}
+
+      {/* My reviews sub-tab */}
+      {subTab === "my" && (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <StatCard label="Tổng phiếu phản biện" value={stats.total}
+              active={statusFilter === "all"}
+              onClick={() => setStatusFilter("all")} />
+            <StatCard label="Chưa nộp" value={stats.pending} sub="Cần hoàn thành"
+              variant={stats.pending > 0 ? "warning" : "default"}
+              active={statusFilter === "assigned"}
+              onClick={() => setStatusFilter("assigned")} />
+            <StatCard label="Quá hạn" value={stats.overdue} sub="Đã qua hạn nộp"
+              variant={stats.overdue > 0 ? "danger" : "default"} />
+            <StatCard label="Đã nộp" value={stats.submitted}
+              variant={stats.submitted > 0 ? "success" : "default"}
+              active={statusFilter === "submitted"}
+              onClick={() => setStatusFilter("submitted")} />
+          </div>
+
+          <div className="flex flex-wrap gap-2 items-center">
+            <div className="relative flex-1 min-w-[200px] max-w-xs">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+              <input value={search} onChange={e => setSearch(e.target.value)}
+                placeholder="Tìm mã, tên đề tài..."
+                className="w-full pl-8 pr-3 py-1.5 text-sm bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-400 dark:text-white" />
+            </div>
+            <select value={stageFilter} onChange={e => setStageFilter(e.target.value as typeof stageFilter)}
+              className="text-sm px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-400 dark:text-white">
+              <option value="all">Tất cả giai đoạn</option>
+              <option value="proposal">Thẩm định đề cương</option>
+              <option value="recognition">Công nhận đề tài</option>
+            </select>
+            <select value={statusFilter} onChange={e => setStatusFilter(e.target.value as typeof statusFilter)}
+              className="text-sm px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-400 dark:text-white">
+              <option value="all">Tất cả trạng thái</option>
+              <option value="assigned">Chưa nộp</option>
+              <option value="submitted">Đã nộp</option>
+            </select>
+            <span className="text-xs text-slate-400 ml-auto">{filtered.length} phiếu</span>
+          </div>
+
+          <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-slate-50 dark:bg-slate-800/60 text-left">
+                  <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-8">#</th>
+                  <th className="px-3 py-2.5 text-xs font-semibold text-slate-500">Đề tài</th>
+                  <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-36">Giai đoạn</th>
+                  <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Hạn nộp</th>
+                  <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Trạng thái</th>
+                  <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Khuyến nghị</th>
+                  <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-16">Điểm</th>
+                  <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-20"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
+                {filtered.length === 0 ? (
+                  <tr><td colSpan={8} className="py-16 text-center">
+                    <ClipboardList className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                    <p className="text-sm text-slate-400">
+                      {myRows.length === 0 ? "Bạn chưa được phân công phản biện đề tài nào." : "Không có phiếu khớp bộ lọc."}
+                    </p>
+                  </td></tr>
+                ) : filtered.map(({ topic, review }, i) => {
+                  const statusMeta = REVIEW_STATUS_META[review.status];
+                  const StatusIcon = statusMeta.icon;
+                  const dueDate = review.dueAt ? new Date(review.dueAt) : null;
+                  const isOverdue = dueDate && review.status === "assigned" && dueDate < new Date();
+                  return (
+                    <tr key={review.id}
+                      className="hover:bg-violet-50/40 dark:hover:bg-violet-900/10 transition cursor-pointer group"
+                      onClick={() => onView(topic)}>
+                      <td className="px-3 py-3 text-xs text-slate-400">{i + 1}</td>
+                      <td className="px-3 py-3">
+                        {topic.code && <span className="font-mono text-[11px] text-slate-400 block">{topic.code}</span>}
+                        <p className="font-medium text-slate-800 dark:text-white line-clamp-2 max-w-xs leading-snug">{topic.title}</p>
+                      </td>
+                      <td className="px-3 py-3">
+                        <span className={cn("text-[11px] px-2 py-0.5 rounded-full font-semibold",
+                          review.stage === "proposal"
+                            ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+                            : "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300"
+                        )}>
+                          {review.stage === "proposal" ? "Thẩm định đề cương" : "Công nhận đề tài"}
+                        </span>
+                      </td>
+                      <td className="px-3 py-3">
+                        {dueDate ? (
+                          <span className={cn("text-xs flex items-center gap-1", isOverdue ? "text-red-500 font-medium" : "text-slate-500")}>
+                            <Calendar className="w-3 h-3" />
+                            {dueDate.toLocaleDateString("vi-VN")}
+                            {isOverdue && <span className="text-[10px]">(Quá hạn)</span>}
+                          </span>
+                        ) : <span className="text-slate-300 text-xs">—</span>}
+                      </td>
+                      <td className="px-3 py-3">
+                        <span className={cn("inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full font-semibold", statusMeta.cls)}>
+                          <StatusIcon className="w-2.5 h-2.5" />
+                          {statusMeta.label}
+                        </span>
+                      </td>
+                      <td className="px-3 py-3">
+                        {review.recommendation ? (
+                          <span className={cn("text-[11px] px-2 py-0.5 rounded-full font-semibold", RECOMMENDATION_META[review.recommendation].cls)}>
+                            {RECOMMENDATION_META[review.recommendation].label}
+                          </span>
+                        ) : <span className="text-slate-300 text-xs italic">Chưa có</span>}
+                      </td>
+                      <td className="px-3 py-3 text-xs text-slate-600 dark:text-slate-300 font-medium">
+                        {review.score != null ? review.score : <span className="text-slate-300">—</span>}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        {review.token ? (
+                          <a
+                            href={`/review/${review.token}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={e => e.stopPropagation()}
+                            className={cn(
+                              "inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg transition",
+                              review.status === "assigned"
+                                ? "bg-violet-600 hover:bg-violet-700 text-white"
+                                : "bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300",
+                            )}
+                          >
+                            <ExternalLink className="w-3 h-3" />
+                            {review.status === "assigned" ? "Mở phiếu PB" : "Xem phiếu"}
+                          </a>
+                        ) : (
+                          <span className="text-[11px] text-slate-300 italic">Chưa có link</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Management sub-tab */}
+      {subTab === "manage" && canManage && (
+        <ReviewManagementView
+          topics={topics}
+          currentUser={currentUser}
+          onTopicUpdate={onTopicUpdate}
+        />
+      )}
     </div>
   );
 }
@@ -1833,7 +2353,6 @@ export default function ResearchPage() {
   const [editTopic, setEditTopic] = useState<ResearchTopic | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ResearchTopic | null>(null);
   const [deleting, setDeleting] = useState(false);
-  const [reviewTarget, setReviewTarget] = useState<{ topic: ResearchTopic; review: ResearchReview } | null>(null);
   const [showImport, setShowImport] = useState(false);
   const [showImportTopics, setShowImportTopics] = useState(false);
 
@@ -2057,8 +2576,10 @@ export default function ResearchPage() {
             <ReviewTab
               topics={visibleTopics}
               currentUserId={currentUser.id}
+              currentUser={currentUser}
+              canManage={canManage}
               onView={t => router.push(`/research/${t.id}`)}
-              onSubmitReview={(topic, review) => setReviewTarget({ topic, review })}
+              onTopicUpdate={handleTopicUpdate}
             />
           )}
           {activeTab === "council" && (
@@ -2125,22 +2646,6 @@ export default function ResearchPage() {
         />
       )}
 
-      {reviewTarget && (
-        <ReviewFormModal
-          topic={reviewTarget.topic}
-          review={reviewTarget.review}
-          onClose={() => setReviewTarget(null)}
-          onSubmitted={(updatedReview) => {
-            setTopics(prev => prev.map(t =>
-              t.id === reviewTarget.topic.id
-                ? { ...t, reviews: (t.reviews ?? []).map(r => r.id === updatedReview.id ? updatedReview : r) }
-                : t
-            ));
-            setReviewTarget(null);
-            toast.success("Đã nộp phiếu phản biện");
-          }}
-        />
-      )}
 
       {showImport && (
         <ImportReviewsModal

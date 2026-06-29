@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyToken as verifyAuthToken, getUser } from "@/lib/mongodb/auth";
 import { connectDB } from "@/lib/mongodb/config";
 import { ResearchTopicModel } from "@/lib/mongodb/models";
-import type { ResearchTopic, ResearchReview, ReviewScores, ReviewVerdict, ReviewGrade } from "@/types";
+import type { ResearchTopic, ResearchReview, ReviewScores, ReviewVerdict, ReviewGrade, ResearchAnnotation } from "@/types";
 
 function s(v: unknown, max = 4000): string | undefined {
   return typeof v === "string" ? v.slice(0, max) : undefined;
@@ -98,6 +98,12 @@ export async function PATCH(req: NextRequest, { params }: { params: { token: str
   const grade = s(body.grade) as ReviewGrade | undefined;
   const now = new Date().toISOString();
 
+  // Ghi chú + highlight riêng của phản biện viên
+  const reviewerNotes = s(body.reviewerNotes, 8000);
+  const reviewerAnnotations = Array.isArray(body.reviewerAnnotations)
+    ? (body.reviewerAnnotations as ResearchAnnotation[]).slice(0, 200)
+    : undefined;
+
   const set: Record<string, unknown> = {
     "reviews.$[r].status": "submitted",
     "reviews.$[r].submittedAt": now,
@@ -111,6 +117,8 @@ export async function PATCH(req: NextRequest, { params }: { params: { token: str
     "reviews.$[r].verdict": verdict ?? null,
     "reviews.$[r].grade": grade ?? null,
     "reviews.$[r].needResubmit": typeof body.needResubmit === "boolean" ? body.needResubmit : null,
+    "reviews.$[r].reviewerNotes": reviewerNotes ?? null,
+    ...(reviewerAnnotations ? { "reviews.$[r].reviewerAnnotations": reviewerAnnotations } : {}),
     updatedAt: now,
   };
 

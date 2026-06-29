@@ -279,6 +279,15 @@ export interface ResearchReview {
   grade?: ReviewGrade;      // Xếp loại: Giỏi / Khá / Trung bình / KHÔNG ĐẠT
   needResubmit?: boolean;   // Cần nộp lại bài?
 
+  // ── Ghi chú & highlight của phản biện viên (riêng tư, không chia sẻ) ──
+  reviewerNotes?: string;                  // Ghi chú văn bản tự do
+  reviewerAnnotations?: ResearchAnnotation[]; // Highlight + ghi chú trên file
+
+  // ── Email tracking (quản lý gửi mail mời / nhắc nhở phản biện) ──
+  emailSentAt?: string;      // ISO — lần đầu gửi mail mời
+  lastReminderAt?: string;   // ISO — lần nhắc nhở gần nhất
+  reminderCount?: number;    // tổng số lần nhắc nhở đã gửi
+
   // ── Legacy fields (kept for compatibility) ──
   recommendation?: "pass" | "revise" | "fail";
   score?: number;           // Tổng điểm (tự tính từ scores)
@@ -442,7 +451,8 @@ export interface ResearchTopic {
   documents: TaskResource[];
   annotations?: ResearchAnnotation[];  // highlight + ghi chú trên file đề cương
 
-  taskId?: string;                     // Task liên kết (theo dõi tiến độ + đánh giá 3T)
+  taskId?: string;                     // Task "ô" theo quý (gom nhóm NCKH — auto-match lúc tạo)
+  executionTaskId?: string;            // Task per-đề-tài tự sinh khi vào Triển khai (hub: progress/risk/3T/plan)
   planId?: string;                     // Kế hoạch NCKH liên kết (roll-up khi công nhận)
   approvedToExecute?: boolean;
   revisionCount?: number;              // số lần yêu cầu sửa đổi

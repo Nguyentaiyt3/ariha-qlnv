@@ -5,8 +5,9 @@ import { useParams, useRouter } from "next/navigation";
 import {
   Microscope, ArrowLeft, Loader2, CheckCircle2, Circle, XCircle, Clock,
   Users, FileText, Gavel, Award, ShieldCheck, UserCheck, Plus, X,
-  BookOpen, FlaskConical, Eye, EyeOff, AlertTriangle, RotateCcw,
+  BookOpen, FlaskConical, Eye, EyeOff, AlertTriangle, RotateCcw, ListChecks,
 } from "lucide-react";
+import Link from "next/link";
 import { cn, generateId } from "@/lib/utils";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useTaskStore } from "@/stores/useTaskStore";
@@ -14,10 +15,11 @@ import { hasPermission, canDoResearchAction, canUserAssignReviewer } from "@/lib
 import {
   getResearchTopic, updateResearchTopic, addNotification,
   getResearchGroups, createResearchGroup, updateResearchGroup,
+  generateResearchTask, updateTask,
 } from "@/lib/firebase/firestore";
 import { ReviewFormPanel } from "@/components/research/ReviewFormPanel";
 import { AssignReviewerModal } from "@/components/research/AssignReviewerModal";
-import { RESEARCH_STEPS, STAGE_LABEL, researchProgress, stepMeta } from "@/lib/research";
+import { RESEARCH_STEPS, STAGE_LABEL, researchProgress, stepMeta, researchTaskSync } from "@/lib/research";
 import type {
   ResearchTopic, ResearchStage, ResearchStepStatus, ResearchGroup,
   ResearchReview, ResearchCouncilSession, ResearchCouncilMember, CouncilMemberRole,
@@ -116,40 +118,54 @@ export default function ResearchDetailPage() {
     if (!topic) return;
     try {
       await updateResearchTopic(topic.id, updates);
-      setTopic(prev => prev ? { ...prev, ...updates } : prev);
+      const merged = { ...topic, ...updates };
+      setTopic(merged);
       toast.success(successMsg);
+      // Đồng bộ tiến độ/ trạng thái sang Task liên kết (heatmap/risk-flag/Hiệu suất)
+      if (merged.executionTaskId && (updates.steps || updates.stage)) {
+        updateTask(merged.executionTaskId, researchTaskSync(merged)).catch(() => {});
+      }
     } catch { toast.error("Thao tác thất bại"); }
   }
 
-  // Yêu cầu sửa đổi — reset về p_compile, giữ lịch sử reviews
+  // Yêu cầu sửa đổi — GĐ1 reset về p_compile; GĐ2 reset về r_intake. Giữ lịch sử reviews.
   async function handleRevise(note: string) {
     if (!topic) return;
     const stamp = new Date().toISOString();
-    const LOOP_KEYS = ["p_compile", "p_assign", "p_review", "p_council", "p_ethics", "p_agree"];
+    const isRecognition = topic.currentStep.startsWith("r_") || topic.stage === "recognition";
+    const resetTo = isRecognition ? "r_intake" : "p_compile";
+    const LOOP_KEYS = isRecognition
+      ? ["r_intake", "r_review", "r_council", "r_recognize"]
+      : ["p_compile", "p_assign", "p_review", "p_council", "p_ethics", "p_agree"];
     const steps = topic.steps.map(s =>
-      s.key === "p_compile" ? { ...s, status: "in_progress" as const, completedAt: undefined }
+      s.key === resetTo ? { ...s, status: "in_progress" as const, completedAt: undefined }
       : LOOP_KEYS.includes(s.key) ? { ...s, status: "pending" as const, completedAt: undefined }
       : s
     );
     const updates: Partial<ResearchTopic> = {
       steps,
-      currentStep: "p_compile",
+      currentStep: resetTo,
       revisionNote: note || undefined,
       revisionCount: (topic.revisionCount ?? 0) + 1,
     };
     try {
       await updateResearchTopic(topic.id, updates);
       setTopic(prev => prev ? { ...prev, ...updates } : prev);
-      const piId = topic.principalInvestigatorId;
-      if (piId && piId !== currentUser?.id) {
-        await addNotification({
-          userId: piId, type: "approval_request",
-          title: "Đề cương yêu cầu sửa đổi",
-          body: `Đề tài "${topic.title}" cần chỉnh sửa đề cương.${note ? ` Ghi chú: ${note}` : ""}`,
-          link: `/research/${topic.id}`, read: false, priority: "urgent", createdAt: stamp,
-        }).catch(() => {});
+      // Đồng bộ task liên kết (tiến độ tụt lại sau khi reset)
+      if (topic.executionTaskId) {
+        updateTask(topic.executionTaskId, researchTaskSync({ ...topic, ...updates })).catch(() => {});
       }
-      toast.success(`Đã yêu cầu sửa đổi (lần ${updates.revisionCount}) — PI cần nộp lại đề cương`);
+      const piId = topic.principalInvestigatorId;
+      const notifyTargets = [piId, topic.mainPerformerId].filter(Boolean) as string[];
+      await Promise.all([...new Set(notifyTargets)].filter(uid => uid !== currentUser?.id).map(uid =>
+        addNotification({
+          userId: uid, type: "approval_request",
+          title: isRecognition ? "Kết quả yêu cầu sửa đổi" : "Đề cương yêu cầu sửa đổi",
+          body: `Đề tài "${topic.title}" cần chỉnh sửa ${isRecognition ? "kết quả nghiên cứu" : "đề cương"}.${note ? ` Ghi chú: ${note}` : ""}`,
+          link: `/research/${topic.id}`, read: false, priority: "urgent", createdAt: stamp,
+        }).catch(() => {})
+      ));
+      toast.success(`Đã yêu cầu sửa đổi (lần ${updates.revisionCount}) — ${isRecognition ? "cần nộp lại kết quả" : "PI cần nộp lại đề cương"}`);
     } catch { toast.error("Thao tác thất bại"); }
   }
 
@@ -267,6 +283,12 @@ export default function ResearchDetailPage() {
           <div className="h-2 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
             <div className="h-full bg-violet-500 rounded-full transition-all" style={{ width: `${pct}%` }} />
           </div>
+          {topic.executionTaskId && (
+            <Link href={`/tasks/${topic.executionTaskId}`}
+              className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-violet-600 dark:text-violet-400 hover:underline">
+              <ListChecks className="w-3.5 h-3.5" /> Nhiệm vụ thực thi liên kết — theo dõi tiến độ & đánh giá 3T
+            </Link>
+          )}
         </div>
       </div>
 
@@ -337,13 +359,37 @@ export default function ResearchDetailPage() {
         />
       )}
 
-      {/* GĐ2 action panel placeholder */}
+      {/* GĐ2 action panel */}
       {topic.stage === "recognition" && (
-        <div className="bg-violet-50 dark:bg-violet-900/10 border border-violet-200 dark:border-violet-700 rounded-2xl p-5">
-          <p className="text-sm font-semibold text-violet-700 dark:text-violet-300 mb-1 flex items-center gap-2">
-            <Award className="w-4 h-4" /> Giai đoạn 2 — Công nhận phạm vi ảnh hưởng
-          </p>
-          <p className="text-sm text-slate-500">Các thao tác tiếp nhận, thẩm định kết quả và công nhận sẽ được bổ sung ở Phase C.</p>
+        <GD2ActionPanel
+          topic={topic}
+          currentUser={currentUser}
+          users={users}
+          groups={groups}
+          canManage={canManage}
+          canAssignReviewer={canAssignReviewer}
+          canAssignCouncil={canAssignCouncil}
+          isPI={isPI}
+          isPerformer={isPerformer}
+          onUpdate={handleUpdate}
+          onGroupCreated={g => setGroups(prev => [g, ...prev])}
+          onRevise={handleRevise}
+          onReject={handleReject}
+        />
+      )}
+
+      {/* Completed banner */}
+      {topic.stage === "completed" && (
+        <div className="bg-green-50 dark:bg-green-900/15 border border-green-200 dark:border-green-700 rounded-2xl p-5 flex gap-3">
+          <Award className="w-5 h-5 text-green-600 shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-semibold text-green-700 dark:text-green-400">Đề tài đã được công nhận & hoàn tất</p>
+            {topic.certificates.find(c => c.type === "recognition")?.scope && (
+              <p className="text-sm text-green-600 dark:text-green-300 mt-1">
+                Phạm vi ảnh hưởng: {topic.certificates.find(c => c.type === "recognition")?.scope}
+              </p>
+            )}
+          </div>
         </div>
       )}
 
@@ -548,10 +594,16 @@ function GD1ActionPanel(props: GD1Props) {
   }
 }
 
-function PanelWrap({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) {
+function PanelWrap({ title, icon, children, tone = "blue" }: { title: string; icon: React.ReactNode; children: React.ReactNode; tone?: "blue" | "violet" }) {
+  const box = tone === "violet"
+    ? "bg-violet-50 dark:bg-violet-900/10 border-violet-200 dark:border-violet-800"
+    : "bg-blue-50 dark:bg-blue-900/10 border-blue-200 dark:border-blue-800";
+  const head = tone === "violet"
+    ? "text-violet-700 dark:text-violet-300"
+    : "text-blue-700 dark:text-blue-300";
   return (
-    <div className="bg-blue-50 dark:bg-blue-900/10 border border-blue-200 dark:border-blue-800 rounded-2xl p-5 space-y-3">
-      <h2 className="text-sm font-semibold text-blue-700 dark:text-blue-300 flex items-center gap-2">
+    <div className={cn("border rounded-2xl p-5 space-y-3", box)}>
+      <h2 className={cn("text-sm font-semibold flex items-center gap-2", head)}>
         {icon}{title}
       </h2>
       {children}
@@ -807,7 +859,12 @@ function PReviewPanel({ topic, currentUser, canManage, canAssignReviewer, users,
   const [actionNote, setActionNote] = useState("");
   const [actioning, setActioning] = useState(false);
 
-  const proposalReviews = topic.reviews.filter(r => r.stage === "proposal");
+  const stage: "proposal" | "recognition" = topic.currentStep === "r_review" ? "recognition" : "proposal";
+  const reviewKey = stage === "recognition" ? "r_review" : "p_review";
+  const nextKey = stage === "recognition" ? "r_council" : "p_council";
+  const stageLabel = stage === "recognition" ? "GĐ2" : "GĐ1";
+
+  const proposalReviews = topic.reviews.filter(r => r.stage === stage);
   const submittedCount = proposalReviews.filter(r => r.status === "submitted").length;
   const canAdvance = submittedCount >= 2 && canManage;
 
@@ -828,13 +885,16 @@ function PReviewPanel({ topic, currentUser, canManage, canAssignReviewer, users,
 
   async function handleAdvance() {
     setSaving(true);
-    await onUpdate(advanceStep(topic, "p_review", "p_council"), "Đã hoàn thành phản biện — chuyển sang họp Hội đồng");
+    await onUpdate(advanceStep(topic, reviewKey, nextKey),
+      stage === "recognition"
+        ? "Đã hoàn thành phản biện nghiệm thu — chuyển sang họp Hội đồng"
+        : "Đã hoàn thành phản biện — chuyển sang họp Hội đồng");
     setSaving(false);
   }
 
   return (
     <>
-    <PanelWrap title="GĐ1 · Thẩm định — 2 phản biện kín" icon={<Eye className="w-4 h-4" />}>
+    <PanelWrap title={`${stageLabel} · Thẩm định — 2 phản biện kín`} icon={<Eye className="w-4 h-4" />} tone={stage === "recognition" ? "violet" : "blue"}>
       <div className="space-y-2">
         {proposalReviews.length === 0 && (
           <p className="text-sm text-slate-400">Chưa có phản biện viên nào được gán.</p>
@@ -977,6 +1037,7 @@ function PReviewPanel({ topic, currentUser, canManage, canAssignReviewer, users,
         users={users as import("@/types").User[]}
         existingReviews={proposalReviews}
         slotsLeft={2 - proposalReviews.length}
+        stage={stage}
         onAssign={handleAddReviewer}
         onClose={() => setShowAdd(false)}
       />
@@ -1015,14 +1076,19 @@ function PCouncilPanel({ topic, currentUser, canManage, canAssignCouncil, users,
   const [councilActionNote, setCouncilActionNote] = useState("");
   const [councilActioning, setCouncilActioning] = useState(false);
 
-  const proposalSession = topic.councilSessions.find(s => s.stage === "proposal");
+  const stage: "proposal" | "recognition" = topic.currentStep === "r_council" ? "recognition" : "proposal";
+  const councilKey = stage === "recognition" ? "r_council" : "p_council";
+  const nextKey = stage === "recognition" ? "r_recognize" : "p_ethics";
+  const stageLabel = stage === "recognition" ? "GĐ2" : "GĐ1";
+
+  const proposalSession = topic.councilSessions.find(s => s.stage === stage);
 
   async function handleCreateSession() {
     if (members.length === 0) { toast.error("Chọn ít nhất 1 thành viên Hội đồng"); return; }
     setSaving(true);
     const session: ResearchCouncilSession = {
       id: generateId("cs"),
-      stage: "proposal",
+      stage,
       mode,
       scheduledAt: scheduledAt || undefined,
       location: location || undefined,
@@ -1035,7 +1101,7 @@ function PCouncilPanel({ topic, currentUser, canManage, canAssignCouncil, users,
     };
     const updates: Partial<ResearchTopic> = { councilSessions: [...topic.councilSessions, session] };
     if (mode === "in_person" && decision !== "revise") {
-      Object.assign(updates, advanceStep(topic, "p_council", "p_ethics"));
+      Object.assign(updates, advanceStep(topic, councilKey, nextKey));
     }
     await onUpdate(updates, mode === "in_person" ? "Đã ghi nhận kết luận Hội đồng" : "Đã tạo phiên bỏ phiếu online");
     setShowForm(false);
@@ -1058,13 +1124,13 @@ function PCouncilPanel({ topic, currentUser, canManage, canAssignCouncil, users,
     const updates: Partial<ResearchTopic> = { councilSessions: sessions };
     const updated = sessions.find(s => s.id === sessionId);
     if (updated?.decision && updated.decision !== "revise") {
-      Object.assign(updates, advanceStep(topic, "p_council", "p_ethics"));
+      Object.assign(updates, advanceStep(topic, councilKey, nextKey));
     }
     await onUpdate(updates, "Đã ghi nhận phiếu biểu quyết");
   }
 
   return (
-    <PanelWrap title="GĐ1 · Họp Hội đồng KHCN thông qua" icon={<Gavel className="w-4 h-4" />}>
+    <PanelWrap title={`${stageLabel} · Họp Hội đồng KHCN thông qua`} icon={<Gavel className="w-4 h-4" />} tone={stage === "recognition" ? "violet" : "blue"}>
       {proposalSession ? (
         <div className="space-y-2">
           <div className="flex items-center gap-2 flex-wrap">
@@ -1164,7 +1230,7 @@ function PCouncilPanel({ topic, currentUser, canManage, canAssignCouncil, users,
                 </div>
               ) : (
                 <div className="flex gap-2 justify-end">
-                  {proposalSession.decision === "revise" && (
+                  {proposalSession.decision === "revise" && stage === "proposal" && (
                     <button onClick={() => setCouncilActionMode("revise")}
                       className="px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-700 text-xs font-medium rounded-lg flex items-center gap-1.5 transition">
                       <RotateCcw className="w-3.5 h-3.5" /> Yêu cầu sửa đổi theo HĐ
@@ -1364,6 +1430,15 @@ function PAgreePanel({ topic, currentUser, canManage, users, onUpdate }: GD1Prop
     const updates: Partial<ResearchTopic> = { steps, stage: "executing", currentStep: "exec_start" };
     await onUpdate(updates, "Đã đồng ý thực hiện — chuyển sang Giai đoạn Triển khai");
 
+    // Tự sinh Task per-đề-tài (hub theo dõi tiến độ/risk/3T/plan)
+    try {
+      const res = await generateResearchTask(topic.id);
+      if (res?.taskId) {
+        await updateResearchTopic(topic.id, { executionTaskId: res.taskId });
+        onUpdate({ executionTaskId: res.taskId }, "Đã tạo nhiệm vụ thực thi liên kết");
+      }
+    } catch { /* sinh task không thành công — không chặn luồng nghiệp vụ */ }
+
     // Notify PI and performer
     const notifyIds = [topic.principalInvestigatorId, topic.mainPerformerId].filter(Boolean) as string[];
     await Promise.all(notifyIds.filter(uid => uid !== currentUser?.id).map(uid =>
@@ -1392,6 +1467,178 @@ function PAgreePanel({ topic, currentUser, canManage, users, onUpdate }: GD1Prop
       ) : (
         <p className="text-sm text-blue-600 dark:text-blue-400">Chờ quản lý ký xác nhận đồng ý thực hiện đề tài.</p>
       )}
+    </PanelWrap>
+  );
+}
+
+// ─── GĐ2 Action Panel (Nghiệm thu & Công nhận) ───────────────────────────────
+
+function GD2ActionPanel(props: GD1Props) {
+  const { topic } = props;
+  switch (topic.currentStep) {
+    case "r_intake":    return <RIntakePanel {...props} />;
+    case "r_review":    return <PReviewPanel {...props} />;   // tái dùng — tự nhận stage="recognition"
+    case "r_council":   return <PCouncilPanel {...props} />;  // tái dùng — tự nhận stage="recognition"
+    case "r_recognize": return <RRecognizePanel {...props} />;
+    default:            return null;
+  }
+}
+
+// ── r_intake ──────────────────────────────────────────────────────────────────
+function RIntakePanel({ topic, canManage, onUpdate }: GD1Props) {
+  const [saving, setSaving] = useState(false);
+  async function handle() {
+    setSaving(true);
+    await onUpdate(advanceStep(topic, "r_intake", "r_review"), "Đã tiếp nhận kết quả — chuyển sang phản biện nghiệm thu");
+    setSaving(false);
+  }
+  return (
+    <PanelWrap title="GĐ2 · Tiếp nhận kết quả nghiên cứu" icon={<BookOpen className="w-4 h-4" />} tone="violet">
+      {canManage ? (
+        <div className="flex items-center gap-3">
+          <p className="text-sm text-slate-600 dark:text-slate-300 flex-1">
+            Xác nhận đã tiếp nhận báo cáo kết quả nghiên cứu để chuyển sang thẩm định nghiệm thu (2 phản biện kín).
+          </p>
+          <button onClick={handle} disabled={saving}
+            className="px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium rounded-lg transition disabled:opacity-60 flex items-center gap-2 whitespace-nowrap">
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+            Đã tiếp nhận kết quả
+          </button>
+        </div>
+      ) : (
+        <p className="text-sm text-violet-600 dark:text-violet-400">Đang chờ quản lý tiếp nhận kết quả nghiên cứu.</p>
+      )}
+    </PanelWrap>
+  );
+}
+
+// ── r_recognize ─────────────────────────────────────────────────────────────────
+/** Suy ra xếp loại 3T từ điểm trung bình (thang 10). */
+function grade3TFromAvg(avg10: number): "xuatSac" | "hoanThanhTot" | "hoanThanh" | "khongHoanThanh" {
+  if (avg10 >= 9) return "xuatSac";
+  if (avg10 >= 8) return "hoanThanhTot";
+  if (avg10 >= 5) return "hoanThanh";
+  return "khongHoanThanh";
+}
+
+function RRecognizePanel({ topic, currentUser, canManage, onUpdate }: GD1Props) {
+  const [certNo, setCertNo] = useState("");
+  const [scope, setScope] = useState("");
+  const [issuedAt, setIssuedAt] = useState("");
+  const [issuedBy, setIssuedBy] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  // Điểm trung bình từ phản biện GĐ2 (đã nộp) → quy đổi 3T cho Hiệu suất
+  const recReviews = topic.reviews.filter(r => r.stage === "recognition" && r.status === "submitted");
+  const scores = recReviews.map(r => r.score).filter((s): s is number => typeof s === "number");
+  const avg35 = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+  const avg10 = avg35 != null ? Math.round((avg35 / 35) * 100) / 10 : null;
+
+  async function handle() {
+    if (!certNo.trim()) { toast.error("Nhập số chứng nhận công nhận"); return; }
+    setSaving(true);
+    const stamp = new Date().toISOString();
+    const cert = {
+      type: "recognition" as const,
+      number: certNo.trim(),
+      scope: scope.trim() || undefined,
+      issuedAt: issuedAt || undefined,
+      issuedBy: issuedBy || undefined,
+    };
+    await onUpdate(
+      { certificates: [...topic.certificates, cert], ...advanceStep(topic, "r_recognize", null, "completed") },
+      "Đã công nhận phạm vi ảnh hưởng — hoàn tất đề tài",
+    );
+
+    // Khoá kết quả vào Task liên kết → tính Kế hoạch NCKH + vào Hiệu suất (3T)
+    if (topic.executionTaskId) {
+      const t10 = avg10 ?? 8; // không có điểm → mặc định Hoàn thành tốt
+      const rating5 = Math.max(1, Math.min(5, Math.round(t10 / 2)));
+      updateTask(topic.executionTaskId, {
+        status: "done",
+        progress: 100,
+        evaluation: "Đề tài NCKH được Hội đồng công nhận phạm vi ảnh hưởng cấp cơ sở.",
+        evaluationRating: rating5,
+        completionProposal: {
+          submittedBy: topic.mainPerformerId || topic.principalInvestigatorId || currentUser?.id || "",
+          submittedAt: stamp,
+          summary: "Đề tài hoàn thành & được Hội đồng KHCN công nhận.",
+          status: "approved",
+          reviewedBy: currentUser?.id,
+          reviewedAt: stamp,
+          reviewRating: rating5,
+          score3T: {
+            t1: t10, t2: t10, t3: t10, total: t10,
+            grade: grade3TFromAvg(t10),
+            computedAt: stamp,
+          },
+        },
+      }).catch(() => {});
+    }
+
+    // Thông báo PI + người thực hiện
+    const notifyIds = [topic.principalInvestigatorId, topic.mainPerformerId].filter(Boolean) as string[];
+    await Promise.all(notifyIds.filter(uid => uid !== currentUser?.id).map(uid =>
+      addNotification({
+        userId: uid, type: "request_approved", title: "Đề tài được công nhận",
+        body: `Đề tài "${topic.title}" đã được Hội đồng KHCN công nhận phạm vi ảnh hưởng cấp cơ sở.`,
+        link: `/research/${topic.id}`, read: false, priority: "normal", createdAt: stamp,
+      }).catch(() => {})
+    ));
+    setSaving(false);
+  }
+
+  if (!canManage) {
+    return (
+      <PanelWrap title="GĐ2 · Công nhận phạm vi ảnh hưởng" icon={<Award className="w-4 h-4" />} tone="violet">
+        <p className="text-sm text-violet-600 dark:text-violet-400">Chờ quản lý cấp chứng nhận công nhận phạm vi ảnh hưởng.</p>
+      </PanelWrap>
+    );
+  }
+
+  return (
+    <PanelWrap title="GĐ2 · Công nhận phạm vi ảnh hưởng" icon={<Award className="w-4 h-4" />} tone="violet">
+      <div className="space-y-3">
+        {avg10 != null && (
+          <p className="text-xs text-slate-500">
+            Điểm trung bình phản biện nghiệm thu: <strong className="text-[var(--foreground)]">{avg35?.toFixed(1)}/35</strong>
+            {" "}(~{avg10}/10) · Dự kiến xếp loại 3T:{" "}
+            <strong className="text-violet-600 dark:text-violet-400">
+              {{ xuatSac: "Xuất sắc", hoanThanhTot: "Hoàn thành tốt", hoanThanh: "Hoàn thành", khongHoanThanh: "Không hoàn thành" }[grade3TFromAvg(avg10)]}
+            </strong>
+          </p>
+        )}
+        <div className="grid grid-cols-3 gap-2">
+          <div className="col-span-3 sm:col-span-1">
+            <label className="block text-xs text-slate-500 mb-0.5">Số chứng nhận <span className="text-red-500">*</span></label>
+            <input value={certNo} onChange={e => setCertNo(e.target.value)} placeholder="CN-2026-001"
+              className="w-full border border-slate-200 dark:border-slate-700 rounded px-2 py-1.5 text-sm bg-white dark:bg-slate-800" />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-0.5">Ngày cấp</label>
+            <input type="date" value={issuedAt} onChange={e => setIssuedAt(e.target.value)}
+              className="w-full border border-slate-200 dark:border-slate-700 rounded px-2 py-1.5 text-sm bg-white dark:bg-slate-800" />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-0.5">Đơn vị cấp</label>
+            <input value={issuedBy} onChange={e => setIssuedBy(e.target.value)} placeholder="Hội đồng KHCN..."
+              className="w-full border border-slate-200 dark:border-slate-700 rounded px-2 py-1.5 text-sm bg-white dark:bg-slate-800" />
+          </div>
+        </div>
+        <div>
+          <label className="block text-xs text-slate-500 mb-0.5">Phạm vi ảnh hưởng (cấp cơ sở)</label>
+          <textarea value={scope} onChange={e => setScope(e.target.value)} rows={2}
+            placeholder="Mô tả phạm vi ảnh hưởng / ứng dụng của đề tài..."
+            className="w-full border border-slate-200 dark:border-slate-700 rounded px-2 py-1.5 text-sm bg-white dark:bg-slate-800 resize-none" />
+        </div>
+        <div className="flex justify-end">
+          <button onClick={handle} disabled={saving || !certNo.trim()}
+            className="px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium rounded-lg transition disabled:opacity-60 flex items-center gap-2">
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Award className="w-4 h-4" />}
+            Công nhận & hoàn tất đề tài
+          </button>
+        </div>
+      </div>
     </PanelWrap>
   );
 }
