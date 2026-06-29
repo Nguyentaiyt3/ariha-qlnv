@@ -9,10 +9,10 @@ import type { ResearchAnnotation } from "@/types";
 // ─── Highlight colors ─────────────────────────────────────────────────────────
 
 const COLOR_HEX: Record<ResearchAnnotation["color"], string> = {
-  yellow: "#fde68a",
-  green:  "#bbf7d0",
-  pink:   "#fbcfe8",
-  blue:   "#bfdbfe",
+  yellow: "rgba(253, 224, 71,  0.35)",
+  green:  "rgba(134, 239, 172, 0.35)",
+  pink:   "rgba(249, 168, 212, 0.35)",
+  blue:   "rgba(147, 197, 253, 0.35)",
 };
 const COLOR_LIST = Object.keys(COLOR_HEX) as ResearchAnnotation["color"][];
 const CONTEXT_LEN = 40;
@@ -97,8 +97,6 @@ function wrapRange(root: HTMLElement, start: number, end: number, aid: string, h
       mark.style.borderRadius = "2px";
       mark.style.cursor = "pointer";
       mark.style.padding = "0 1px";
-      // multiply so highlight shows over the PDF canvas glyphs (and stays readable on docx)
-      mark.style.mixBlendMode = "multiply";
       range.surroundContents(mark);
     } catch { /* skip un-wrappable fragment */ }
   }
