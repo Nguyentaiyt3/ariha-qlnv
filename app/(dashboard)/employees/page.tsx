@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Users, Search, Edit2, UserCheck, UserX, Save, X, Clock, KeyRound, ChevronDown } from "lucide-react";
+import { Users, Search, Edit2, UserCheck, UserX, Save, X, Clock, KeyRound, ChevronDown, Check } from "lucide-react";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { hasPermission } from "@/lib/rbac/permissions";
@@ -132,7 +132,7 @@ interface EditState {
 
 export default function EmployeesPage() {
   const { currentUser } = useAuthStore();
-  const { users } = useTaskStore();
+  const { users, setUsers } = useTaskStore();
   const [search, setSearch] = useState("");
   const [editState, setEditState] = useState<EditState | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
@@ -219,7 +219,7 @@ export default function EmployeesPage() {
     if (!editState) return;
     setSavingId(user.id);
     try {
-      await saveUser({
+      const updated: User = {
         ...user,
         name: editState.name.trim() || user.name,
         department: editState.department.trim() || undefined,
@@ -229,8 +229,10 @@ export default function EmployeesPage() {
         researchDesignations: editState.researchDesignations.length > 0
           ? editState.researchDesignations
           : undefined,
-      });
-      toast.success(`Đã cập nhật ${editState.name || user.name}`);
+      };
+      await saveUser(updated);
+      setUsers(users.map(u => u.id === user.id ? updated : u));
+      toast.success(`Đã cập nhật ${updated.name}`);
       setEditState(null);
     } catch (err) {
       console.error(err);
@@ -645,12 +647,13 @@ export default function EmployeesPage() {
                                     };
                                   })}
                                   className={cn(
-                                    "text-[10px] px-2 py-0.5 rounded-full border transition",
+                                    "flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full border transition font-medium",
                                     active
-                                      ? "bg-purple-100 dark:bg-purple-900/40 border-purple-300 dark:border-purple-700 text-purple-700 dark:text-purple-300 font-medium"
+                                      ? "bg-purple-600 dark:bg-purple-700 border-purple-600 dark:border-purple-700 text-white shadow-sm"
                                       : "border-slate-200 dark:border-slate-700 text-slate-400 hover:border-purple-300 hover:text-purple-600",
                                   )}
                                 >
+                                  {active && <Check className="w-2.5 h-2.5 shrink-0" />}
                                   {RESEARCH_DESIGNATION_LABEL[d]}
                                 </button>
                               );
@@ -678,7 +681,8 @@ export default function EmployeesPage() {
                         {(user.researchDesignations ?? []).length > 0 && (
                           <div className="flex flex-wrap gap-1 mt-0.5">
                             {(user.researchDesignations ?? []).map(d => (
-                              <span key={d} className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-700">
+                              <span key={d} className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full font-semibold bg-purple-600 dark:bg-purple-700 text-white shadow-sm">
+                                <span className="w-1.5 h-1.5 rounded-full bg-white/60 shrink-0" />
                                 {RESEARCH_DESIGNATION_LABEL[d]}
                               </span>
                             ))}
