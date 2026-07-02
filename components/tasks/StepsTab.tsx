@@ -20,6 +20,7 @@ import {
   createTransaction, EXPENSE_CATEGORIES,
 } from "@/lib/firebase/finance";
 import { StepFlowDiagram, type PanelSection } from "@/components/tasks/StepFlowDiagram";
+import { StepTimelineView } from "@/components/tasks/StepTimelineView";
 import { StepNodePanel } from "@/components/tasks/StepNodePanel";
 import WorkflowBuilder from "@/components/tasks/WorkflowBuilder";
 import { ResearchStepPanel } from "@/components/tasks/ResearchStepPanel";
@@ -125,8 +126,8 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
   const [emailBody, setEmailBody] = useState("");
   const [emailSending, setEmailSending] = useState(false);
 
-  // View mode: list (default) or diagram
-  const [viewMode, setViewMode] = useState<"list" | "diagram">("list");
+  // View mode: list (default), diagram (timeline infographic), or flow (ReactFlow DAG)
+  const [viewMode, setViewMode] = useState<"list" | "diagram" | "flow">("list");
   // Panel state for diagram node click
   const [panelStepId,  setPanelStepId]  = useState<string | null>(null);
   const [panelSection, setPanelSection] = useState<PanelSection>("progress");
@@ -658,11 +659,46 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
           >
             <GitBranch className="w-3 h-3" />Sơ đồ
           </button>
+          <button
+            onClick={() => setViewMode("flow")}
+            className={cn("flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition",
+              viewMode === "flow" ? "bg-white dark:bg-slate-700 text-slate-700 dark:text-white shadow-sm" : "text-slate-500 hover:text-slate-700")}
+          >
+            <GitBranch className="w-3 h-3" />DAG
+          </button>
         </div>
       </div>
 
-      {/* ── Diagram mode ── */}
+      {/* ── Timeline / infographic mode ── */}
       {viewMode === "diagram" && (
+        <>
+          <StepTimelineView
+            steps={steps}
+            users={users}
+            onStepClick={(stepId) => {
+              setPanelStepId(stepId);
+              setPanelSection("progress");
+            }}
+          />
+          {panelStepId && (
+            <StepNodePanel
+              task={{ ...task, steps }}
+              stepId={panelStepId}
+              section={panelSection}
+              onSectionChange={setPanelSection}
+              onClose={() => setPanelStepId(null)}
+              users={users}
+              currentUser={currentUser}
+              taskMemberIds={taskMemberIds}
+              onSave={onSave}
+              onEmailSent={onEmailSent}
+            />
+          )}
+        </>
+      )}
+
+      {/* ── DAG / ReactFlow mode ── */}
+      {viewMode === "flow" && (
         <>
           <StepFlowDiagram
             task={{ ...task, steps }}
@@ -671,7 +707,7 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
             currentUser={currentUser}
             canAssignSteps={canAssignSteps}
             onNodeClick={(stepId, section) => {
-              if (section === "subworkflow") return; // handled by onEditSubWorkflow
+              if (section === "subworkflow") return;
               setPanelStepId(stepId);
               setPanelSection(section);
             }}
