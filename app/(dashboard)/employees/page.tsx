@@ -132,7 +132,7 @@ interface EditState {
 
 export default function EmployeesPage() {
   const { currentUser } = useAuthStore();
-  const { users } = useTaskStore();
+  const { users, setUsers } = useTaskStore();
   const [search, setSearch] = useState("");
   const [editState, setEditState] = useState<EditState | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
@@ -219,7 +219,7 @@ export default function EmployeesPage() {
     if (!editState) return;
     setSavingId(user.id);
     try {
-      await saveUser({
+      const updated: User = {
         ...user,
         name: editState.name.trim() || user.name,
         department: editState.department.trim() || undefined,
@@ -229,8 +229,10 @@ export default function EmployeesPage() {
         researchDesignations: editState.researchDesignations.length > 0
           ? editState.researchDesignations
           : undefined,
-      });
-      toast.success(`Đã cập nhật ${editState.name || user.name}`);
+      };
+      await saveUser(updated);
+      setUsers(users.map(u => u.id === user.id ? updated : u));
+      toast.success(`Đã cập nhật ${updated.name}`);
       setEditState(null);
     } catch (err) {
       console.error(err);
