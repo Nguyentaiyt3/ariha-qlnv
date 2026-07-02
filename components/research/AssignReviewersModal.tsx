@@ -188,15 +188,15 @@ export function AssignReviewersModal({
   const [delegateDue, setDelegateDue] = useState("");
   const [delegateSaving, setDelegateSaving] = useState(false);
 
-  // Users filtered by designation
-  const reviewerUsers = useMemo(
-    () => users.filter(u => hasDesignation(u, "reviewer")),
-    [users],
-  );
-  const managerUsers = useMemo(
-    () => users.filter(u => hasDesignation(u, "researchManager")),
-    [users],
-  );
+  // Users filtered by designation; fallback to all users when no one has the designation set yet
+  const reviewerUsers = useMemo(() => {
+    const designated = users.filter(u => hasDesignation(u, "reviewer"));
+    return designated.length > 0 ? designated : users;
+  }, [users]);
+  const managerUsers = useMemo(() => {
+    const designated = users.filter(u => hasDesignation(u, "researchManager"));
+    return designated.length > 0 ? designated : users;
+  }, [users]);
 
   // Topics where current user is PI or member → cannot assign for these
   const myTopicIds = useMemo(

@@ -23,7 +23,7 @@ import { useTaskStore } from "@/stores/useTaskStore";
 import { hasPermission, getEffectiveRole, ROLE_RANK } from "@/lib/rbac/permissions";
 import { getResearchTopics, saveResearchTopic, updateResearchTopic, deleteResearchTopic } from "@/lib/firebase/firestore";
 import { RESEARCH_STEPS, STAGE_LABEL, buildInitialSteps, researchProgress, stepMeta } from "@/lib/research";
-import type { ResearchTopic, ResearchStage, ResearchReview, ResearchCouncilSession, IntakeLog, Task, ResearchDesignation, ResearchStepKey } from "@/types";
+import type { ResearchTopic, ResearchStage, ResearchReview, ResearchCouncilSession, IntakeLog, Task, ResearchDesignation, ResearchStepKey, User } from "@/types";
 import { toast } from "sonner";
 
 // ─── Constants ─────────────────────────────────────────────────
@@ -2108,7 +2108,7 @@ function MonitorTab({
   topics, users, canManage, canAssignReviewer, currentUser, onEdit, onDelete, onView, onTopicUpdate,
 }: {
   topics: ResearchTopic[];
-  users: { id: string; name: string; email?: string }[];
+  users: User[];
   canManage: boolean;
   canAssignReviewer: boolean;
   currentUser: { id: string; name: string; email?: string };
@@ -2792,7 +2792,7 @@ function MonitorTab({
       {showAssignModal && selectedForReview.size > 0 && (
         <AssignReviewersModal
           topics={topics.filter(t => selectedForReview.has(t.id))}
-          users={users as any}
+          users={users}
           currentUser={currentUser}
           canManage={canManage}
           canAssignReviewer={canAssignReviewer}
