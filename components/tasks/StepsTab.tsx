@@ -671,15 +671,20 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
 
       {/* ── Timeline / infographic mode ── */}
       {viewMode === "diagram" && (
-        <>
-          <StepTimelineView
-            steps={steps}
-            users={users}
-            onStepClick={(stepId) => {
-              setPanelStepId(stepId);
-              setPanelSection("progress");
-            }}
-          />
+        <div className="flex gap-4 items-start">
+          {/* Timeline (left, grows) */}
+          <div className="flex-1 min-w-0">
+            <StepTimelineView
+              steps={steps}
+              users={users}
+              onStepClick={(stepId) => {
+                setPanelStepId(stepId === panelStepId ? null : stepId);
+                setPanelSection("progress");
+              }}
+            />
+          </div>
+
+          {/* Detail panel (right, inline, fixed width) */}
           {panelStepId && (
             <StepNodePanel
               task={{ ...task, steps }}
@@ -692,9 +697,10 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
               taskMemberIds={taskMemberIds}
               onSave={onSave}
               onEmailSent={onEmailSent}
+              inline
             />
           )}
-        </>
+        </div>
       )}
 
       {/* ── DAG / ReactFlow mode ── */}

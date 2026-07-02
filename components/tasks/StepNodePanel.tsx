@@ -83,17 +83,23 @@ interface Props {
   /** Gọi để lưu cập nhật steps lên DB. */
   onSave: (updates: Partial<Task>) => Promise<void>;
   onEmailSent?: () => void;
+  /** Hiển thị inline (không fixed overlay) — dùng trong timeline view. */
+  inline?: boolean;
 }
 
 export function StepNodePanel({
   task, stepId, section, onSectionChange, onClose,
   users, currentUser, taskMemberIds, onSave, onEmailSent,
+  inline = false,
 }: Props) {
   const step = task.steps.find((s) => s.id === stepId);
   if (!step) return null;
 
   return (
-    <div className="fixed inset-y-0 right-0 z-50 flex flex-col w-full max-w-sm bg-white dark:bg-slate-900 shadow-2xl border-l border-slate-200 dark:border-slate-700 overflow-hidden">
+    <div className={inline
+      ? "flex flex-col w-80 shrink-0 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-xl overflow-hidden"
+      : "fixed inset-y-0 right-0 z-50 flex flex-col w-full max-w-sm bg-white dark:bg-slate-900 shadow-2xl border-l border-slate-200 dark:border-slate-700 overflow-hidden"
+    }>
       {/* Header */}
       <div className="flex items-center gap-3 px-4 py-3 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 shrink-0">
         <div className="flex-1 min-w-0">
