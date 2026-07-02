@@ -3,17 +3,18 @@ import { loginWithGoogle } from "@/lib/mongodb/auth";
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID!;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET!;
-const REDIRECT_URI = `${process.env.NEXT_PUBLIC_APP_URL}/api/auth/google/callback`;
 
 export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url);
+  const reqUrl = new URL(req.url);
+  const origin = reqUrl.origin;
+  const redirectUri = `${origin}/api/auth/google/callback`;
+
+  const { searchParams } = reqUrl;
   const code = searchParams.get("code");
   const error = searchParams.get("error");
 
   if (error || !code) {
-    return NextResponse.redirect(
-      `${process.env.NEXT_PUBLIC_APP_URL}/login?error=google_cancelled`
-    );
+    return NextResponse.redirect(`${origin}/login?error=google_cancelled`);
   }
 
   try {
@@ -25,7 +26,7 @@ export async function GET(req: NextRequest) {
         code,
         client_id: GOOGLE_CLIENT_ID,
         client_secret: GOOGLE_CLIENT_SECRET,
-        redirect_uri: REDIRECT_URI,
+        redirect_uri: redirectUri,
         grant_type: "authorization_code",
       }),
     });
@@ -58,9 +59,7 @@ export async function GET(req: NextRequest) {
       picture: googleUser.picture,
     });
 
-    const response = NextResponse.redirect(
-      `${process.env.NEXT_PUBLIC_APP_URL}/dashboard`
-    );
+    const response = NextResponse.redirect(`${origin}/dashboard`);
 
     response.cookies.set("auth-token", token, {
       httpOnly: true,
@@ -73,8 +72,6 @@ export async function GET(req: NextRequest) {
   } catch (err) {
     console.error("[Google OAuth callback error]", err);
     const msg = err instanceof Error ? encodeURIComponent(err.message) : "google_error";
-    return NextResponse.redirect(
-      `${process.env.NEXT_PUBLIC_APP_URL}/login?error=${msg}`
-    );
+    return NextResponse.redirect(`${origin}/login?error=${msg}`);
   }
 }
