@@ -7,7 +7,7 @@ import {
   ChannelModel, ChannelMessageModel,
   FinancialTransactionModel, AdvanceRequestModel, ReimbursementRequestModel, TaskFinancialSummaryModel,
   WorkNodeModel, AuditEventModel, UnitPlanModel, ResearchTopicModel, ResearchGroupModel,
-  AppConfigModel,
+  AppConfigModel, ClinicalTrialModel,
 } from "./models";
 import type {
   User, Task, Notification, Message, EmailLog, CalendarEvent,
@@ -15,7 +15,7 @@ import type {
   RequestTemplate, WorkRequest, DocFolder, WorkDocument,
   Announcement, AnnouncementComment, Channel, ChannelMessage,
   FinancialTransaction, AdvanceRequest, ReimbursementRequest, TaskFinancialSummary,
-  WorkNode, UnitPlan, ResearchTopic, ResearchGroup,
+  WorkNode, UnitPlan, ResearchTopic, ResearchGroup, ClinicalTrial,
 } from "@/types";
 import { generateId } from "@/lib/utils";
 
@@ -534,6 +534,264 @@ export async function checkResearchTaskParticipant(userId: string): Promise<bool
     ],
   });
   return count > 0;
+}
+
+// ─── THỬ NGHIỆM LÂM SÀNG (Clinical Trials) ─────────────────────
+
+export async function getClinicalTrials(userId?: string): Promise<ClinicalTrial[]> {
+  await connectDB();
+  const filter: Record<string, unknown> = userId
+    ? {
+        $or: [
+          { principalInvestigatorId: userId },
+          { coordinatorId: userId },
+          { createdBy: userId },
+        ],
+      }
+    : {};
+  const trials = await ClinicalTrialModel.find(filter).sort({ createdAt: -1 }).lean();
+  return trials.map((t: any) => {
+    const { _id, ...rest } = t;
+    return { id: _id as string, ...rest } as ClinicalTrial;
+  });
+}
+
+export async function getClinicalTrial(id: string): Promise<ClinicalTrial | null> {
+  await connectDB();
+  const t = await ClinicalTrialModel.findById(id).lean();
+  if (!t) return null;
+  const { _id, ...rest } = t as any;
+  return { id: _id as string, ...rest } as ClinicalTrial;
+}
+
+export async function createClinicalTrial(trial: ClinicalTrial): Promise<void> {
+  await connectDB();
+  const { id, ...data } = trial;
+  const { createdAt, ...fields } = data as any;
+  await ClinicalTrialModel.findByIdAndUpdate(
+    id,
+    {
+      $set:         { ...fields, updatedAt: now() },
+      $setOnInsert: { createdAt: createdAt || now() },
+    },
+    { upsert: true }
+  );
+}
+
+export async function updateClinicalTrial(id: string, data: Partial<ClinicalTrial>): Promise<void> {
+  await connectDB();
+  const { id: _omit, _id: _omitId, createdAt: _omitCreated, ...rest } = data as any;
+  await ClinicalTrialModel.findByIdAndUpdate(id, { $set: { ...rest, updatedAt: now() } });
+}
+
+export async function deleteClinicalTrial(id: string): Promise<void> {
+  await connectDB();
+  await ClinicalTrialModel.findByIdAndDelete(id);
+}
+
+export async function sendEnrollmentAlertNotification(
+  userId: string,
+  trial: ClinicalTrial,
+  alertType: string,
+  message: string,
+  severity: "low" | "medium" | "high" = "low"
+): Promise<void> {
+  await connectDB();
+  const title = `[${trial.abbreviation || trial.code}] Enrollment Alert`;
+  const priority: "low" | "normal" | "urgent" = severity === "high" ? "urgent" : severity === "medium" ? "normal" : "low";
+  const notif: Omit<Notification, "id"> = {
+    userId,
+    type: "trial_enrollment_alert",
+    title,
+    body: message,
+    read: false,
+    link: `/clinical-trials/${trial.id}`,
+    priority,
+    actionRequired: severity === "high",
+    createdAt: now(),
+  };
+  await createNotification(notif);
+}
+
+export async function createEnrollmentMilestoneTask(
+  trial: ClinicalTrial,
+  milestone: "50_percent" | "75_percent" | "100_percent"
+): Promise<Task | null> {
+  await connectDB();
+
+  const assigneeId = trial.coordinatorId || trial.principalInvestigatorId || trial.createdBy;
+
+  if (!assigneeId) {
+    console.log(`[createEnrollmentMilestoneTask] ${trial.code}: No assignee found (coordinator/PI/creator)`);
+    return null; // Cannot create task without assignee
+  }
+
+  // Prevent duplicate task creation - check by task name and assignee
+  // Map milestone to task name prefix for exact matching
+  const milestoneNameMap = {
+    "50_percent": "50% — Xem xét tiến độ",
+    "75_percent": "75% — Chuẩn bị hoàn tất",
+    "100_percent": "100% — Xác minh hoàn tất",
+  };
+
+  const namePattern = milestoneNameMap[milestone];
+  const existingTask = await TaskModel.findOne({
+    $and: [
+      { name: { $regex: namePattern } },
+      { mainPerformerId: assigneeId },
+      { tags: `milestone_${milestone}` },
+    ],
+  }).lean();
+
+  if (existingTask) {
+    console.log(`[createEnrollmentMilestoneTask] ${trial.code}: Task already exists for ${milestone}`);
+    return null; // Task already created for this milestone
+  }
+
+  // Map milestone to task name and description
+  const milestoneConfig = {
+    "50_percent": {
+      name: "Cột mốc tuyển bệnh 50% — Xem xét tiến độ",
+      description: "Đã đạt 50% chỉ tiêu tuyển bệnh. Vui lòng xem xét tiến độ hiện tại và các kế hoạch tiếp theo.",
+    },
+    "75_percent": {
+      name: "Cột mốc tuyển bệnh 75% — Chuẩn bị hoàn tất",
+      description: "Đã đạt 75% chỉ tiêu tuyển bệnh. Chuẩn bị cho các bước cuối cùng và hoàn tất tuyển bệnh.",
+    },
+    "100_percent": {
+      name: "Cột mốc tuyển bệnh 100% — Xác minh hoàn tất & kiểm tra ngẫu nhiên",
+      description: "Đã đạt 100% chỉ tiêu tuyển bệnh. Vui lòng xác minh hoàn tất tuyển bệnh và khởi tạo kiểm tra phân ngẫu nhiên.",
+    },
+  };
+
+  const config = milestoneConfig[milestone];
+
+  const now_str = now();
+  const sevenDaysLater = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+  const taskData: Omit<Task, "id"> = {
+    name: config.name,
+    description: config.description,
+    status: "todo",
+    phase: "execute",
+    priority: milestone === "100_percent" ? "high" : "medium",
+    deadlineBase: sevenDaysLater,
+    deadlinePrepare: sevenDaysLater,
+    deadlineExecute: sevenDaysLater,
+    deadlineFinalize: sevenDaysLater,
+    creatorId: assigneeId,
+    mainPerformerId: assigneeId,
+    stakeholders: [
+      {
+        userId: assigneeId,
+        role: "assignee",
+      },
+    ],
+    dependencies: [],
+    steps: [],
+    subtasks: [],
+    kpi: {
+      type: "completion_time",
+      target: 7,
+      current: 0,
+      unit: "days",
+    },
+    progress: 0,
+    riskFlag: false,
+    timeLogs: [],
+    approved: false,
+    department: trial.department,
+    tags: ["TNLS", `milestone_${milestone}`],
+    createdAt: now_str,
+    updatedAt: now_str,
+  };
+
+  const task = await createTask(taskData);
+  return task;
+}
+
+export async function createPaymentReconciliationTask(
+  trial: ClinicalTrial,
+  status: "matched" | "mismatch" | "pending",
+  targetAmount: number,
+  receivedAmount: number,
+  difference: number
+): Promise<Task | null> {
+  await connectDB();
+
+  // Find finance department user or trial creator
+  const assigneeId = trial.createdBy; // Could be finance manager, trial creator, or coordinator
+  if (!assigneeId) {
+    console.log(`[createPaymentReconciliationTask] ${trial.code}: No assignee found`);
+    return null;
+  }
+
+  // Only create task for mismatch or pending (matched = no action needed)
+  if (status === "matched") {
+    return null;
+  }
+
+  const taskName =
+    status === "mismatch"
+      ? `Kiểm tra mismatch thanh toán - ${trial.abbreviation || trial.code}`
+      : `Theo dõi thanh toán - ${trial.abbreviation || trial.code}`;
+
+  const taskDescription =
+    status === "mismatch"
+      ? `Thanh toán không khớp: Đã nhận ${receivedAmount.toLocaleString("vi-VN")} nhưng dự tính ~${targetAmount.toLocaleString("vi-VN")} VND (chênh lệch: ${difference.toLocaleString("vi-VN")} VND). Vui lòng xem xét và điều chỉnh.`
+      : `Chưa nhận thanh toán cho ${trial.code}. Dự tính: ${targetAmount.toLocaleString("vi-VN")} VND. Vui lòng theo dõi và nhắc nhở.`;
+
+  // Check if reconciliation task already exists
+  const existingTask = await TaskModel.findOne({
+    $and: [{ name: { $regex: taskName.split(" - ")[0] } }, { mainPerformerId: assigneeId }, { tags: "payment_reconciliation" }],
+  }).lean();
+
+  if (existingTask) {
+    return null; // Task already exists
+  }
+
+  const now_str = now();
+  const sevenDaysLater = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+  const taskData: Omit<Task, "id"> = {
+    name: taskName,
+    description: taskDescription,
+    status: "todo",
+    phase: "execute",
+    priority: status === "mismatch" ? "high" : "medium",
+    deadlineBase: sevenDaysLater,
+    deadlinePrepare: sevenDaysLater,
+    deadlineExecute: sevenDaysLater,
+    deadlineFinalize: sevenDaysLater,
+    creatorId: assigneeId,
+    mainPerformerId: assigneeId,
+    stakeholders: [
+      {
+        userId: assigneeId,
+        role: "assignee",
+      },
+    ],
+    dependencies: [],
+    steps: [],
+    subtasks: [],
+    kpi: {
+      type: "completion_time",
+      target: 7,
+      current: 0,
+      unit: "days",
+    },
+    progress: 0,
+    riskFlag: status === "mismatch",
+    timeLogs: [],
+    approved: false,
+    department: "Finance", // Reconciliation belongs to finance
+    tags: ["payment_reconciliation", `status_${status}`],
+    createdAt: now_str,
+    updatedAt: now_str,
+  };
+
+  const task = await createTask(taskData);
+  return task;
 }
 
 // ─── EVALUATIONS ──────────────────────────────────────────────

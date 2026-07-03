@@ -126,8 +126,17 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
   const [emailBody, setEmailBody] = useState("");
   const [emailSending, setEmailSending] = useState(false);
 
-  // View mode: list (default), diagram (timeline infographic), or flow (ReactFlow DAG)
-  const [viewMode, setViewMode] = useState<"list" | "diagram" | "flow">("list");
+  const [viewMode, setViewMode] = useState<"list" | "diagram" | "flow">(() => {
+    try {
+      const v = localStorage.getItem("stepsTab_viewMode");
+      if (v === "list" || v === "diagram" || v === "flow") return v;
+    } catch { /* SSR / private browsing */ }
+    return "list";
+  });
+  function changeViewMode(m: "list" | "diagram" | "flow") {
+    setViewMode(m);
+    try { localStorage.setItem("stepsTab_viewMode", m); } catch { /* ignore */ }
+  }
   // Panel state for diagram node click
   const [panelStepId,  setPanelStepId]  = useState<string | null>(null);
   const [panelSection, setPanelSection] = useState<PanelSection>("progress");
@@ -646,21 +655,21 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
         <span className="text-slate-400">{done}/{steps.length} bước hoàn thành</span>
         <div className="ml-auto flex items-center gap-1 bg-slate-100 dark:bg-slate-800 rounded-lg p-0.5">
           <button
-            onClick={() => setViewMode("list")}
+            onClick={() => changeViewMode("list")}
             className={cn("flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition",
               viewMode === "list" ? "bg-white dark:bg-slate-700 text-slate-700 dark:text-white shadow-sm" : "text-slate-500 hover:text-slate-700")}
           >
             <List className="w-3 h-3" />Danh sách
           </button>
           <button
-            onClick={() => setViewMode("diagram")}
+            onClick={() => changeViewMode("diagram")}
             className={cn("flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition",
               viewMode === "diagram" ? "bg-white dark:bg-slate-700 text-slate-700 dark:text-white shadow-sm" : "text-slate-500 hover:text-slate-700")}
           >
             <GitBranch className="w-3 h-3" />Sơ đồ
           </button>
           <button
-            onClick={() => setViewMode("flow")}
+            onClick={() => changeViewMode("flow")}
             className={cn("flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition",
               viewMode === "flow" ? "bg-white dark:bg-slate-700 text-slate-700 dark:text-white shadow-sm" : "text-slate-500 hover:text-slate-700")}
           >

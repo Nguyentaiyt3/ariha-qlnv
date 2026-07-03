@@ -8,7 +8,7 @@ import type {
   Workflow, MilestoneConfig, KPIFramework, Evaluation, AuditEvent,
   RequestTemplate, WorkRequest, DocFolder, WorkDocument,
   Announcement, AnnouncementComment, Channel, ChannelMessage,
-  ResearchTopic, ResearchGroup,
+  ResearchTopic, ResearchGroup, ClinicalTrial,
 } from "@/types";
 import { generateId } from "@/lib/utils";
 
@@ -289,6 +289,26 @@ export async function updateResearchGroup(id: string, updates: Partial<ResearchG
 }
 export async function deleteResearchGroup(id: string): Promise<void> {
   await api(`/api/research/groups/${id}`, { method: "DELETE" });
+}
+
+// ─── CLINICAL TRIALS (Thử nghiệm lâm sàng) ─────────────────────
+
+export async function getClinicalTrials(): Promise<ClinicalTrial[]> {
+  const data = await api<{ trials: ClinicalTrial[] }>("/api/clinical-trials");
+  return data?.trials ?? [];
+}
+export async function getClinicalTrial(id: string): Promise<ClinicalTrial | null> {
+  const data = await api<{ trial: ClinicalTrial }>(`/api/clinical-trials/${id}`);
+  return data?.trial ?? null;
+}
+export async function saveClinicalTrial(trial: ClinicalTrial): Promise<{ id: string } | null> {
+  return api<{ id: string }>("/api/clinical-trials", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(trial) });
+}
+export async function updateClinicalTrial(id: string, updates: Partial<ClinicalTrial>): Promise<void> {
+  await api(`/api/clinical-trials/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(updates) });
+}
+export async function deleteClinicalTrial(id: string): Promise<void> {
+  await api(`/api/clinical-trials/${id}`, { method: "DELETE" });
 }
 
 // ─── MILESTONE CONFIG ─────────────────────────────────────────

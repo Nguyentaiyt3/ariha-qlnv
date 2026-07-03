@@ -41,6 +41,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "research:read",
     "research:create",
     "finance:read",   // Thấy tab + thêm giao dịch/tạm ứng, KHÔNG duyệt
+    "trial:read",     // Chỉ xem TNLS mà mình là PI/điều phối (lọc server-side)
   ],
   teamLead: [
     "task:read",
@@ -95,6 +96,9 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "finance:read",
     "finance:approve",
     "finance:manage",
+    "trial:read",
+    "trial:create",
+    "trial:manage",
   ],
   director: [
     "task:read",
@@ -158,6 +162,9 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, string[]> = {
     "finance:read",
     "finance:approve",
     "finance:manage",
+    "trial:read",
+    "trial:create",
+    "trial:manage",
   ],
   hrAdmin: ["*"],
 
@@ -363,6 +370,14 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
     ],
   },
   {
+    id: "trial", label: "Thử nghiệm lâm sàng",
+    permissions: [
+      { id: "trial:read",   label: "Xem TNLS (chỉ của mình)" },
+      { id: "trial:create", label: "Đăng ký TNLS mới" },
+      { id: "trial:manage", label: "Quản trị toàn bộ TNLS" },
+    ],
+  },
+  {
     id: "analytics", label: "Phân tích & Báo cáo",
     permissions: [
       { id: "analytics:read",    label: "Xem phân tích" },
@@ -413,6 +428,7 @@ export const FEATURE_MODULES: FeatureModule[] = [
   { id: "employees",    label: "Nhân viên",      href: "/employees",   requiredPermission: "user:read" },
   { id: "workflow",     label: "Quy trình",      href: "/workflow",    requiredPermission: "task:read" },
   { id: "finance",      label: "Tài chính",      href: "/finance",     requiredPermission: "finance:read" },
+  { id: "clinicalTrials", label: "Thử nghiệm LS", href: "/clinical-trials", requiredPermission: "trial:read" },
   { id: "analytics",    label: "Phân tích",      href: "/analytics",   requiredPermission: "analytics:read" },
   { id: "notifications",label: "Thông báo",      href: "/notifications",requiredPermission: "notification:read" },
 ];
@@ -508,6 +524,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Nhân viên", href: "/employees", icon: "Users", requiredPermission: "user:read" },
   { label: "Quy trình", href: "/workflow", icon: "GitBranch", requiredPermission: "task:read" },
   { label: "Nghiên cứu KH", href: "/research", icon: "Microscope", requiredPermission: "research:read" },
+  { label: "Thử nghiệm LS", href: "/clinical-trials", icon: "FlaskConical", requiredPermission: "trial:read" },
   { label: "Tài chính", href: "/finance", icon: "DollarSign", requiredPermission: "finance:read" },
   { label: "Phân tích", href: "/analytics", icon: "BarChart3", requiredPermission: "analytics:read" },
   { label: "Thông báo", href: "/notifications", icon: "Bell", requiredPermission: "notification:read" },

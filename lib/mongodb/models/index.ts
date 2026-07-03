@@ -23,3 +23,4 @@ export { UnitPlanModel } from "./Plan";
 export { ResearchTopicModel } from "./Research";
 export { ResearchGroupModel } from "./ResearchGroup";
 export { AppConfigModel } from "./AppConfig";
+export { ClinicalTrialModel } from "./ClinicalTrial";

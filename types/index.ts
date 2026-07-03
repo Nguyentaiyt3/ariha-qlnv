@@ -512,6 +512,134 @@ export interface GoogleToken {
   expiry_date: number;
 }
 
+// ─── THỬ NGHIỆM LÂM SÀNG (Clinical Trials) ────────────────────
+
+/** Vòng đời chuẩn của một thử nghiệm lâm sàng (theo cột "Tiến độ nghiên cứu" thực tế). */
+export type ClinicalTrialStatus =
+  | "feasibility"            // Đang khảo sát tính khả thi
+  | "awaiting_sponsor"       // Chờ chấp thuận tài trợ
+  | "preparing_ethics"       // Đang chuẩn bị hồ sơ nộp HĐĐĐ Quốc gia
+  | "national_ethics_met"    // Đã họp HĐĐĐ Quốc gia (chưa có quyết định)
+  | "lec_approved"           // Đã thông qua LEC (Hội đồng Đạo đức cơ sở)
+  | "awaiting_moh"           // Đang chờ / đợi chấp thuận của Bộ Y tế
+  | "pre_deployment"         // Chuẩn bị triển khai (đã có QĐ, chưa tuyển bệnh)
+  | "running_pre_enroll"     // Đang chạy, chờ thu tuyển bệnh nhân
+  | "running_enrolled"       // Đang chạy, đã thu tuyển được bệnh nhân
+  | "completed"              // Đã kết thúc
+  | "terminated_no_efficacy" // Kết thúc do không có hiệu quả
+  | "not_feasible";          // Không thực hiện được / không đủ điều kiện
+
+export const CLINICAL_TRIAL_STATUS_LABEL: Record<ClinicalTrialStatus, string> = {
+  feasibility:            "Khảo sát tính khả thi",
+  awaiting_sponsor:       "Chờ chấp thuận tài trợ",
+  preparing_ethics:       "Chuẩn bị hồ sơ HĐĐĐ Quốc gia",
+  national_ethics_met:    "Đã họp HĐĐĐ Quốc gia",
+  lec_approved:           "Đã thông qua LEC",
+  awaiting_moh:           "Chờ chấp thuận Bộ Y tế",
+  pre_deployment:         "Chuẩn bị triển khai",
+  running_pre_enroll:     "Đang chạy — chờ thu tuyển",
+  running_enrolled:       "Đang chạy — đã thu tuyển",
+  completed:              "Đã kết thúc",
+  terminated_no_efficacy: "Kết thúc — không hiệu quả",
+  not_feasible:           "Không thực hiện được",
+};
+
+/** Thứ tự vòng đời chuẩn dùng để vẽ pipeline (không gồm 2 nhánh kết thúc sớm). */
+export const CLINICAL_TRIAL_PIPELINE: ClinicalTrialStatus[] = [
+  "feasibility", "awaiting_sponsor", "preparing_ethics", "national_ethics_met",
+  "lec_approved", "awaiting_moh", "pre_deployment",
+  "running_pre_enroll", "running_enrolled", "completed",
+];
+
+/** 2 nhánh kết thúc sớm (không đi qua "completed"). */
+export const CLINICAL_TRIAL_TERMINAL_BRANCHES: ClinicalTrialStatus[] = [
+  "terminated_no_efficacy", "not_feasible",
+];
+
+export interface ClinicalTrialContact {
+  name?: string;
+  phone?: string;
+  email?: string;
+  org?: string;   // Tên công ty CRO / SMO
+}
+
+export interface ClinicalTrialPayment {
+  id: string;
+  batchNo?: number;                 // STT đợt
+  date?: string;
+  paymentName?: string;             // "Thanh toán đợt 1"
+  totalAmount?: number;
+  proposalFileUrl?: string;         // Tờ trình
+  paymentAdviceFileUrl?: string;    // Ủy nhiệm chi
+  splitAriha?: number;              // Phân chia — ARiHA (thường 5%)
+  splitDepartment?: number;         // Phân chia — khoa chủ trì
+  splitSubUnit1?: number;           // Phân chia — đơn vị phụ 1
+  splitSubUnit2?: number;           // Phân chia — đơn vị phụ 2
+  splitFinance?: number;            // Phân chia — TCKT
+  splitPharmacy?: number;           // Phân chia — khoa Dược
+  received: boolean;                // Đã nhận tiền chưa
+  note?: string;
+}
+
+export interface ClinicalTrialEnrollment {
+  targetTotal?: number;             // Tổng số BN cần thu tuyển (toàn nghiên cứu)
+  targetSite?: number;              // Chỉ tiêu phân ngẫu nhiên dự kiến cho site BVTN
+  totalEnrolledAllSites?: number;
+  enrolledAtSite?: number;
+  icfSigned?: number;               // Đã ký phiếu đồng ý tham gia
+  randomized?: number;              // Được phân ngẫu nhiên
+  screenFailed?: number;            // Sàng lọc thất bại
+  discontinuedDeath?: number;       // Ngưng NC sớm (tử vong)
+  discontinuedDrugOnly?: number;    // Ngừng thuốc NC nhưng tiếp tục theo dõi
+  onTreatment?: number;             // Đang điều trị
+  lostToFollowUp?: number;          // Mất theo dõi
+  completedTreatment?: number;      // Hoàn tất điều trị
+  aeCount?: number;                 // Số lượng AE
+  saeCount?: number;                // Số lượng SAE
+}
+
+export interface ClinicalTrial {
+  id: string;
+  code: string;                     // Mã đề cương / mã nghiên cứu
+  title: string;
+  abbreviation?: string;            // Tên viết tắt
+  nctCode?: string;                 // Clinicaltrials.gov hoặc mã khác
+
+  principalInvestigatorId?: string;
+  principalInvestigatorName?: string; // plain text PI (import/chưa có tài khoản)
+  department?: string;               // Khoa thực hiện
+  coordinatorId?: string;            // Điều phối viên Viện ARiHA
+
+  sponsor?: string;
+  cro?: string;                      // Contract Research Organization
+  smo?: string;                      // Site Management Organization
+  cra?: ClinicalTrialContact;        // Clinical Research Associate (giám sát của hãng)
+  crc?: ClinicalTrialContact;        // Clinical Research Coordinator (điều phối tại site)
+
+  startPeriod?: string;              // "3/2024" — text tự do, khớp Excel gốc
+  endPeriod?: string;                // "4/2031"
+  firstEnrollmentDate?: string;
+
+  status: ClinicalTrialStatus;
+  statusReason?: string;             // Lý do chưa triển khai / kết thúc sớm
+  deploymentDecisionNo?: string;     // Số quyết định triển khai
+
+  competitiveEnrollment?: boolean;   // Thu tuyển cạnh tranh
+  enrollment?: ClinicalTrialEnrollment;
+
+  documents?: TaskResource[];        // File / link tài liệu (Drive...)
+  zaloGroupUrl?: string;
+  formPrefillUrl?: string;
+  shortLink?: string;
+
+  payments?: ClinicalTrialPayment[]; // Ledger thanh toán theo đợt
+
+  createdBy: string;
+  createdByName?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 // ─── PROJECTS ────────────────────────────────────────────────
 
 export interface Project {
@@ -955,6 +1083,9 @@ export type NotificationType =
   | "risk_flag"
   | "completion_proposal"
   | "completion_reviewed"
+  // Clinical Trials
+  | "trial_enrollment_alert"
+  | "trial_milestone_reached"
   // Calendar
   | "calendar_change_request"
   | "calendar_change_approved"
