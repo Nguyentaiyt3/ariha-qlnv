@@ -20,6 +20,7 @@ import {
   createTransaction, EXPENSE_CATEGORIES,
 } from "@/lib/firebase/finance";
 import { StepFlowDiagram, type PanelSection } from "@/components/tasks/StepFlowDiagram";
+import { StepTimelineView } from "@/components/tasks/StepTimelineView";
 import { StepNodePanel } from "@/components/tasks/StepNodePanel";
 import WorkflowBuilder from "@/components/tasks/WorkflowBuilder";
 import { ResearchStepPanel } from "@/components/tasks/ResearchStepPanel";
@@ -125,8 +126,17 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
   const [emailBody, setEmailBody] = useState("");
   const [emailSending, setEmailSending] = useState(false);
 
-  // View mode: list (default) or diagram
-  const [viewMode, setViewMode] = useState<"list" | "diagram">("list");
+  const [viewMode, setViewMode] = useState<"list" | "diagram" | "flow">(() => {
+    try {
+      const v = localStorage.getItem("stepsTab_viewMode");
+      if (v === "list" || v === "diagram" || v === "flow") return v;
+    } catch { /* SSR / private browsing */ }
+    return "list";
+  });
+  function changeViewMode(m: "list" | "diagram" | "flow") {
+    setViewMode(m);
+    try { localStorage.setItem("stepsTab_viewMode", m); } catch { /* ignore */ }
+  }
   // Panel state for diagram node click
   const [panelStepId,  setPanelStepId]  = useState<string | null>(null);
   const [panelSection, setPanelSection] = useState<PanelSection>("progress");
@@ -645,24 +655,65 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
         <span className="text-slate-400">{done}/{steps.length} bước hoàn thành</span>
         <div className="ml-auto flex items-center gap-1 bg-slate-100 dark:bg-slate-800 rounded-lg p-0.5">
           <button
-            onClick={() => setViewMode("list")}
+            onClick={() => changeViewMode("list")}
             className={cn("flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition",
               viewMode === "list" ? "bg-white dark:bg-slate-700 text-slate-700 dark:text-white shadow-sm" : "text-slate-500 hover:text-slate-700")}
           >
             <List className="w-3 h-3" />Danh sách
           </button>
           <button
-            onClick={() => setViewMode("diagram")}
+            onClick={() => changeViewMode("diagram")}
             className={cn("flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition",
               viewMode === "diagram" ? "bg-white dark:bg-slate-700 text-slate-700 dark:text-white shadow-sm" : "text-slate-500 hover:text-slate-700")}
           >
             <GitBranch className="w-3 h-3" />Sơ đồ
           </button>
+          <button
+            onClick={() => changeViewMode("flow")}
+            className={cn("flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition",
+              viewMode === "flow" ? "bg-white dark:bg-slate-700 text-slate-700 dark:text-white shadow-sm" : "text-slate-500 hover:text-slate-700")}
+          >
+            <GitBranch className="w-3 h-3" />DAG
+          </button>
         </div>
       </div>
 
-      {/* ── Diagram mode ── */}
+      {/* ── Timeline / infographic mode ── */}
       {viewMode === "diagram" && (
+        <div className="flex gap-4 items-start">
+          {/* Timeline (left, grows) */}
+          <div className="flex-1 min-w-0">
+            <StepTimelineView
+              steps={steps}
+              users={users}
+              onStepClick={(stepId) => {
+                setPanelStepId(stepId === panelStepId ? null : stepId);
+                setPanelSection("progress");
+              }}
+            />
+          </div>
+
+          {/* Detail panel (right, inline, fixed width) */}
+          {panelStepId && (
+            <StepNodePanel
+              task={{ ...task, steps }}
+              stepId={panelStepId}
+              section={panelSection}
+              onSectionChange={setPanelSection}
+              onClose={() => setPanelStepId(null)}
+              users={users}
+              currentUser={currentUser}
+              taskMemberIds={taskMemberIds}
+              onSave={onSave}
+              onEmailSent={onEmailSent}
+              inline
+            />
+          )}
+        </div>
+      )}
+
+      {/* ── DAG / ReactFlow mode ── */}
+      {viewMode === "flow" && (
         <>
           <StepFlowDiagram
             task={{ ...task, steps }}
@@ -671,7 +722,7 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
             currentUser={currentUser}
             canAssignSteps={canAssignSteps}
             onNodeClick={(stepId, section) => {
-              if (section === "subworkflow") return; // handled by onEditSubWorkflow
+              if (section === "subworkflow") return;
               setPanelStepId(stepId);
               setPanelSection(section);
             }}

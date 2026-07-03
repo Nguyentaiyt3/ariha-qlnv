@@ -45,4 +45,14 @@ cron.schedule("0 * * * *", async () => {
   }
 });
 
+// Every day at 8 AM: check clinical trial enrollment alerts and create milestone tasks
+cron.schedule("0 8 * * *", async () => {
+  console.log("[cron] Running clinical trial alerts check...");
+  try {
+    await callEndpoint("/api/cron/clinical-trials-alerts");
+  } catch (e) {
+    console.error("[cron] clinical-trials-alerts failed:", e);
+  }
+});
+
 console.log("[cron] ARiHA WorkHub cron runner started.");

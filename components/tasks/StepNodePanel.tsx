@@ -83,17 +83,23 @@ interface Props {
   /** Gọi để lưu cập nhật steps lên DB. */
   onSave: (updates: Partial<Task>) => Promise<void>;
   onEmailSent?: () => void;
+  /** Hiển thị inline (không fixed overlay) — dùng trong timeline view. */
+  inline?: boolean;
 }
 
 export function StepNodePanel({
   task, stepId, section, onSectionChange, onClose,
   users, currentUser, taskMemberIds, onSave, onEmailSent,
+  inline = false,
 }: Props) {
   const step = task.steps.find((s) => s.id === stepId);
   if (!step) return null;
 
   return (
-    <div className="fixed inset-y-0 right-0 z-50 flex flex-col w-full max-w-sm bg-white dark:bg-slate-900 shadow-2xl border-l border-slate-200 dark:border-slate-700 overflow-hidden">
+    <div className={inline
+      ? "flex flex-col w-80 shrink-0 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-xl overflow-hidden"
+      : "fixed inset-y-0 right-0 z-50 flex flex-col w-full max-w-sm bg-white dark:bg-slate-900 shadow-2xl border-l border-slate-200 dark:border-slate-700 overflow-hidden"
+    }>
       {/* Header */}
       <div className="flex items-center gap-3 px-4 py-3 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 shrink-0">
         <div className="flex-1 min-w-0">
@@ -126,7 +132,7 @@ export function StepNodePanel({
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-4">
-        {section === "progress"    && <ProgressSection    step={step} task={task} onSave={onSave} />}
+        {section === "progress"    && <ProgressSection    step={step} task={task} users={users} taskMemberIds={taskMemberIds} onSave={onSave} />}
         {section === "helpers"     && <HelpersSection     step={step} task={task} users={users} currentUser={currentUser} taskMemberIds={taskMemberIds} onSave={onSave} />}
         {section === "advance"     && <AdvanceSection     step={step} task={task} currentUser={currentUser} />}
         {section === "transaction" && <TransactionSection step={step} task={task} currentUser={currentUser} />}
@@ -140,9 +146,41 @@ export function StepNodePanel({
 // ══════════════════════════════════════════════════════════════
 // Section: Tiến độ
 // ══════════════════════════════════════════════════════════════
-function ProgressSection({ step, task, onSave }: { step: TaskStep; task: Task; onSave: (u: Partial<Task>) => Promise<void> }) {
+function ProgressSection({
+  step, task, users, taskMemberIds, onSave,
+}: {
+  step: TaskStep; task: Task; users: User[]; taskMemberIds: Set<string>;
+  onSave: (u: Partial<Task>) => Promise<void>;
+}) {
   const [val, setVal] = useState(step.progress);
   const [saving, setSaving] = useState(false);
+  const [showPicker, setShowPicker] = useState(false);
+  const [localAssigneeId, setLocalAssigneeId] = useState(step.assigneeId);
+
+  // Sync when parent task updates after save resolves
+  useEffect(() => { setLocalAssigneeId(step.assigneeId); }, [step.assigneeId]);
+
+  const assignee = users.find((u) => u.id === localAssigneeId);
+  const assignableUsers = users.filter(
+    (u) => u.isActive && (taskMemberIds.size === 0 || taskMemberIds.has(u.id)),
+  );
+
+  function handleAssign(userId: string) {
+    setLocalAssigneeId(userId);   // immediate — no waiting
+    setShowPicker(false);
+    toast.success("Đã phân công");
+    const updatedSteps = task.steps.map((s) =>
+      s.id !== step.id ? s : { ...s, assigneeId: userId }
+    );
+    const already = task.stakeholders.some((st) => st.userId === userId);
+    const stakeholders = already
+      ? task.stakeholders
+      : [...task.stakeholders, { userId, role: "assignee" as const }];
+    onSave({ steps: updatedSteps, stakeholders }).catch(() => {
+      toast.error("Lưu thất bại — đang hoàn tác");
+      setLocalAssigneeId(step.assigneeId);
+    });
+  }
 
   async function handleSave() {
     setSaving(true);
@@ -164,6 +202,44 @@ function ProgressSection({ step, task, onSave }: { step: TaskStep; task: Task; o
 
   return (
     <div className="space-y-4">
+      {/* Assignee */}
+      <div className="bg-slate-50 dark:bg-slate-800 rounded-xl p-3 space-y-2">
+        <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
+          Người thực hiện chính
+        </p>
+        <div className="flex items-center gap-2">
+          {assignee
+            ? <UserAvatar user={assignee} size="sm" showName />
+            : <span className="text-xs text-slate-400 italic">Chưa phân công</span>
+          }
+          <button
+            onClick={() => setShowPicker((v) => !v)}
+            className="ml-auto text-xs px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-600 font-medium transition"
+          >
+            {assignee ? "Đổi người" : "+ Phân công"}
+          </button>
+        </div>
+        {showPicker && (
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            {assignableUsers.map((u) => (
+              <button
+                key={u.id}
+                onClick={() => handleAssign(u.id)}
+                className={cn(
+                  "flex items-center gap-1.5 px-2 py-1 rounded-lg border text-xs font-medium transition",
+                  u.id === step.assigneeId
+                    ? "bg-blue-600 text-white border-blue-600"
+                    : "bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600 hover:border-blue-400 hover:text-blue-600",
+                )}
+              >
+                <UserAvatar user={u} size="xs" />
+                {u.name}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
       <div className="text-center">
         <span className={cn("text-4xl font-black", pTxtCls(val))}>{val}%</span>
       </div>
