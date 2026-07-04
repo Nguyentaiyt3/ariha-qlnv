@@ -592,6 +592,15 @@ export interface SettlementConfirmation {
   actualReceivedAmount?: number; // Số tiền thực nhận (có thể khác totalAmount nếu Tài chính giữ lại)
 }
 
+export interface CostItem {
+  id: string;
+  name: string;                     // "Chi phục vụ chuyên môn", "Chi hỗ trợ bệnh nhân", "Phí quản lý", "Thuế"
+  percentage?: number;              // Phần trăm (0-100)
+  amount?: number;                  // Số tiền cố định (VND)
+  unit?: string;                    // Đơn vị nhận (vd: "Đơn vị thực hiện", "Ban GĐ", "Viện ARiHA")
+  description?: string;             // Mô tả thêm
+}
+
 export interface ClinicalTrialPayment {
   id: string;
   batchNo?: number;                 // STT đợt
@@ -600,6 +609,8 @@ export interface ClinicalTrialPayment {
   totalAmount?: number;
   proposalFileUrl?: string;         // Tờ trình
   paymentAdviceFileUrl?: string;    // Ủy nhiệm chi
+  costItems?: CostItem[];           // Các khoản chi phí linh hoạt (CHI PHỤC VỤ, CHI HỖ TRỢ, PHÍ QUẢN LÝ, THUẾ)
+  // Legacy fields (for backward compatibility)
   splitAriha?: number;              // Phân chia — ARiHA (thường 5%)
   splitDepartment?: number;         // Phân chia — khoa chủ trì
   splitSubUnit1?: number;           // Phân chia — đơn vị phụ 1
