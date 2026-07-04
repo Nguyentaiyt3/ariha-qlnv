@@ -1,12 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, FileText, DollarSign, CheckCircle2, Clock } from "lucide-react";
+import { ChevronDown, FileText, DollarSign, CheckCircle2, Clock, Edit2, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { updateClinicalTrial } from "@/lib/firebase/firestore";
 import type { ClinicalTrialPayment } from "@/types";
 
 interface PaymentLedgerProps {
   payments?: ClinicalTrialPayment[];
+  trialId?: string;
+  onEdit?: (payment: ClinicalTrialPayment) => void;
+  onPaymentsChange?: (payments: ClinicalTrialPayment[]) => void;
 }
 
 function formatCurrency(value?: number) {
@@ -24,46 +29,80 @@ function SplitBadge({ label, percentage }: { label: string; percentage?: number 
   );
 }
 
-function PaymentRow({ payment, isExpanded, onToggle }: { payment: ClinicalTrialPayment; isExpanded: boolean; onToggle: () => void }) {
+function PaymentRow({
+  payment,
+  isExpanded,
+  onToggle,
+  onEdit,
+  onDelete,
+}: {
+  payment: ClinicalTrialPayment
+  isExpanded: boolean
+  onToggle: () => void
+  onEdit?: (payment: ClinicalTrialPayment) => void
+  onDelete?: (paymentId: string) => void
+}) {
   const hasSplits = payment.splitAriha || payment.splitDepartment || payment.splitSubUnit1 || payment.splitSubUnit2 || payment.splitFinance || payment.splitPharmacy;
 
   return (
     <div className="border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden">
-      <button
-        onClick={onToggle}
-        className="w-full px-4 py-3 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-800/50 transition"
-      >
-        <div className="flex-1 text-left">
-          <div className="flex items-center gap-3 mb-1">
-            <span className="font-semibold text-slate-800 dark:text-white">
-              {payment.paymentName || `Thanh toán ${payment.batchNo || "1"}`}
-            </span>
-            {payment.received ? (
-              <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300">
-                <CheckCircle2 className="w-3 h-3" /> Đã nhận
+      <div className="px-4 py-3 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-800/50 transition group">
+        <button
+          onClick={onToggle}
+          className="flex-1 text-left flex items-center gap-2"
+        >
+          <div className="flex-1">
+            <div className="flex items-center gap-3 mb-1">
+              <span className="font-semibold text-slate-800 dark:text-white">
+                {payment.paymentName || `Thanh toán ${payment.batchNo || "1"}`}
               </span>
-            ) : (
-              <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300">
-                <Clock className="w-3 h-3" /> Chờ nhận
-              </span>
-            )}
+              {payment.received ? (
+                <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300">
+                  <CheckCircle2 className="w-3 h-3" /> Đã nhận
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300">
+                  <Clock className="w-3 h-3" /> Chờ nhận
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-4 text-sm text-slate-600 dark:text-slate-400">
+              {payment.date && <span>{new Date(payment.date).toLocaleDateString("vi-VN")}</span>}
+              <span className="font-semibold text-slate-800 dark:text-white">{formatCurrency(payment.totalAmount)}</span>
+            </div>
           </div>
-          <div className="flex items-center gap-4 text-sm text-slate-600 dark:text-slate-400">
-            {payment.date && <span>{new Date(payment.date).toLocaleDateString("vi-VN")}</span>}
-            <span className="font-semibold text-slate-800 dark:text-white">{formatCurrency(payment.totalAmount)}</span>
-          </div>
+          <ChevronDown
+            className={cn("w-5 h-5 text-slate-400 transition-transform shrink-0 ml-2", isExpanded && "rotate-180")}
+          />
+        </button>
+        <div className="flex items-center gap-1 ml-2 opacity-0 group-hover:opacity-100 transition">
+          {onEdit && (
+            <button
+              onClick={() => onEdit(payment)}
+              className="p-1.5 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/20 text-blue-600 dark:text-blue-400 transition"
+              title="Sửa"
+            >
+              <Edit2 className="w-4 h-4" />
+            </button>
+          )}
+          {onDelete && (
+            <button
+              onClick={() => onDelete(payment.id)}
+              className="p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 text-red-600 dark:text-red-400 transition"
+              title="Xoá"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          )}
         </div>
-        <ChevronDown
-          className={cn("w-5 h-5 text-slate-400 transition-transform", isExpanded && "rotate-180")}
-        />
-      </button>
+      </div>
 
       {isExpanded && (
         <div className="border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/30 p-4 space-y-4">
-          {/* Cost Splitting */}
-          {hasSplits && (
+          {/* Cost Splitting — only show if splitMode is "percentage" */}
+          {hasSplits && payment.splitMode === "percentage" && (
             <div className="space-y-2">
-              <h4 className="text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wide">Phân chia chi phí</h4>
+              <h4 className="text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wide">Phân chia chi phí (%)</h4>
               <div className="grid grid-cols-2 gap-2">
                 <SplitBadge label="ARiHA" percentage={payment.splitAriha} />
                 <SplitBadge label="Khoa chủ trì" percentage={payment.splitDepartment} />
@@ -117,8 +156,10 @@ function PaymentRow({ payment, isExpanded, onToggle }: { payment: ClinicalTrialP
   );
 }
 
-export function PaymentLedger({ payments }: PaymentLedgerProps) {
+export function PaymentLedger({ payments, trialId, onEdit, onPaymentsChange }: PaymentLedgerProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   if (!payments || payments.length === 0) {
     return (
@@ -126,6 +167,27 @@ export function PaymentLedger({ payments }: PaymentLedgerProps) {
         Chưa có bản ghi thanh toán
       </div>
     );
+  }
+
+  async function handleDelete(paymentId: string) {
+    if (!trialId || !payments) {
+      toast.error("Không thể xoá thanh toán");
+      return;
+    }
+
+    setDeleting(true);
+    try {
+      const updatedPayments = payments.filter(p => p.id !== paymentId);
+      await updateClinicalTrial(trialId, { payments: updatedPayments });
+      toast.success("Đã xoá thanh toán");
+      onPaymentsChange?.(updatedPayments);
+      setDeleteConfirm(null);
+    } catch (error) {
+      toast.error("Lỗi khi xoá thanh toán");
+      console.error(error);
+    } finally {
+      setDeleting(false);
+    }
   }
 
   const totalAmount = payments.reduce((sum, p) => sum + (p.totalAmount ?? 0), 0);
@@ -161,12 +223,36 @@ export function PaymentLedger({ payments }: PaymentLedgerProps) {
       {/* Payment Rows */}
       <div className="space-y-2">
         {sortedPayments.map((payment) => (
-          <PaymentRow
-            key={payment.id}
-            payment={payment}
-            isExpanded={expandedId === payment.id}
-            onToggle={() => setExpandedId(expandedId === payment.id ? null : payment.id)}
-          />
+          <div key={payment.id}>
+            <PaymentRow
+              payment={payment}
+              isExpanded={expandedId === payment.id}
+              onToggle={() => setExpandedId(expandedId === payment.id ? null : payment.id)}
+              onEdit={onEdit}
+              onDelete={() => setDeleteConfirm(payment.id)}
+            />
+            {/* Delete Confirmation */}
+            {deleteConfirm === payment.id && (
+              <div className="mt-2 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
+                <p className="text-sm text-red-800 dark:text-red-200 mb-2">Bạn chắc chắn muốn xoá thanh toán này?</p>
+                <div className="flex justify-end gap-2">
+                  <button
+                    onClick={() => setDeleteConfirm(null)}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 transition"
+                  >
+                    Huỷ
+                  </button>
+                  <button
+                    onClick={() => handleDelete(payment.id)}
+                    disabled={deleting}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium transition"
+                  >
+                    {deleting ? "Đang xoá..." : "Xoá"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         ))}
       </div>
     </div>

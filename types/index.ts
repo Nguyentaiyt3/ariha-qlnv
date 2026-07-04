@@ -563,6 +563,35 @@ export interface ClinicalTrialContact {
   org?: string;   // Tên công ty CRO / SMO
 }
 
+export interface EditDeleteRequest {
+  type: "edit" | "delete";
+  requestedAt: string;
+  requestedBy: string;
+  requestedByUserId: string;
+  requestedByUnitName?: string;
+  reason?: string;
+  status: "pending" | "approved" | "rejected";
+  approvedAt?: string;
+  approvedBy?: string;
+  approvedByUserId?: string;
+  rejectionReason?: string;
+  editedData?: Partial<ClinicalTrialPayment>; // For edit requests, store what needs to be changed
+}
+
+export interface SettlementConfirmation {
+  confirmationType: "app" | "document"; // Xác nhận qua app hoặc đính kèm biên bản
+  status: "pending" | "confirmed" | "verified"; // confirmed = trưởng đơn vị xác nhận, verified = đã kiểm duyệt
+  confirmedBy?: string;        // Trưởng đơn vị xác nhận
+  confirmedByUserId?: string;
+  confirmedAt?: string;
+  handoverDocumentUrl?: string; // Biên bản giao nhận (nếu dùng phương thức document)
+  verifiedBy?: string;         // Người kiểm duyệt quyết toán
+  verifiedByUserId?: string;
+  verifiedAt?: string;
+  verificationNote?: string;   // Ghi chú khi kiểm duyệt
+  actualReceivedAmount?: number; // Số tiền thực nhận (có thể khác totalAmount nếu Tài chính giữ lại)
+}
+
 export interface ClinicalTrialPayment {
   id: string;
   batchNo?: number;                 // STT đợt
@@ -577,8 +606,36 @@ export interface ClinicalTrialPayment {
   splitSubUnit2?: number;           // Phân chia — đơn vị phụ 2
   splitFinance?: number;            // Phân chia — TCKT
   splitPharmacy?: number;           // Phân chia — khoa Dược
+  splitMode?: "percentage" | "amount"; // Chế độ phân chia: phần trăm hoặc số tiền
   received: boolean;                // Đã nhận tiền chưa
+  status?: "pending" | "approved" | "rejected" | "delivered"; // "delivered" = đã giao cho đơn vị nhận
   note?: string;
+  // Phase 3: Edit/Delete tracking
+  submitterId?: string;             // Người đề nghị thanh toán
+  submitterName?: string;
+  submitterUnitName?: string;
+  submitterRole?: string;           // Role của người đề nghị (director/teamLead/staff...)
+  submitterDepartmentHeadId?: string; // ID trưởng đơn vị của submitter
+  approvedBy?: string;
+  approvedByUserId?: string;
+  approverRole?: string;
+  approvedAt?: string;
+  editDeleteRequests?: EditDeleteRequest[]; // Track pending edit/delete requests
+  rejectionReason?: string;
+  rejectedBy?: string;
+  rejectedByUserId?: string;
+  rejectorRole?: string;
+  rejectedAt?: string;
+  // Phase 4: Settlement confirmation
+  settlement?: SettlementConfirmation; // Xác nhận đơn vị & quyết toán
+  handoverSplits?: {
+    ariha: number;
+    department: number;
+    subUnit1: number;
+    subUnit2: number;
+    finance: number;
+    pharmacy: number;
+  }; // Phân chia chi phí khi lập biên bản
 }
 
 export interface ClinicalTrialEnrollment {

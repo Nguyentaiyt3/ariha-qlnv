@@ -86,8 +86,8 @@ export function TopNav({
   const { tasks } = useTaskStore();
   const [search, setSearch] = useState("");
 
-  // Show the date filter bar on dashboard and tasks pages
-  const showDateFilter = pathname === "/dashboard" || pathname.startsWith("/tasks");
+  // Show the date filter bar on dashboard, tasks, and clinical-trials pages
+  const showDateFilter = pathname === "/dashboard" || pathname.startsWith("/tasks") || pathname.startsWith("/clinical-trials");
 
   const riskCount = tasks.filter((t) => t.riskFlag && t.status !== "done" && t.status !== "cancelled").length;
 

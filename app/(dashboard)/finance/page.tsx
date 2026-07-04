@@ -54,6 +54,9 @@ import {
   startOfQuarter, endOfQuarter, startOfYear, endOfYear, subQuarters, subYears, addMonths, addQuarters, addYears,
 } from "date-fns";
 import { vi } from "date-fns/locale";
+import { ClinicalTrialPaymentApprovals } from "@/components/finance/ClinicalTrialPaymentApprovals";
+import { EditDeleteRequestsList } from "@/components/finance/EditDeleteRequestsList";
+import { SettlementConfirmationUI } from "@/components/finance/SettlementConfirmation";
 
 // ── Hằng & helpers ─────────────────────────────────────────────────────────────
 
@@ -183,7 +186,7 @@ export default function FinanceDashboardPage() {
   const [showPrePeriod,      setShowPrePeriod]      = useState(false);
   const [trendRange,         setTrendRange]         = useState<"3m" | "6m" | "12m" | "3y">("6m");
 
-  const [activeTab, setActiveTab] = useState<"advances" | "reimbursements" | "transactions" | "tasks">("advances");
+  const [activeTab, setActiveTab] = useState<"advances" | "reimbursements" | "transactions" | "tasks" | "trial-payments">("advances");
   const [advFilter, setAdvFilter] = useState<AdvanceRequest["status"] | "ALL">("ALL");
   const [rmbFilter, setRmbFilter] = useState<ReimbursementRequest["status"] | "ALL">("ALL");
   const [search,    setSearch]    = useState("");
@@ -192,6 +195,9 @@ export default function FinanceDashboardPage() {
   const [rejectTarget,   setRejectTarget]   = useState<{ type: "advance" | "reimb" | "settlement"; id: string; taskId?: string } | null>(null);
   const [loadingId,      setLoadingId]      = useState<string | null>(null);
   const [expandedAdvId,  setExpandedAdvId]  = useState<string | null>(null);
+
+  // Payment editing
+  const [editingPayment, setEditingPayment] = useState<any>(null);
 
   const canApprove = currentUser && ["director", "hrAdmin", "teamLead"].includes(currentUser.role);
 
@@ -1084,6 +1090,10 @@ export default function FinanceDashboardPage() {
               ? [{ key: "tasks", label: `Theo nhiệm vụ (${allSummaries.length})`, count: 0 }]
               : []
             ),
+            ...(isApproverView
+              ? [{ key: "trial-payments", label: `Thanh toán TNLS`, count: 0 }]
+              : []
+            ),
           ].map((tab) => (
             <button
               key={tab.key}
@@ -1549,6 +1559,19 @@ export default function FinanceDashboardPage() {
             )}
           </div>
         )}
+
+        {/* ── Tab: Thanh toán thử nghiệm lâm sàng ── */}
+        {activeTab === "trial-payments" && isApproverView && (
+          <div className="p-4">
+            <ClinicalTrialPaymentApprovals
+              approverUserId={currentUser?.id || ""}
+              approverName={currentUser?.name || ""}
+              approverRole={currentUser?.role}
+              canApprove={true}
+              onEditPayment={(payment) => setEditingPayment(payment)}
+            />
+          </div>
+        )}
       </div>
 
       {/* ── Reject dialog ── */}
@@ -1575,6 +1598,159 @@ export default function FinanceDashboardPage() {
           }}
           onCancel={() => setRejectTarget(null)}
         />
+      )}
+
+      {/* ── Payment Detail Modal ── */}
+      {editingPayment && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+          <div className="w-full max-w-2xl bg-white dark:bg-slate-900 rounded-2xl shadow-2xl p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-bold text-slate-800 dark:text-white">
+                Đề nghị thanh toán: {editingPayment.paymentName || `Thanh toán ${editingPayment.batchNo || "1"}`}
+              </h2>
+              <button
+                onClick={() => setEditingPayment(null)}
+                className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition"
+              >
+                <X className="w-5 h-5 text-slate-400" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4 text-sm">
+              <div>
+                <p className="text-slate-500 dark:text-slate-400">Mã TNLS</p>
+                <p className="font-medium text-slate-800 dark:text-white">{editingPayment.trialCode}</p>
+              </div>
+              <div>
+                <p className="text-slate-500 dark:text-slate-400">Tên thử nghiệm</p>
+                <p className="font-medium text-slate-800 dark:text-white">{editingPayment.trialName}</p>
+              </div>
+              <div>
+                <p className="text-slate-500 dark:text-slate-400">Ngày</p>
+                <p className="font-medium text-slate-800 dark:text-white">
+                  {editingPayment.date ? new Date(editingPayment.date).toLocaleDateString("vi-VN") : "—"}
+                </p>
+              </div>
+              <div>
+                <p className="text-slate-500 dark:text-slate-400">Số tiền</p>
+                <p className="font-medium text-slate-800 dark:text-white">
+                  {vnd(editingPayment.totalAmount || 0)}
+                </p>
+              </div>
+              <div>
+                <p className="text-slate-500 dark:text-slate-400">Người đề nghị</p>
+                <p className="font-medium text-slate-800 dark:text-white">{editingPayment.submitterName || "—"}</p>
+              </div>
+              <div>
+                <p className="text-slate-500 dark:text-slate-400">Trạng thái</p>
+                <p className="font-medium text-slate-800 dark:text-white">
+                  {editingPayment.status === "approved" && "✓ Đã duyệt"}
+                  {editingPayment.status === "rejected" && "✗ Từ chối"}
+                  {!editingPayment.status || editingPayment.status === "pending" ? "⏳ Chờ duyệt" : ""}
+                </p>
+              </div>
+            </div>
+
+            {/* Cost Splitting */}
+            {(editingPayment.splitAriha || editingPayment.splitDepartment || editingPayment.splitSubUnit1 || editingPayment.splitSubUnit2 || editingPayment.splitFinance || editingPayment.splitPharmacy) && (
+              <div className="border-t border-slate-200 dark:border-slate-700 pt-4">
+                <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3">Phân chia chi phí {editingPayment.splitMode === "percentage" ? "(%)" : "(VND)"}</p>
+                <div className="grid grid-cols-2 gap-3 text-sm">
+                  {editingPayment.splitAriha !== undefined && editingPayment.splitAriha > 0 && (
+                    <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-800 p-2 rounded">
+                      <span className="text-slate-600 dark:text-slate-400">ARiHA</span>
+                      <span className="font-medium text-slate-800 dark:text-white">
+                        {editingPayment.splitMode === "percentage"
+                          ? `${editingPayment.splitAriha}%`
+                          : vnd(editingPayment.splitAriha)}
+                      </span>
+                    </div>
+                  )}
+                  {editingPayment.splitDepartment !== undefined && editingPayment.splitDepartment > 0 && (
+                    <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-800 p-2 rounded">
+                      <span className="text-slate-600 dark:text-slate-400">Khoa chủ trì</span>
+                      <span className="font-medium text-slate-800 dark:text-white">
+                        {editingPayment.splitMode === "percentage"
+                          ? `${editingPayment.splitDepartment}%`
+                          : vnd(editingPayment.splitDepartment)}
+                      </span>
+                    </div>
+                  )}
+                  {editingPayment.splitSubUnit1 !== undefined && editingPayment.splitSubUnit1 > 0 && (
+                    <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-800 p-2 rounded">
+                      <span className="text-slate-600 dark:text-slate-400">Đơn vị phụ 1</span>
+                      <span className="font-medium text-slate-800 dark:text-white">
+                        {editingPayment.splitMode === "percentage"
+                          ? `${editingPayment.splitSubUnit1}%`
+                          : vnd(editingPayment.splitSubUnit1)}
+                      </span>
+                    </div>
+                  )}
+                  {editingPayment.splitSubUnit2 !== undefined && editingPayment.splitSubUnit2 > 0 && (
+                    <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-800 p-2 rounded">
+                      <span className="text-slate-600 dark:text-slate-400">Đơn vị phụ 2</span>
+                      <span className="font-medium text-slate-800 dark:text-white">
+                        {editingPayment.splitMode === "percentage"
+                          ? `${editingPayment.splitSubUnit2}%`
+                          : vnd(editingPayment.splitSubUnit2)}
+                      </span>
+                    </div>
+                  )}
+                  {editingPayment.splitFinance !== undefined && editingPayment.splitFinance > 0 && (
+                    <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-800 p-2 rounded">
+                      <span className="text-slate-600 dark:text-slate-400">Tài chính</span>
+                      <span className="font-medium text-slate-800 dark:text-white">
+                        {editingPayment.splitMode === "percentage"
+                          ? `${editingPayment.splitFinance}%`
+                          : vnd(editingPayment.splitFinance)}
+                      </span>
+                    </div>
+                  )}
+                  {editingPayment.splitPharmacy !== undefined && editingPayment.splitPharmacy > 0 && (
+                    <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-800 p-2 rounded">
+                      <span className="text-slate-600 dark:text-slate-400">Dược</span>
+                      <span className="font-medium text-slate-800 dark:text-white">
+                        {editingPayment.splitMode === "percentage"
+                          ? `${editingPayment.splitPharmacy}%`
+                          : vnd(editingPayment.splitPharmacy)}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Phase 4: Settlement Confirmation */}
+            {editingPayment.status === "approved" && (
+              <div className="border-t border-slate-200 dark:border-slate-700 pt-4">
+                <SettlementConfirmationUI
+                  payment={editingPayment}
+                  trialId={editingPayment.trialId}
+                  onSettlementUpdated={() => {
+                    // Refresh payment data
+                    setEditingPayment(null);
+                  }}
+                />
+              </div>
+            )}
+
+            {editingPayment.note && (
+              <div className="border-t border-slate-200 dark:border-slate-700 pt-4">
+                <p className="text-sm text-slate-500 dark:text-slate-400">Ghi chú</p>
+                <p className="text-sm text-slate-800 dark:text-white mt-1">{editingPayment.note}</p>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-4 border-t border-slate-200 dark:border-slate-700">
+              <button
+                onClick={() => setEditingPayment(null)}
+                className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+              >
+                Đóng
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

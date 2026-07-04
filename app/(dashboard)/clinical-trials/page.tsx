@@ -1,30 +1,18 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
-import { FlaskConical, Plus, Loader2, Search, Building2, User as UserIcon } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { FlaskConical, Plus, Loader2, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { getClinicalTrials } from "@/lib/firebase/firestore";
 import { TrialFormModal } from "@/components/clinical-trials/TrialFormModal";
+import { TrialListItem } from "@/components/clinical-trials/TrialListItem";
+import { ImportTrialsModal } from "@/components/clinical-trials/ImportTrialsModal";
+import { useDashboardFilter } from "@/stores/useDashboardFilter";
 import { CLINICAL_TRIAL_STATUS_LABEL, CLINICAL_TRIAL_TERMINAL_BRANCHES } from "@/types";
 import type { ClinicalTrial, ClinicalTrialStatus } from "@/types";
-
-const STATUS_BADGE: Record<ClinicalTrialStatus, string> = {
-  feasibility:            "bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300",
-  awaiting_sponsor:       "bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300",
-  preparing_ethics:       "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
-  national_ethics_met:    "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
-  lec_approved:           "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300",
-  awaiting_moh:           "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300",
-  pre_deployment:         "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300",
-  running_pre_enroll:     "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300",
-  running_enrolled:       "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300",
-  completed:              "bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200",
-  terminated_no_efficacy: "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-300",
-  not_feasible:           "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-300",
-};
 
 interface StatCardProps {
   label: string;
@@ -48,13 +36,41 @@ function StatCard({ label, value, active, onClick }: StatCardProps) {
   );
 }
 
+interface TrialPhase {
+  id: "preparing" | "running" | "completed";
+  label: string;
+  icon: string;
+  trials: ClinicalTrial[];
+}
+
+function groupTrialsByPhase(trials: ClinicalTrial[]): TrialPhase[] {
+  const preparing = trials.filter((t) =>
+    ["feasibility", "awaiting_sponsor", "preparing_ethics", "national_ethics_met", "lec_approved", "awaiting_moh", "pre_deployment"].includes(t.status)
+  );
+  const running = trials.filter((t) =>
+    t.status === "running_pre_enroll" || t.status === "running_enrolled"
+  );
+  const completed = trials.filter((t) =>
+    t.status === "completed" || (CLINICAL_TRIAL_TERMINAL_BRANCHES as string[]).includes(t.status)
+  );
+
+  return [
+    { id: "preparing", label: "Chuẩn bị", icon: "🟡", trials: preparing },
+    { id: "running", label: "Đang chạy", icon: "🟢", trials: running },
+    { id: "completed", label: "Kết thúc", icon: "⚫", trials: completed },
+  ];
+}
+
 export default function ClinicalTrialsPage() {
+  const router = useRouter();
   const { currentUser } = useAuthStore();
+  const { mode, year, month, quarter } = useDashboardFilter();
   const [trials, setTrials] = useState<ClinicalTrial[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<ClinicalTrialStatus | "all" | "running" | "ended">("all");
   const [showForm, setShowForm] = useState(false);
+  const [showImport, setShowImport] = useState(false);
 
   const canCreate = !!currentUser && hasPermission(currentUser.role, "trial:create");
 
@@ -81,6 +97,31 @@ export default function ClinicalTrialsPage() {
     } else if (statusFilter !== "all") {
       list = list.filter((t) => t.status === statusFilter);
     }
+
+    // Apply shared period filter — lọc theo startPeriod
+    if (mode !== "all") {
+      list = list.filter((t) => {
+        if (!t.startPeriod) return false;
+        const parts = t.startPeriod.split("/");
+        if (parts.length !== 2) return false;
+        const period = parseInt(parts[0], 10);
+        const trialYear = parseInt(parts[1], 10);
+
+        if (mode === "year") {
+          return trialYear === year;
+        }
+        if (mode === "quarter") {
+          const trialQuarter = period <= 4 ? period : Math.ceil(period / 3);
+          return trialQuarter === quarter && trialYear === year;
+        }
+        if (mode === "month") {
+          if (period > 12) return false;
+          return period === month + 1 && trialYear === year;
+        }
+        return true;
+      });
+    }
+
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       list = list.filter((t) =>
@@ -93,7 +134,7 @@ export default function ClinicalTrialsPage() {
       );
     }
     return list;
-  }, [trials, statusFilter, search]);
+  }, [trials, statusFilter, mode, year, month, quarter, search]);
 
   if (loading) {
     return (
@@ -113,14 +154,24 @@ export default function ClinicalTrialsPage() {
           </h1>
           <p className="text-sm text-slate-400 mt-0.5">Quản lý & theo dõi các nghiên cứu thử nghiệm lâm sàng</p>
         </div>
-        {canCreate && (
-          <button
-            onClick={() => setShowForm(true)}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold transition"
-          >
-            <Plus className="w-4 h-4" /> Đăng ký TNLS
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {canCreate && (
+            <>
+              <button
+                onClick={() => setShowImport(true)}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-green-600 hover:bg-green-700 text-white text-sm font-semibold transition"
+              >
+                📥 Import Excel
+              </button>
+              <button
+                onClick={() => setShowForm(true)}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold transition"
+              >
+                <Plus className="w-4 h-4" /> Đăng ký TNLS
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -130,6 +181,7 @@ export default function ClinicalTrialsPage() {
         <StatCard label="Đã kết thúc"    value={stats.completed + stats.ended} active={statusFilter === "ended"} onClick={() => setStatusFilter("ended")} />
       </div>
 
+      {/* Search */}
       <div className="relative max-w-md">
         <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
         <input
@@ -140,39 +192,44 @@ export default function ClinicalTrialsPage() {
         />
       </div>
 
+      {/* Trial List by Phase — 3 column layout */}
       {filtered.length === 0 ? (
         <div className="text-center py-16 text-slate-400 text-sm">Chưa có thử nghiệm lâm sàng nào</div>
       ) : (
-        <div className="space-y-2">
-          {filtered.map((t) => (
-            <Link
-              key={t.id}
-              href={`/clinical-trials/${t.id}`}
-              className="block rounded-xl border border-slate-200 dark:border-slate-700 bg-[var(--card)] p-4 hover:border-blue-300 dark:hover:border-blue-600 transition"
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {groupTrialsByPhase(filtered).map((phase) => (
+            <div
+              key={phase.id}
+              className="flex flex-col rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 overflow-hidden"
             >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-semibold text-sm text-slate-800 dark:text-white">
-                      {t.abbreviation || t.code}
-                    </span>
-                    <span className={cn("text-[11px] font-medium px-2 py-0.5 rounded-full", STATUS_BADGE[t.status])}>
-                      {CLINICAL_TRIAL_STATUS_LABEL[t.status]}
-                    </span>
-                  </div>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 line-clamp-2">{t.title}</p>
-                  <div className="flex items-center gap-3 mt-2 text-[11px] text-slate-400 flex-wrap">
-                    {t.principalInvestigatorName && (
-                      <span className="flex items-center gap-1"><UserIcon className="w-3 h-3" />{t.principalInvestigatorName}</span>
-                    )}
-                    {t.department && (
-                      <span className="flex items-center gap-1"><Building2 className="w-3 h-3" />{t.department}</span>
-                    )}
-                    {t.sponsor && <span>{t.sponsor}</span>}
-                  </div>
+              {/* Phase header */}
+              <div className="sticky top-0 z-10 bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 px-4 py-3">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-2xl">{phase.icon}</span>
+                  <h2 className="text-lg font-semibold text-slate-800 dark:text-white">{phase.label}</h2>
                 </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  {phase.trials.length} nghiên cứu
+                </p>
               </div>
-            </Link>
+
+              {/* Trial cards */}
+              {phase.trials.length === 0 ? (
+                <div className="flex items-center justify-center py-8 text-slate-400 text-sm">
+                  Không có nghiên cứu
+                </div>
+              ) : (
+                <div className="flex-1 flex flex-col gap-3 p-4 overflow-y-auto max-h-[600px]">
+                  {phase.trials.map((trial) => (
+                    <TrialListItem
+                      key={trial.id}
+                      trial={trial}
+                      onClick={() => router.push(`/clinical-trials/${trial.id}`)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
           ))}
         </div>
       )}
@@ -183,6 +240,23 @@ export default function ClinicalTrialsPage() {
           creatorName={currentUser.name}
           onClose={() => setShowForm(false)}
           onSaved={(t) => setTrials((prev) => [t, ...prev])}
+        />
+      )}
+
+      {showImport && currentUser && (
+        <ImportTrialsModal
+          isOpen={showImport}
+          onClose={() => setShowImport(false)}
+          creatorId={currentUser.id}
+          creatorName={currentUser.name}
+          onImported={(newTrials) => {
+            setTrials((prev) => {
+              // Merge: update existing by code, add new ones
+              const codeMap = new Map(prev.map((t) => [t.code, t]));
+              newTrials.forEach((t) => codeMap.set(t.code, t));
+              return Array.from(codeMap.values());
+            });
+          }}
         />
       )}
     </div>

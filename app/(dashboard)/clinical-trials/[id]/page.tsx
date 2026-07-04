@@ -3,24 +3,26 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
+import { toast } from "sonner";
 import {
   ArrowLeft, Loader2, Pencil, Trash2, Building2, User as UserIcon,
   Phone, Mail, Calendar, Link2, AlertTriangle,
 } from "lucide-react";
-import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { getClinicalTrial, updateClinicalTrial, deleteClinicalTrial } from "@/lib/firebase/firestore";
+import { formatPeriodDDMMYY } from "@/lib/utils";
 import { TrialStatusPipeline } from "@/components/clinical-trials/TrialStatusPipeline";
 import { TrialFormModal } from "@/components/clinical-trials/TrialFormModal";
 import { EnrollmentDashboard } from "@/components/clinical-trials/EnrollmentDashboard";
 import { PaymentLedger } from "@/components/clinical-trials/PaymentLedger";
+import { PaymentFormModal } from "@/components/clinical-trials/PaymentFormModal";
 import { UpdateEnrollmentModal } from "@/components/clinical-trials/UpdateEnrollmentModal";
 import { EnrollmentShareModal } from "@/components/clinical-trials/EnrollmentShareModal";
 import { EnrollmentLinkModal } from "@/components/clinical-trials/EnrollmentLinkModal";
 import { CLINICAL_TRIAL_STATUS_LABEL } from "@/types";
-import type { ClinicalTrial, ClinicalTrialStatus } from "@/types";
+import type { ClinicalTrial, ClinicalTrialStatus, ClinicalTrialPayment } from "@/types";
 
 function InfoRow({ icon: Icon, label, value }: { icon: React.ComponentType<{ className?: string }>; label: string; value?: string }) {
   if (!value) return null;
@@ -47,6 +49,9 @@ export default function ClinicalTrialDetailPage() {
   const [showUpdateEnrollment, setShowUpdateEnrollment] = useState(false);
   const [showShareEnrollment, setShowShareEnrollment] = useState(false);
   const [showLinkEnrollment, setShowLinkEnrollment] = useState(false);
+  const [showAddPayment, setShowAddPayment] = useState(false);
+  const [editingPayment, setEditingPayment] = useState<ClinicalTrialPayment | undefined>();
+  const [activeTab, setActiveTab] = useState<"enrollment" | "info" | "payment">("enrollment");
 
   const canManage = !!currentUser && hasPermission(currentUser.role, "trial:manage");
 
@@ -108,7 +113,7 @@ export default function ClinicalTrialDetailPage() {
   }
 
   return (
-    <div className="p-6 space-y-6 max-w-4xl">
+    <div className="p-6 space-y-6 w-full">
       <div className="flex items-center gap-3">
         <Link href="/clinical-trials" className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition">
           <ArrowLeft className="w-4 h-4 text-slate-500" />
@@ -144,80 +149,139 @@ export default function ClinicalTrialDetailPage() {
         )}
       </div>
 
-      {/* Enrollment Dashboard */}
-      {canSeeEnrollmentData && trial.enrollment && (
-        <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[var(--card)] p-4">
-          <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3">Tiến độ tuyển bệnh</h2>
-          <EnrollmentDashboard
-            enrollment={trial.enrollment}
-            onUpdateClick={() => setShowUpdateEnrollment(true)}
-            onShareClick={() => setShowShareEnrollment(true)}
-            onCreateLinkClick={() => setShowLinkEnrollment(true)}
-            canEdit={isMember || canManage}
-          />
+      {/* Tabs */}
+      <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[var(--card)] overflow-hidden">
+        {/* Tab Headers */}
+        <div className="flex border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50">
+          {[
+            { id: "enrollment" as const, label: "Tiến độ tuyển bệnh" },
+            { id: "info" as const, label: "Thông tin chung" },
+            { id: "payment" as const, label: "Sổ thanh toán" },
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex-1 px-4 py-3 text-sm font-medium transition border-b-2 ${
+                activeTab === tab.id
+                  ? "border-blue-600 text-blue-600 dark:text-blue-400"
+                  : "border-transparent text-slate-600 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-300"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
-      )}
 
-      {/* Payment Ledger */}
-      {canSeeEnrollmentData && trial.payments && trial.payments.length > 0 && (
-        <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[var(--card)] p-4">
-          <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3">Sổ thanh toán</h2>
-          <PaymentLedger payments={trial.payments} />
-        </div>
-      )}
-
-      <div className="grid sm:grid-cols-2 gap-4">
-        <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[var(--card)] p-4 space-y-2.5">
-          <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-1">Thông tin chung</h2>
-          <InfoRow icon={UserIcon} label="Nghiên cứu viên chính" value={trial.principalInvestigatorName} />
-          <InfoRow icon={Building2} label="Khoa thực hiện" value={trial.department} />
-          <InfoRow icon={Building2} label="Nhà tài trợ" value={trial.sponsor} />
-          <InfoRow icon={Calendar} label="Thời gian" value={trial.startPeriod || trial.endPeriod ? `${trial.startPeriod ?? "?"} – ${trial.endPeriod ?? "?"}` : undefined} />
-          <InfoRow icon={Building2} label="CRO" value={trial.cro} />
-          <InfoRow icon={Building2} label="SMO" value={trial.smo} />
-          {trial.zaloGroupUrl && (
-            <div className="flex items-start gap-2 text-sm">
-              <Link2 className="w-4 h-4 text-slate-400 mt-0.5 shrink-0" />
-              <a href={trial.zaloGroupUrl} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline text-sm break-all">
-                Nhóm Zalo
-              </a>
+        {/* Tab Content */}
+        <div className="p-4">
+          {/* Enrollment Tab */}
+          {activeTab === "enrollment" && (
+            <div className="space-y-4">
+              {canSeeEnrollmentData && trial.enrollment ? (
+                <EnrollmentDashboard
+                  enrollment={trial.enrollment}
+                  onUpdateClick={() => setShowUpdateEnrollment(true)}
+                  onShareClick={() => setShowShareEnrollment(true)}
+                  onCreateLinkClick={() => setShowLinkEnrollment(true)}
+                  canEdit={isMember || canManage}
+                />
+              ) : (
+                <p className="text-sm text-slate-400 py-4">Chưa có dữ liệu tuyển bệnh</p>
+              )}
             </div>
           )}
-        </div>
 
-        <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[var(--card)] p-4 space-y-4">
-          <div>
-            <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">CRA — Giám sát nghiên cứu</h2>
-            {trial.cra && trial.cra.length > 0 ? (
-              <div className="space-y-3">
-                {trial.cra.map((contact, idx) => (
-                  <div key={idx} className="bg-slate-50 dark:bg-slate-800/50 p-2.5 rounded border border-slate-200 dark:border-slate-700 space-y-1">
-                    <InfoRow icon={UserIcon} label="Tên" value={contact.name} />
-                    <InfoRow icon={Phone} label="SĐT" value={contact.phone} />
-                    <InfoRow icon={Mail} label="Email" value={contact.email} />
+          {/* Info Tab */}
+          {activeTab === "info" && (
+            <div className="grid sm:grid-cols-2 gap-4">
+              <div className="space-y-2.5">
+                <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">Thông tin chung</h3>
+                <InfoRow icon={UserIcon} label="Mã nghiên cứu" value={trial.code} />
+                <InfoRow icon={UserIcon} label="Số quyết định triển khai" value={trial.deploymentDecisionNo} />
+                <InfoRow icon={UserIcon} label="Nghiên cứu viên chính" value={trial.principalInvestigatorName} />
+                <InfoRow icon={Building2} label="Khoa thực hiện" value={trial.department} />
+                <InfoRow icon={Building2} label="Nhà tài trợ" value={trial.sponsor} />
+                <InfoRow icon={Calendar} label="Thời gian" value={trial.startPeriod || trial.endPeriod ? `${formatPeriodDDMMYY(trial.startPeriod)} – ${formatPeriodDDMMYY(trial.endPeriod)}` : undefined} />
+                <InfoRow icon={Building2} label="CRO" value={trial.cro} />
+                <InfoRow icon={Building2} label="SMO" value={trial.smo} />
+                {trial.zaloGroupUrl && (
+                  <div className="flex items-start gap-2 text-sm">
+                    <Link2 className="w-4 h-4 text-slate-400 mt-0.5 shrink-0" />
+                    <a href={trial.zaloGroupUrl} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline text-sm break-all">
+                      Nhóm Zalo
+                    </a>
                   </div>
-                ))}
+                )}
               </div>
-            ) : (
-              <p className="text-xs text-slate-400 italic">Chưa có thông tin</p>
-            )}
-          </div>
-          <div>
-            <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">CRC — Điều phối tại site</h2>
-            {trial.crc && trial.crc.length > 0 ? (
-              <div className="space-y-3">
-                {trial.crc.map((contact, idx) => (
-                  <div key={idx} className="bg-slate-50 dark:bg-slate-800/50 p-2.5 rounded border border-slate-200 dark:border-slate-700 space-y-1">
-                    <InfoRow icon={UserIcon} label="Tên" value={contact.name} />
-                    <InfoRow icon={Phone} label="SĐT" value={contact.phone} />
-                    <InfoRow icon={Mail} label="Email" value={contact.email} />
-                  </div>
-                ))}
+
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">CRA — Giám sát nghiên cứu</h3>
+                  {trial.cra && trial.cra.length > 0 ? (
+                    <div className="space-y-3">
+                      {trial.cra.map((contact, idx) => (
+                        <div key={idx} className="bg-slate-50 dark:bg-slate-800/50 p-2.5 rounded border border-slate-200 dark:border-slate-700 space-y-1">
+                          <InfoRow icon={UserIcon} label="Tên" value={contact.name} />
+                          <InfoRow icon={Phone} label="SĐT" value={contact.phone} />
+                          <InfoRow icon={Mail} label="Email" value={contact.email} />
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-400 italic">Chưa có thông tin</p>
+                  )}
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">CRC — Điều phối tại site</h3>
+                  {trial.crc && trial.crc.length > 0 ? (
+                    <div className="space-y-3">
+                      {trial.crc.map((contact, idx) => (
+                        <div key={idx} className="bg-slate-50 dark:bg-slate-800/50 p-2.5 rounded border border-slate-200 dark:border-slate-700 space-y-1">
+                          <InfoRow icon={UserIcon} label="Tên" value={contact.name} />
+                          <InfoRow icon={Phone} label="SĐT" value={contact.phone} />
+                          <InfoRow icon={Mail} label="Email" value={contact.email} />
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-400 italic">Chưa có thông tin</p>
+                  )}
+                </div>
               </div>
-            ) : (
-              <p className="text-xs text-slate-400 italic">Chưa có thông tin</p>
-            )}
-          </div>
+            </div>
+          )}
+
+          {/* Payment Tab */}
+          {activeTab === "payment" && (
+            <div>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Sổ thanh toán</h3>
+                {(isMember || canManage) && (
+                  <button
+                    onClick={() => setShowAddPayment(true)}
+                    className="text-xs px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-medium transition"
+                  >
+                    + Thêm thanh toán
+                  </button>
+                )}
+              </div>
+              {trial.payments && trial.payments.length > 0 ? (
+                <PaymentLedger
+                  payments={trial.payments}
+                  trialId={trial.id}
+                  onEdit={(payment) => {
+                    setEditingPayment(payment);
+                    setShowAddPayment(true);
+                  }}
+                  onPaymentsChange={(payments) => {
+                    setTrial({ ...trial, payments });
+                  }}
+                />
+              ) : (
+                <p className="text-sm text-slate-400 py-4">Chưa có bản ghi thanh toán</p>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -277,6 +341,24 @@ export default function ClinicalTrialDetailPage() {
           onClose={() => setShowLinkEnrollment(false)}
         />
       )}
+
+      {showAddPayment && (
+        <PaymentFormModal
+          trial={trial}
+          isOpen={showAddPayment}
+          editingPayment={editingPayment}
+          onClose={() => {
+            setShowAddPayment(false);
+            setEditingPayment(undefined);
+          }}
+          onSuccess={(updatedTrial) => {
+            setTrial(updatedTrial);
+            setShowAddPayment(false);
+            setEditingPayment(undefined);
+          }}
+        />
+      )}
+
     </div>
   );
 }

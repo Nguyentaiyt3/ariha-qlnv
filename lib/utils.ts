@@ -15,6 +15,62 @@ export function formatDateTime(date: string | Date) {
   return format(new Date(date), "HH:mm dd/MM/yyyy", { locale: vi });
 }
 
+/**
+ * Format period string (month/year or year-month or day-month-year) to dd/mm/yy
+ * Input: "3/2024" → "01/03/24", "2024-03-15" → "15/03/24"
+ * Defaults day to 1 if missing
+ */
+export function formatPeriodDDMMYY(periodStr?: string): string {
+  if (!periodStr) return "";
+
+  const parts = periodStr.trim().split(/[/-]/).map(p => p.trim()).filter(p => p);
+
+  let day = 1;
+  let month = 1;
+  let year = new Date().getFullYear();
+
+  if (parts.length === 2) {
+    const first = parseInt(parts[0]);
+    const second = parseInt(parts[1]);
+    if (first > 31) {
+      // year-month format (2024-03)
+      year = first;
+      month = second;
+    } else {
+      // month/year format (3/2024)
+      month = first;
+      year = second;
+    }
+  } else if (parts.length === 3) {
+    const first = parseInt(parts[0]);
+    if (first > 31) {
+      // year-month-day format
+      year = first;
+      month = parseInt(parts[1]);
+      day = parseInt(parts[2]);
+    } else {
+      // day-month-year format
+      day = first;
+      month = parseInt(parts[1]);
+      year = parseInt(parts[2]);
+    }
+  } else if (parts.length === 1) {
+    year = parseInt(parts[0]);
+  }
+
+  // Validate
+  if (isNaN(day) || isNaN(month) || isNaN(year)) return periodStr;
+  if (month < 1 || month > 12) return periodStr;
+  if (day < 1 || day > 31) return periodStr;
+
+  // Format: dd/mm/yy
+  const dayStr = String(day).padStart(2, "0");
+  const monthStr = String(month).padStart(2, "0");
+  const yearStr = String(year % 100).padStart(2, "0");
+
+  return `${dayStr}/${monthStr}/${yearStr}`;
+}
+
 export function formatRelativeTime(date: string | Date) {
   return formatDistanceToNow(new Date(date), { addSuffix: true, locale: vi });
 }
