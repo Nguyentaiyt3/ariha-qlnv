@@ -16,6 +16,9 @@ import { TrialStatusPipeline } from "@/components/clinical-trials/TrialStatusPip
 import { TrialFormModal } from "@/components/clinical-trials/TrialFormModal";
 import { EnrollmentDashboard } from "@/components/clinical-trials/EnrollmentDashboard";
 import { PaymentLedger } from "@/components/clinical-trials/PaymentLedger";
+import { UpdateEnrollmentModal } from "@/components/clinical-trials/UpdateEnrollmentModal";
+import { EnrollmentShareModal } from "@/components/clinical-trials/EnrollmentShareModal";
+import { EnrollmentLinkModal } from "@/components/clinical-trials/EnrollmentLinkModal";
 import { CLINICAL_TRIAL_STATUS_LABEL } from "@/types";
 import type { ClinicalTrial, ClinicalTrialStatus } from "@/types";
 
@@ -41,6 +44,9 @@ export default function ClinicalTrialDetailPage() {
   const [loading, setLoading] = useState(true);
   const [showEdit, setShowEdit] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showUpdateEnrollment, setShowUpdateEnrollment] = useState(false);
+  const [showShareEnrollment, setShowShareEnrollment] = useState(false);
+  const [showLinkEnrollment, setShowLinkEnrollment] = useState(false);
 
   const canManage = !!currentUser && hasPermission(currentUser.role, "trial:manage");
 
@@ -142,7 +148,13 @@ export default function ClinicalTrialDetailPage() {
       {canSeeEnrollmentData && trial.enrollment && (
         <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[var(--card)] p-4">
           <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3">Tiến độ tuyển bệnh</h2>
-          <EnrollmentDashboard enrollment={trial.enrollment} />
+          <EnrollmentDashboard
+            enrollment={trial.enrollment}
+            onUpdateClick={() => setShowUpdateEnrollment(true)}
+            onShareClick={() => setShowShareEnrollment(true)}
+            onCreateLinkClick={() => setShowLinkEnrollment(true)}
+            canEdit={isMember || canManage}
+          />
         </div>
       )}
 
@@ -176,21 +188,35 @@ export default function ClinicalTrialDetailPage() {
         <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-[var(--card)] p-4 space-y-4">
           <div>
             <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">CRA — Giám sát nghiên cứu</h2>
-            <div className="space-y-1.5">
-              <InfoRow icon={UserIcon} label="Tên" value={trial.cra?.name} />
-              <InfoRow icon={Phone} label="SĐT" value={trial.cra?.phone} />
-              <InfoRow icon={Mail} label="Email" value={trial.cra?.email} />
-              {!trial.cra?.name && <p className="text-xs text-slate-400 italic">Chưa có thông tin</p>}
-            </div>
+            {trial.cra && trial.cra.length > 0 ? (
+              <div className="space-y-3">
+                {trial.cra.map((contact, idx) => (
+                  <div key={idx} className="bg-slate-50 dark:bg-slate-800/50 p-2.5 rounded border border-slate-200 dark:border-slate-700 space-y-1">
+                    <InfoRow icon={UserIcon} label="Tên" value={contact.name} />
+                    <InfoRow icon={Phone} label="SĐT" value={contact.phone} />
+                    <InfoRow icon={Mail} label="Email" value={contact.email} />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-slate-400 italic">Chưa có thông tin</p>
+            )}
           </div>
           <div>
             <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">CRC — Điều phối tại site</h2>
-            <div className="space-y-1.5">
-              <InfoRow icon={UserIcon} label="Tên" value={trial.crc?.name} />
-              <InfoRow icon={Phone} label="SĐT" value={trial.crc?.phone} />
-              <InfoRow icon={Mail} label="Email" value={trial.crc?.email} />
-              {!trial.crc?.name && <p className="text-xs text-slate-400 italic">Chưa có thông tin</p>}
-            </div>
+            {trial.crc && trial.crc.length > 0 ? (
+              <div className="space-y-3">
+                {trial.crc.map((contact, idx) => (
+                  <div key={idx} className="bg-slate-50 dark:bg-slate-800/50 p-2.5 rounded border border-slate-200 dark:border-slate-700 space-y-1">
+                    <InfoRow icon={UserIcon} label="Tên" value={contact.name} />
+                    <InfoRow icon={Phone} label="SĐT" value={contact.phone} />
+                    <InfoRow icon={Mail} label="Email" value={contact.email} />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-slate-400 italic">Chưa có thông tin</p>
+            )}
           </div>
         </div>
       </div>
@@ -222,6 +248,34 @@ export default function ClinicalTrialDetailPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {showUpdateEnrollment && (
+        <UpdateEnrollmentModal
+          trial={trial}
+          isOpen={showUpdateEnrollment}
+          onClose={() => setShowUpdateEnrollment(false)}
+          onSuccess={(updatedEnrollment) => {
+            setTrial({ ...trial, enrollment: updatedEnrollment });
+            setShowUpdateEnrollment(false);
+          }}
+        />
+      )}
+
+      {showShareEnrollment && (
+        <EnrollmentShareModal
+          trial={trial}
+          isOpen={showShareEnrollment}
+          onClose={() => setShowShareEnrollment(false)}
+        />
+      )}
+
+      {showLinkEnrollment && (
+        <EnrollmentLinkModal
+          trial={trial}
+          isOpen={showLinkEnrollment}
+          onClose={() => setShowLinkEnrollment(false)}
+        />
       )}
     </div>
   );

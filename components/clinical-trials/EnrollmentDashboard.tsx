@@ -1,11 +1,15 @@
 "use client";
 
-import { Users, TrendingUp, AlertCircle, CheckCircle2 } from "lucide-react";
+import { Users, TrendingUp, AlertCircle, CheckCircle2, Edit2, Mail } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ClinicalTrialEnrollment } from "@/types";
 
 interface EnrollmentDashboardProps {
   enrollment?: ClinicalTrialEnrollment;
+  onUpdateClick?: () => void;
+  onShareClick?: () => void;
+  onCreateLinkClick?: () => void;
+  canEdit?: boolean;
 }
 
 function StatCard({
@@ -79,7 +83,7 @@ function StatCard({
   );
 }
 
-export function EnrollmentDashboard({ enrollment }: EnrollmentDashboardProps) {
+export function EnrollmentDashboard({ enrollment, onUpdateClick, onShareClick, onCreateLinkClick, canEdit }: EnrollmentDashboardProps) {
   if (!enrollment) {
     return (
       <div className="text-center py-8 text-slate-400 text-sm">
@@ -111,6 +115,33 @@ export function EnrollmentDashboard({ enrollment }: EnrollmentDashboardProps) {
 
   return (
     <div className="space-y-4">
+      {/* Action Buttons */}
+      {canEdit && (
+        <div className="flex gap-2 flex-wrap">
+          <button
+            onClick={onUpdateClick}
+            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white transition"
+          >
+            <Edit2 className="w-4 h-4" />
+            Cập nhật tiến độ
+          </button>
+          <button
+            onClick={onCreateLinkClick}
+            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium bg-purple-600 hover:bg-purple-700 text-white transition"
+          >
+            <Mail className="w-4 h-4" />
+            Tạo liên kết
+          </button>
+          <button
+            onClick={onShareClick}
+            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium bg-emerald-600 hover:bg-emerald-700 text-white transition"
+          >
+            <Mail className="w-4 h-4" />
+            Gửi mail
+          </button>
+        </div>
+      )}
+
       {/* Main Enrollment Progress */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         <StatCard

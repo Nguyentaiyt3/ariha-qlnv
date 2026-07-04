@@ -23,7 +23,7 @@ export function TrialStatusPipeline({ status, onChange }: Props) {
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-1 overflow-x-auto pb-2">
+      <div className="flex items-center gap-0.5 flex-wrap pb-2">
         {CLINICAL_TRIAL_PIPELINE.map((s, idx) => {
           const done = !onBranch && idx < currentIdx;
           const active = !onBranch && idx === currentIdx;

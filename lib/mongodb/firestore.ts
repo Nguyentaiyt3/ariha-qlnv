@@ -7,7 +7,7 @@ import {
   ChannelModel, ChannelMessageModel,
   FinancialTransactionModel, AdvanceRequestModel, ReimbursementRequestModel, TaskFinancialSummaryModel,
   WorkNodeModel, AuditEventModel, UnitPlanModel, ResearchTopicModel, ResearchGroupModel,
-  AppConfigModel, ClinicalTrialModel,
+  AppConfigModel, ClinicalTrialModel, EnrollmentShareTokenModel,
 } from "./models";
 import type {
   User, Task, Notification, Message, EmailLog, CalendarEvent,
@@ -1399,4 +1399,68 @@ export async function savePermissionConfig(config: Record<string, unknown>): Pro
     { _id: PERM_CONFIG_ID, data: config, updatedAt: new Date().toISOString() },
     { upsert: true, new: true }
   );
+}
+
+// ─── ENROLLMENT SHARE TOKENS ────────────────────────────────────
+
+export async function createEnrollmentShareToken(
+  trialId: string,
+  createdBy: string,
+  expiryDays: number = 7
+): Promise<{ token: string; expiresAt: string }> {
+  await connectDB();
+
+  // Generate 32-character random token
+  const token = generateId().slice(0, 32);
+  const now_str = now();
+  const expiresAt = new Date(Date.now() + expiryDays * 24 * 60 * 60 * 1000).toISOString();
+
+  const tokenDoc = {
+    _id: generateId(),
+    trialId,
+    token,
+    createdBy,
+    createdAt: now_str,
+    expiresAt,
+    isUsed: false,
+  };
+
+  await EnrollmentShareTokenModel.findByIdAndUpdate(
+    tokenDoc._id,
+    tokenDoc,
+    { upsert: true }
+  );
+
+  return { token, expiresAt };
+}
+
+export async function getEnrollmentShareToken(token: string) {
+  await connectDB();
+  const doc = await EnrollmentShareTokenModel.findOne({ token }).lean() as unknown as any;
+  if (!doc) return null;
+
+  const now_str = new Date().toISOString();
+  if (doc.expiresAt < now_str || doc.isUsed) {
+    return null; // Token expired or already used
+  }
+
+  return {
+    _id: doc._id,
+    trialId: doc.trialId,
+    token: doc.token,
+    createdBy: doc.createdBy,
+    createdAt: doc.createdAt,
+    expiresAt: doc.expiresAt,
+  };
+}
+
+export async function markTokenAsUsed(tokenId: string, usedBy: string): Promise<void> {
+  await connectDB();
+  await EnrollmentShareTokenModel.findByIdAndUpdate(tokenId, {
+    $set: {
+      isUsed: true,
+      usedAt: now(),
+      usedBy,
+    },
+  });
 }
