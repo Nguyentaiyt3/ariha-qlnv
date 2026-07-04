@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Plus, Trash2, Edit2 } from "lucide-react";
+import { Plus, Trash2, Edit2, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 import type { CostItem } from "@/types";
 import { generateId } from "@/lib/utils";
@@ -21,6 +21,17 @@ const DEFAULT_COST_TYPES = [
   "Thuế thu nhập doanh nghiệp",
 ];
 
+const DEFAULT_UNITS = [
+  "Đơn vị thực hiện nghiên cứu",
+  "Ban Giám đốc",
+  "Viện ARiHA",
+  "Phòng Tài chính kế toán",
+  "Khoa Dược",
+  "Khoa Nội tim mạch",
+  "Khoa Ngoại tổng hợp",
+  "Trung tâm Y học gia đình",
+];
+
 export function CostItemManager({
   items,
   totalAmount,
@@ -31,6 +42,12 @@ export function CostItemManager({
   const [newItem, setNewItem] = useState<Partial<CostItem>>({
     name: DEFAULT_COST_TYPES[0],
   });
+  const [unitSearchOpen, setUnitSearchOpen] = useState(false);
+  const [unitSearchQuery, setUnitSearchQuery] = useState("");
+
+  const filteredUnits = DEFAULT_UNITS.filter((unit) =>
+    unit.toLowerCase().includes(unitSearchQuery.toLowerCase())
+  );
 
   function handleAddItem() {
     if (!newItem.name || !newItem.name.trim()) {
@@ -149,13 +166,65 @@ export function CostItemManager({
             />
           )}
 
-          <input
-            type="text"
-            placeholder="Đơn vị nhận"
-            value={newItem.unit || ""}
-            onChange={(e) => setNewItem({ ...newItem, unit: e.target.value })}
-            className="px-2 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
+          {/* Unit dropdown with search */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setUnitSearchOpen(!unitSearchOpen)}
+              className="w-full px-2 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-700 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 flex items-center justify-between"
+            >
+              <span className="truncate">{newItem.unit || "Chọn đơn vị"}</span>
+              <ChevronDown className={`w-3 h-3 transition-transform ${unitSearchOpen ? "rotate-180" : ""}`} />
+            </button>
+
+            {unitSearchOpen && (
+              <div className="absolute top-full left-0 right-0 mt-1 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg shadow-lg z-10">
+                <input
+                  type="text"
+                  placeholder="Tìm kiếm..."
+                  value={unitSearchQuery}
+                  onChange={(e) => setUnitSearchQuery(e.target.value)}
+                  className="w-full px-2 py-1.5 text-xs border-b border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 dark:text-white focus:outline-none"
+                  onClick={(e) => e.stopPropagation()}
+                />
+                <div className="max-h-40 overflow-y-auto">
+                  {filteredUnits.length > 0 ? (
+                    filteredUnits.map((unit) => (
+                      <button
+                        key={unit}
+                        type="button"
+                        onClick={() => {
+                          setNewItem({ ...newItem, unit });
+                          setUnitSearchOpen(false);
+                          setUnitSearchQuery("");
+                        }}
+                        className="w-full text-left px-2 py-1.5 text-xs text-slate-700 dark:text-slate-300 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition"
+                      >
+                        {unit}
+                      </button>
+                    ))
+                  ) : (
+                    <div className="px-2 py-1.5 text-xs text-slate-500">Không tìm thấy</div>
+                  )}
+                </div>
+                <div className="border-t border-slate-200 dark:border-slate-600 px-2 py-1.5">
+                  <input
+                    type="text"
+                    placeholder="Hoặc nhập tuỳ chỉnh"
+                    value={unitSearchQuery}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && unitSearchQuery.trim()) {
+                        setNewItem({ ...newItem, unit: unitSearchQuery.trim() });
+                        setUnitSearchOpen(false);
+                        setUnitSearchQuery("");
+                      }
+                    }}
+                    className="w-full px-2 py-1 text-xs border border-slate-200 dark:border-slate-600 rounded bg-slate-50 dark:bg-slate-600 dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
 
           <button
             onClick={handleAddItem}
