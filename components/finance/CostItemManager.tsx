@@ -39,11 +39,13 @@ export function CostItemManager({
   useEffect(() => {
     async function fetchUnits() {
       try {
-        const res = await fetch("/api/public/units");
+        const res = await fetch("/api/units");
+        if (!res.ok) throw new Error("Failed to fetch units");
         const data = await res.json();
         setUnits((data.catalog as UnitDef[]) || []);
       } catch (err) {
-        console.error("Failed to fetch units:", err);
+        console.error("Failed to fetch units catalog:", err);
+        setUnits([]);
       }
     }
     fetchUnits();
