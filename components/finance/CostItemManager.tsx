@@ -175,8 +175,8 @@ export function CostItemManager({
                         {amount.toLocaleString("vi-VN")} {mode === "percentage" ? "đ" : ""}
                       </span>
                     </td>
-                    <td className="px-3 py-2">
-                      <div className="relative">
+                    <td className="px-3 py-2 relative">
+                      <div className="relative w-full">
                         <button
                           type="button"
                           onClick={() => setUnitSearchOpen(unitSearchOpen === item.id ? null : item.id)}
@@ -230,7 +230,7 @@ export function CostItemManager({
 
             {/* Add New Row */}
             <tr className="border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/30">
-              <td className="px-3 py-2">
+              <td className="px-3 py-2 relative">
                 <select
                   value={newItem.name || ""}
                   onChange={(e) => setNewItem({ ...newItem, name: e.target.value })}
@@ -261,8 +261,8 @@ export function CostItemManager({
                 />
               </td>
               <td className="px-3 py-2 text-center text-slate-500">—</td>
-              <td className="px-3 py-2">
-                <div className="relative">
+              <td className="px-3 py-2 relative">
+                <div className="relative w-full">
                   <button
                     type="button"
                     onClick={() => setNewItemUnitSearchOpen(!newItemUnitSearchOpen)}
