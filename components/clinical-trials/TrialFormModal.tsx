@@ -5,7 +5,8 @@ import { X, Loader2, FlaskConical } from "lucide-react";
 import { toast } from "sonner";
 import { generateId } from "@/lib/utils";
 import { saveClinicalTrial, updateClinicalTrial } from "@/lib/firebase/firestore";
-import type { ClinicalTrial, ClinicalTrialStatus } from "@/types";
+import { ContactListEditor } from "./ContactListEditor";
+import type { ClinicalTrial, ClinicalTrialStatus, ClinicalTrialContact } from "@/types";
 import { CLINICAL_TRIAL_STATUS_LABEL } from "@/types";
 
 interface Props {
@@ -68,12 +69,8 @@ export function TrialFormModal({ initialData, creatorId, creatorName, onClose, o
   const [sponsor, setSponsor] = useState(initialData?.sponsor ?? "");
   const [cro, setCro] = useState(initialData?.cro ?? "");
   const [smo, setSmo] = useState(initialData?.smo ?? "");
-  const [craName, setCraName] = useState(initialData?.cra?.name ?? "");
-  const [craPhone, setCraPhone] = useState(initialData?.cra?.phone ?? "");
-  const [craEmail, setCraEmail] = useState(initialData?.cra?.email ?? "");
-  const [crcName, setCrcName] = useState(initialData?.crc?.name ?? "");
-  const [crcPhone, setCrcPhone] = useState(initialData?.crc?.phone ?? "");
-  const [crcEmail, setCrcEmail] = useState(initialData?.crc?.email ?? "");
+  const [cra, setCra] = useState<ClinicalTrialContact[]>(initialData?.cra ?? []);
+  const [crc, setCrc] = useState<ClinicalTrialContact[]>(initialData?.crc ?? []);
   const [startPeriod, setStartPeriod] = useState(initialData?.startPeriod ?? "");
   const [endPeriod, setEndPeriod] = useState(initialData?.endPeriod ?? "");
   const [status, setStatus] = useState<ClinicalTrialStatus>(initialData?.status ?? "feasibility");
@@ -88,14 +85,15 @@ export function TrialFormModal({ initialData, creatorId, creatorName, onClose, o
     }
     setSaving(true);
     try {
-      const cra = (craName || craPhone || craEmail) ? { name: craName, phone: craPhone, email: craEmail } : undefined;
-      const crc = (crcName || crcPhone || crcEmail) ? { name: crcName, phone: crcPhone, email: crcEmail } : undefined;
+      // Filter out empty contacts
+      const craFiltered = cra.filter(c => c.name || c.phone || c.email).length > 0 ? cra.filter(c => c.name || c.phone || c.email) : undefined;
+      const crcFiltered = crc.filter(c => c.name || c.phone || c.email).length > 0 ? crc.filter(c => c.name || c.phone || c.email) : undefined;
 
       if (isEdit && initialData) {
         const updates: Partial<ClinicalTrial> = {
           code, title, abbreviation, nctCode,
           principalInvestigatorName: piName,
-          department, sponsor, cro, smo, cra, crc,
+          department, sponsor, cro, smo, cra: craFiltered, crc: crcFiltered,
           startPeriod, endPeriod, status, statusReason, zaloGroupUrl,
         };
         await updateClinicalTrial(initialData.id, updates);
@@ -106,7 +104,7 @@ export function TrialFormModal({ initialData, creatorId, creatorName, onClose, o
           id: generateId("trial"),
           code, title, abbreviation, nctCode,
           principalInvestigatorName: piName,
-          department, sponsor, cro, smo, cra, crc,
+          department, sponsor, cro, smo, cra: craFiltered, crc: crcFiltered,
           startPeriod, endPeriod, status, statusReason, zaloGroupUrl,
           documents: [], payments: [],
           createdBy: creatorId,
@@ -185,25 +183,8 @@ export function TrialFormModal({ initialData, creatorId, creatorName, onClose, o
               <input className={inputCls} value={endPeriod} onChange={(e) => setEndPeriod(e.target.value)} placeholder="4/2031" />
             </Field>
 
-            <Field label="CRA — Tên">
-              <input className={inputCls} value={craName} onChange={(e) => setCraName(e.target.value)} />
-            </Field>
-            <Field label="CRA — SĐT / Email">
-              <div className="flex gap-2">
-                <input className={inputCls} value={craPhone} onChange={(e) => setCraPhone(e.target.value)} placeholder="SĐT" />
-                <input className={inputCls} value={craEmail} onChange={(e) => setCraEmail(e.target.value)} placeholder="Email" />
-              </div>
-            </Field>
-
-            <Field label="CRC — Tên">
-              <input className={inputCls} value={crcName} onChange={(e) => setCrcName(e.target.value)} />
-            </Field>
-            <Field label="CRC — SĐT / Email">
-              <div className="flex gap-2">
-                <input className={inputCls} value={crcPhone} onChange={(e) => setCrcPhone(e.target.value)} placeholder="SĐT" />
-                <input className={inputCls} value={crcEmail} onChange={(e) => setCrcEmail(e.target.value)} placeholder="Email" />
-              </div>
-            </Field>
+            <ContactListEditor label="CRA — Giám sát nghiên cứu" contacts={cra} onChange={setCra} className="col-span-2" />
+            <ContactListEditor label="CRC — Điều phối tại site" contacts={crc} onChange={setCrc} className="col-span-2" />
 
             <Field label="Trạng thái vòng đời">
               <select className={inputCls} value={status} onChange={(e) => setStatus(e.target.value as ClinicalTrialStatus)}>

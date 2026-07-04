@@ -613,8 +613,8 @@ export interface ClinicalTrial {
   sponsor?: string;
   cro?: string;                      // Contract Research Organization
   smo?: string;                      // Site Management Organization
-  cra?: ClinicalTrialContact;        // Clinical Research Associate (giám sát của hãng)
-  crc?: ClinicalTrialContact;        // Clinical Research Coordinator (điều phối tại site)
+  cra?: ClinicalTrialContact[];      // Clinical Research Associate (giám sát của hãng) — có thể nhiều người
+  crc?: ClinicalTrialContact[];      // Clinical Research Coordinator (điều phối tại site) — có thể nhiều người
 
   startPeriod?: string;              // "3/2024" — text tự do, khớp Excel gốc
   endPeriod?: string;                // "4/2031"

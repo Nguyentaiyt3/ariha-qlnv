@@ -24,3 +24,4 @@ export { ResearchTopicModel } from "./Research";
 export { ResearchGroupModel } from "./ResearchGroup";
 export { AppConfigModel } from "./AppConfig";
 export { ClinicalTrialModel } from "./ClinicalTrial";
+export { EnrollmentShareTokenModel } from "./EnrollmentShareToken";
