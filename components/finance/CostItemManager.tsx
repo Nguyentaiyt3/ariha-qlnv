@@ -257,7 +257,16 @@ export function CostItemManager({
                   className="w-full px-2 py-1 text-xs border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-700 dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
               </td>
-              <td className="px-3 py-2 text-center text-slate-500">—</td>
+              <td className="px-3 py-2 text-center">
+                {newItem.percentage || newItem.amount ? (
+                  <span className="font-semibold text-slate-700 dark:text-white">
+                    {calculateCostItemAmount(newItem as CostItem, totalAmount).toLocaleString("vi-VN")}{" "}
+                    {mode === "percentage" ? "đ" : ""}
+                  </span>
+                ) : (
+                  <span className="text-slate-500">—</span>
+                )}
+              </td>
               <td className="px-3 py-2 relative">
                 <div className="relative w-full">
                   <input
