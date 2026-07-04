@@ -50,11 +50,6 @@ export function CostItemManager({
     fetchUnits();
   }, []);
 
-  const unitNames = units.map((unit) => unit.name);
-  const filteredUnits = unitNames.filter((unit) =>
-    unit.toLowerCase().includes(unitSearchQuery.toLowerCase())
-  );
-
   function handleAddItem() {
     if (!newItem.name || !newItem.name.trim()) {
       toast.error("Tên khoản chi không được để trống");
