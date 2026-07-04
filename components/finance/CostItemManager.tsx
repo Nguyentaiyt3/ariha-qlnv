@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Plus, Trash2, Edit2, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
-import type { CostItem } from "@/types";
+import type { CostItem, UnitDef } from "@/types";
 import { generateId } from "@/lib/utils";
 import { calculateCostItemAmount, validateCostItems } from "@/lib/utils/costCalculator";
 
@@ -21,17 +21,6 @@ const DEFAULT_COST_TYPES = [
   "Thuế thu nhập doanh nghiệp",
 ];
 
-const DEFAULT_UNITS = [
-  "Đơn vị thực hiện nghiên cứu",
-  "Ban Giám đốc",
-  "Viện ARiHA",
-  "Phòng Tài chính kế toán",
-  "Khoa Dược",
-  "Khoa Nội tim mạch",
-  "Khoa Ngoại tổng hợp",
-  "Trung tâm Y học gia đình",
-];
-
 export function CostItemManager({
   items,
   totalAmount,
@@ -44,8 +33,27 @@ export function CostItemManager({
   });
   const [unitSearchOpen, setUnitSearchOpen] = useState(false);
   const [unitSearchQuery, setUnitSearchQuery] = useState("");
+  const [units, setUnits] = useState<UnitDef[]>([]);
+  const [loadingUnits, setLoadingUnits] = useState(true);
 
-  const filteredUnits = DEFAULT_UNITS.filter((unit) =>
+  useEffect(() => {
+    async function fetchUnits() {
+      try {
+        const res = await fetch("/api/public/units");
+        const data = await res.json();
+        setUnits((data.catalog as UnitDef[]) || []);
+      } catch (err) {
+        console.error("Failed to fetch units:", err);
+        setUnits([]);
+      } finally {
+        setLoadingUnits(false);
+      }
+    }
+    fetchUnits();
+  }, []);
+
+  const unitNames = units.map((unit) => unit.name);
+  const filteredUnits = unitNames.filter((unit) =>
     unit.toLowerCase().includes(unitSearchQuery.toLowerCase())
   );
 
