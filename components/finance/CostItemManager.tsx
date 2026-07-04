@@ -32,9 +32,8 @@ export function CostItemManager({
     name: DEFAULT_COST_TYPES[0],
   });
   const [units, setUnits] = useState<UnitDef[]>([]);
-  const [unitSearchOpen, setUnitSearchOpen] = useState<string | null>(null);
-  const [unitSearchQuery, setUnitSearchQuery] = useState("");
-  const [newItemUnitSearchOpen, setNewItemUnitSearchOpen] = useState(false);
+  const [editingUnitId, setEditingUnitId] = useState<string | null>(null);
+  const [unitSearchQuery, setUnitSearchQuery] = useState<Record<string, string>>({});
 
   useEffect(() => {
     async function fetchUnits() {
@@ -179,39 +178,40 @@ export function CostItemManager({
                     </td>
                     <td className="px-3 py-2 relative">
                       <div className="relative w-full">
-                        <button
-                          type="button"
-                          onClick={() => setUnitSearchOpen(unitSearchOpen === item.id ? null : item.id)}
-                          className="w-full px-2 py-1 text-xs border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-700 dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-500 flex items-center justify-between"
-                        >
-                          <span className="truncate">{item.unit || "—"}</span>
-                          <ChevronDown className={`w-3 h-3 flex-shrink-0 ml-1 transition-transform ${unitSearchOpen === item.id ? "rotate-180" : ""}`} />
-                        </button>
+                        <input
+                          type="text"
+                          value={item.unit || ""}
+                          onChange={(e) => {
+                            handleUpdateItem(item.id, "unit", e.target.value);
+                            setUnitSearchQuery({ ...unitSearchQuery, [item.id]: e.target.value });
+                            setEditingUnitId(item.id);
+                          }}
+                          onFocus={() => setEditingUnitId(item.id)}
+                          onBlur={() => setTimeout(() => setEditingUnitId(null), 200)}
+                          placeholder="Nhập hoặc chọn đơn vị"
+                          className="w-full px-2 py-1 text-xs border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-700 dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        />
 
-                        {unitSearchOpen === item.id && (
+                        {editingUnitId === item.id && (unitSearchQuery[item.id] || item.unit) && (
                           <div className="absolute top-full left-0 right-0 mt-1 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded shadow-lg z-20 max-h-40 overflow-y-auto">
-                            <input
-                              type="text"
-                              placeholder="Tìm..."
-                              value={unitSearchQuery}
-                              onChange={(e) => setUnitSearchQuery(e.target.value)}
-                              className="w-full px-2 py-1 text-xs border-b border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 dark:text-white focus:outline-none"
-                              onClick={(e) => e.stopPropagation()}
-                            />
-                            {filteredUnits.map((unit) => (
-                              <button
-                                key={unit}
-                                type="button"
-                                onClick={() => {
-                                  handleUpdateItem(item.id, "unit", unit);
-                                  setUnitSearchOpen(null);
-                                  setUnitSearchQuery("");
-                                }}
-                                className="w-full text-left px-2 py-1 text-xs text-slate-700 dark:text-slate-300 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition"
-                              >
-                                {unit}
-                              </button>
-                            ))}
+                            {units
+                              .filter((u) =>
+                                u.name.toLowerCase().includes((unitSearchQuery[item.id] || item.unit || "").toLowerCase())
+                              )
+                              .map((u) => (
+                                <button
+                                  key={u.id}
+                                  type="button"
+                                  onClick={() => {
+                                    handleUpdateItem(item.id, "unit", u.name);
+                                    setEditingUnitId(null);
+                                    setUnitSearchQuery({ ...unitSearchQuery, [item.id]: "" });
+                                  }}
+                                  className="w-full text-left px-2 py-1 text-xs text-slate-700 dark:text-slate-300 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition"
+                                >
+                                  {u.name}
+                                </button>
+                              ))}
                           </div>
                         )}
                       </div>
@@ -265,39 +265,40 @@ export function CostItemManager({
               <td className="px-3 py-2 text-center text-slate-500">—</td>
               <td className="px-3 py-2 relative">
                 <div className="relative w-full">
-                  <button
-                    type="button"
-                    onClick={() => setNewItemUnitSearchOpen(!newItemUnitSearchOpen)}
-                    className="w-full px-2 py-1 text-xs border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-700 dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-500 flex items-center justify-between"
-                  >
-                    <span className="truncate">{newItem.unit || "Chọn đơn vị"}</span>
-                    <ChevronDown className={`w-3 h-3 flex-shrink-0 ml-1 transition-transform ${newItemUnitSearchOpen ? "rotate-180" : ""}`} />
-                  </button>
+                  <input
+                    type="text"
+                    value={newItem.unit || ""}
+                    onChange={(e) => {
+                      setNewItem({ ...newItem, unit: e.target.value });
+                      setUnitSearchQuery({ ...unitSearchQuery, "new": e.target.value });
+                      setEditingUnitId("new");
+                    }}
+                    onFocus={() => setEditingUnitId("new")}
+                    onBlur={() => setTimeout(() => setEditingUnitId(null), 200)}
+                    placeholder="Nhập hoặc chọn đơn vị"
+                    className="w-full px-2 py-1 text-xs border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-700 dark:text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
 
-                  {newItemUnitSearchOpen && (
+                  {editingUnitId === "new" && (unitSearchQuery["new"] || newItem.unit) && (
                     <div className="absolute top-full left-0 right-0 mt-1 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded shadow-lg z-20 max-h-40 overflow-y-auto">
-                      <input
-                        type="text"
-                        placeholder="Tìm..."
-                        value={unitSearchQuery}
-                        onChange={(e) => setUnitSearchQuery(e.target.value)}
-                        className="w-full px-2 py-1 text-xs border-b border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 dark:text-white focus:outline-none"
-                        onClick={(e) => e.stopPropagation()}
-                      />
-                      {filteredUnits.map((unit) => (
-                        <button
-                          key={unit}
-                          type="button"
-                          onClick={() => {
-                            setNewItem({ ...newItem, unit });
-                            setNewItemUnitSearchOpen(false);
-                            setUnitSearchQuery("");
-                          }}
-                          className="w-full text-left px-2 py-1 text-xs text-slate-700 dark:text-slate-300 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition"
-                        >
-                          {unit}
-                        </button>
-                      ))}
+                      {units
+                        .filter((u) =>
+                          u.name.toLowerCase().includes((unitSearchQuery["new"] || newItem.unit || "").toLowerCase())
+                        )
+                        .map((u) => (
+                          <button
+                            key={u.id}
+                            type="button"
+                            onClick={() => {
+                              setNewItem({ ...newItem, unit: u.name });
+                              setEditingUnitId(null);
+                              setUnitSearchQuery({ ...unitSearchQuery, "new": "" });
+                            }}
+                            className="w-full text-left px-2 py-1 text-xs text-slate-700 dark:text-slate-300 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition"
+                          >
+                            {u.name}
+                          </button>
+                        ))}
                     </div>
                   )}
                 </div>
