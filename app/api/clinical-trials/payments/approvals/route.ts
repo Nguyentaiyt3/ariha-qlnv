@@ -6,6 +6,7 @@ export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
     const status = searchParams.get("status") || "pending";
+    const distributionStatus = searchParams.get("distributionStatus");
 
     // Fetch all trials with payments
     const trials = await getClinicalTrials();
@@ -15,10 +16,11 @@ export async function GET(request: NextRequest) {
     for (const trial of trials) {
       if (trial.payments && Array.isArray(trial.payments)) {
         for (const payment of trial.payments) {
-          const paymentStatus = payment.status || "pending";
+          const matches = distributionStatus
+            ? payment.distributionStatus === distributionStatus
+            : status === "all" || (payment.status || "pending") === status;
 
-          // Filter by status
-          if (status === "all" || paymentStatus === status) {
+          if (matches) {
             payments.push({
               ...payment,
               trialId: trial.id,

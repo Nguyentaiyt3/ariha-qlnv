@@ -6,7 +6,7 @@ export async function POST(
   { params }: { params: { paymentId: string } }
 ) {
   try {
-    const { actualReceivedAmount, splits, costItems } = await request.json();
+    const { actualReceivedAmount, costItems } = await request.json();
 
     if (!actualReceivedAmount || actualReceivedAmount <= 0) {
       return NextResponse.json(
@@ -28,17 +28,11 @@ export async function POST(
 
       // Update settlement with actual received amount
       payment.settlement = {
+        confirmationType: payment.settlement?.confirmationType ?? "app",
         ...payment.settlement,
         actualReceivedAmount,
-        status: "confirmed", // Mark as having actual amount recorded
+        status: "confirmed",
       };
-
-      // Store splits/costItems for reference (used in handover record)
-      if (costItems && costItems.length > 0) {
-        payment.handoverCostItems = costItems;
-      } else if (splits) {
-        payment.handoverSplits = splits;
-      }
 
       await updateClinicalTrial(trial.id, {
         payments: trial.payments,
@@ -60,7 +54,6 @@ export async function POST(
         success: true,
         message: "Đã lập biên bản bàn giao",
         actualReceivedAmount,
-        splits: splits || undefined,
         costItems: costItems || undefined,
       },
       { status: 200 }

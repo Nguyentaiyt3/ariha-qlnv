@@ -36,7 +36,6 @@ export function PaymentFormModal({ trial, isOpen, onClose, onSuccess, editingPay
   const [splitMode, setSplitMode] = useState<SplitMode>(
     (editingPayment?.splitMode as SplitMode) || "percentage"
   );
-  const [showLegacySplits, setShowLegacySplits] = useState(false);
   const [files, setFiles] = useState<FileItem[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
@@ -53,12 +52,6 @@ export function PaymentFormModal({ trial, isOpen, onClose, onSuccess, editingPay
       totalAmount: 0,
       received: false,
       splitMode: "percentage",
-      splitAriha: 0,
-      splitDepartment: 0,
-      splitSubUnit1: 0,
-      splitSubUnit2: 0,
-      splitFinance: 0,
-      splitPharmacy: 0,
       note: "",
       submitterId: currentUser?.id,
       submitterName: currentUser?.name,
@@ -67,8 +60,15 @@ export function PaymentFormModal({ trial, isOpen, onClose, onSuccess, editingPay
     }
   );
 
+  const defaultCostItems: CostItem[] = [
+    { id: generateId("cost"), name: "Chi phí phục vụ chuyên môn", percentage: 68 },
+    { id: generateId("cost"), name: "Chi phí hỗ trợ bệnh nhân", percentage: 10 },
+    { id: generateId("cost"), name: "Chi phí quản lý", percentage: 20 },
+    { id: generateId("cost"), name: "Thuế thu nhập doanh nghiệp", percentage: 2 },
+  ];
+
   const [costItems, setCostItems] = useState<CostItem[]>(
-    editingPayment?.costItems || []
+    editingPayment?.costItems || defaultCostItems
   );
 
   function handleFileSelect(fileList: FileList | null) {
@@ -122,14 +122,7 @@ export function PaymentFormModal({ trial, isOpen, onClose, onSuccess, editingPay
         formData.paymentName,
         formData.date || new Date().toISOString().slice(0, 10),
         formData.totalAmount,
-        {
-          splitAriha: formData.splitAriha,
-          splitDepartment: formData.splitDepartment,
-          splitSubUnit1: formData.splitSubUnit1,
-          splitSubUnit2: formData.splitSubUnit2,
-          splitFinance: formData.splitFinance,
-          splitPharmacy: formData.splitPharmacy,
-        },
+        costItems,
         splitMode,
         trial.department,
         trial.principalInvestigatorName
@@ -207,7 +200,7 @@ export function PaymentFormModal({ trial, isOpen, onClose, onSuccess, editingPay
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 overflow-y-auto">
-      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-2xl my-8">
+      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-5xl my-8">
         <div className="flex items-center justify-between p-6 border-b border-slate-200 dark:border-slate-700">
           <div>
             <h2 className="text-lg font-bold text-slate-800 dark:text-white">
@@ -306,10 +299,10 @@ export function PaymentFormModal({ trial, isOpen, onClose, onSuccess, editingPay
             </div>
           </div>
 
-          {/* Cost Splitting - New Method with CostItemManager */}
+          {/* Cost Splitting */}
           <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-lg space-y-4">
             <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-              Phân chia chi phí (Phương pháp mới)
+              Phân chia chi phí
             </h3>
 
             <CostItemManager
@@ -326,82 +319,6 @@ export function PaymentFormModal({ trial, isOpen, onClose, onSuccess, editingPay
                 mode={splitMode}
               />
             )}
-
-            {/* Legacy Cost Splitting - Collapsible advanced section */}
-            <div className="border-t border-slate-200 dark:border-slate-700 pt-3">
-              <button
-                type="button"
-                onClick={() => setShowLegacySplits(!showLegacySplits)}
-                className="flex items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 transition"
-              >
-                <span>{showLegacySplits ? "▼" : "▶"}</span>
-                Phương pháp cũ (Dành cho thanh toán cũ)
-              </button>
-
-              {showLegacySplits && (
-                <div className="mt-3 p-3 bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-900/30 rounded-lg space-y-3">
-                  <p className="text-xs text-amber-700 dark:text-amber-300">
-                    ⚠️ Phương pháp này chỉ dùng cho thanh toán cũ. Thanh toán mới nên dùng "Phân chia chi phí" ở trên.
-                  </p>
-
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setSplitMode("percentage")}
-                      className={`px-3 py-1 text-xs font-medium rounded-lg transition ${
-                        splitMode === "percentage"
-                          ? "bg-blue-600 text-white"
-                          : "bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-600"
-                      }`}
-                    >
-                      %
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setSplitMode("amount")}
-                      className={`px-3 py-1 text-xs font-medium rounded-lg transition ${
-                        splitMode === "amount"
-                          ? "bg-blue-600 text-white"
-                          : "bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-600"
-                      }`}
-                    >
-                      VND
-                    </button>
-                  </div>
-
-                  <div className="grid sm:grid-cols-2 gap-3">
-                    {[
-                      { key: "splitAriha", label: "ARiHA" },
-                      { key: "splitDepartment", label: "Khoa chủ trì" },
-                      { key: "splitSubUnit1", label: "Đơn vị phụ 1" },
-                      { key: "splitSubUnit2", label: "Đơn vị phụ 2" },
-                      { key: "splitFinance", label: "Tài chính" },
-                      { key: "splitPharmacy", label: "Dược" },
-                    ].map(({ key, label }) => (
-                      <div key={key}>
-                        <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
-                          {label}
-                        </label>
-                        <input
-                          type="text"
-                          value={formData[key as keyof ClinicalTrialPayment] ? String(formData[key as keyof ClinicalTrialPayment]).replace(/\B(?=(\d{3})+(?!\d))/g, ",") : ""}
-                          onChange={(e) => {
-                            const value = e.target.value.replace(/,/g, "");
-                            const num = parseFloat(value) || 0;
-                            setFormData({
-                              ...formData,
-                              [key]: splitMode === "percentage" ? Math.min(Math.max(num, 0), 100) : num,
-                            });
-                          }}
-                          placeholder="0"
-                          className="w-full px-2 py-1.5 text-sm border border-slate-200 dark:border-slate-700 rounded bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-400"
-                        />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
           </div>
 
           {/* File Upload */}

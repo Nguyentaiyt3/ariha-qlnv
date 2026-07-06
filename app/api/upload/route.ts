@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { put } from "@vercel/blob";
+import { mkdir, writeFile } from "fs/promises";
+import path from "path";
 import { verifyToken } from "@/lib/mongodb/auth";
 
 const MAX_SIZE_MB = 20;
@@ -14,13 +16,6 @@ const ALLOWED_TYPES = [
 ];
 
 export async function POST(req: NextRequest) {
-  if (!process.env.BLOB_READ_WRITE_TOKEN) {
-    return NextResponse.json(
-      { error: "Lưu trữ file chưa được cấu hình — liên hệ quản trị viên (thiếu BLOB_READ_WRITE_TOKEN)" },
-      { status: 503 },
-    );
-  }
-
   const token = req.cookies.get("auth-token")?.value;
   if (!token || !verifyToken(token)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -42,11 +37,28 @@ export async function POST(req: NextRequest) {
   if (!ALLOWED_TYPES.includes(file.type))
     return NextResponse.json({ error: "Định dạng file không được hỗ trợ" }, { status: 415 });
 
+  const safeName  = sanitizeFilename(file.name);
+  const finalName = `${Date.now()}_${safeName}`;
+
   try {
-    const safeName  = sanitizeFilename(file.name);
-    const finalName = `${folder}/${Date.now()}_${safeName}`;
-    const blob = await put(finalName, file, { access: "private" });
-    return NextResponse.json({ url: blob.url, name: file.name, size: file.size, type: file.type });
+    if (process.env.BLOB_READ_WRITE_TOKEN) {
+      const blob = await put(`${folder}/${finalName}`, file, { access: "private" });
+      return NextResponse.json({ url: blob.url, name: file.name, size: file.size, type: file.type });
+    }
+
+    // Dev fallback: no Vercel Blob token configured — store on local disk under public/uploads
+    const safeFolder = (folder || "misc").replace(/[^a-zA-Z0-9_\-]/g, "_");
+    const uploadDir = path.join(process.cwd(), "public", "uploads", safeFolder);
+    await mkdir(uploadDir, { recursive: true });
+    const buffer = Buffer.from(await file.arrayBuffer());
+    await writeFile(path.join(uploadDir, finalName), buffer);
+
+    return NextResponse.json({
+      url: `/uploads/${safeFolder}/${finalName}`,
+      name: file.name,
+      size: file.size,
+      type: file.type,
+    });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "Lỗi lưu file";
     return NextResponse.json({ error: msg }, { status: 500 });

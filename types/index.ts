@@ -556,6 +556,13 @@ export const CLINICAL_TRIAL_TERMINAL_BRANCHES: ClinicalTrialStatus[] = [
   "terminated_no_efficacy", "not_feasible",
 ];
 
+/** Một lần chuyển giai đoạn của thử nghiệm — dùng để vẽ Gantt chia đoạn theo từng trạng thái. */
+export interface StatusHistoryEntry {
+  status: ClinicalTrialStatus;
+  changedAt: string;
+  changedBy?: string;
+}
+
 export interface ClinicalTrialContact {
   name?: string;
   phone?: string;
@@ -601,6 +608,24 @@ export interface CostItem {
   description?: string;             // Mô tả thêm
 }
 
+export interface HandoverSelection {
+  selectedCostItemIds: string[];    // Các khoản chi được chọn để tính vào thực lĩnh
+  netAmount: number;                 // Số tiền thực lĩnh (tổng các khoản đã chọn)
+  status?: string;                   // "selection_confirmed"
+  savedAt: string;
+}
+
+export interface HandoverDistribution {
+  costItemId: string;               // Liên kết tới CostItem gốc
+  unit: string;                     // Tên đơn vị nhận (vd: "Viện ARiHA", "Khoa Dược")
+  amount: number;                    // Số tiền bàn giao cho đơn vị này
+  documentUrl?: string;              // Biên bản bàn giao đã ký (upload qua /api/upload)
+  documentName?: string;
+  status: "pending" | "handed_over"; // Đã bàn giao cho đơn vị chưa
+  handedOverAt?: string;
+  handedOverBy?: string;
+}
+
 export interface ClinicalTrialPayment {
   id: string;
   batchNo?: number;                 // STT đợt
@@ -610,13 +635,6 @@ export interface ClinicalTrialPayment {
   proposalFileUrl?: string;         // Tờ trình
   paymentAdviceFileUrl?: string;    // Ủy nhiệm chi
   costItems?: CostItem[];           // Các khoản chi phí linh hoạt (CHI PHỤC VỤ, CHI HỖ TRỢ, PHÍ QUẢN LÝ, THUẾ)
-  // Legacy fields (for backward compatibility)
-  splitAriha?: number;              // Phân chia — ARiHA (thường 5%)
-  splitDepartment?: number;         // Phân chia — khoa chủ trì
-  splitSubUnit1?: number;           // Phân chia — đơn vị phụ 1
-  splitSubUnit2?: number;           // Phân chia — đơn vị phụ 2
-  splitFinance?: number;            // Phân chia — TCKT
-  splitPharmacy?: number;           // Phân chia — khoa Dược
   splitMode?: "percentage" | "amount"; // Chế độ phân chia: phần trăm hoặc số tiền
   received: boolean;                // Đã nhận tiền chưa
   status?: "pending" | "approved" | "rejected" | "delivered"; // "delivered" = đã giao cho đơn vị nhận
@@ -630,6 +648,7 @@ export interface ClinicalTrialPayment {
   approvedBy?: string;
   approvedByUserId?: string;
   approverRole?: string;
+  approverPosition?: string;        // Chức vụ trong đơn vị của người phê duyệt
   approvedAt?: string;
   editDeleteRequests?: EditDeleteRequest[]; // Track pending edit/delete requests
   rejectionReason?: string;
@@ -647,6 +666,15 @@ export interface ClinicalTrialPayment {
     finance: number;
     pharmacy: number;
   }; // Phân chia chi phí khi lập biên bản
+  // Phase 5: Xác nhận số tiền thực lĩnh + bàn giao cho từng đơn vị
+  handoverSelection?: HandoverSelection;
+  handoverDistributions?: HandoverDistribution[]; // Bàn giao thực lĩnh cho từng đơn vị (ARiHA, Khoa Dược, ...)
+  distributionStatus?: "in_progress" | "submitted_for_approval" | "approved"; // Trạng thái báo cáo bàn giao
+  distributionSubmittedAt?: string;
+  distributionApprovedBy?: string;
+  distributionApprovedByUserId?: string;
+  distributionApprovedAt?: string;
+  arihaRevenueTransactionId?: string; // Liên kết tới FinancialTransaction ghi nhận thu của Viện ARiHA
 }
 
 export interface ClinicalTrialEnrollment {
@@ -690,6 +718,7 @@ export interface ClinicalTrial {
 
   status: ClinicalTrialStatus;
   statusReason?: string;             // Lý do chưa triển khai / kết thúc sớm
+  statusHistory?: StatusHistoryEntry[]; // Lịch sử chuyển giai đoạn — dùng để vẽ Gantt chia đoạn
   deploymentDecisionNo?: string;     // Số quyết định triển khai
 
   competitiveEnrollment?: boolean;   // Thu tuyển cạnh tranh

@@ -14,6 +14,7 @@ interface ClinicalTrialPaymentApprovalsProps {
   approverUserId: string;
   approverName: string;
   approverRole?: string;
+  approverPosition?: string;
   canApprove?: boolean;
   onEditPayment?: (payment: ClinicalTrialPayment & { trialId: string; trialCode: string; trialName: string }) => void;
 }
@@ -25,6 +26,7 @@ export function ClinicalTrialPaymentApprovals({
   approverUserId,
   approverName,
   approverRole,
+  approverPosition,
   canApprove = true,
   onEditPayment,
 }: ClinicalTrialPaymentApprovalsProps) {
@@ -80,6 +82,7 @@ export function ClinicalTrialPaymentApprovals({
           approvedBy: approverName,
           approvedByUserId: approverUserId,
           approverRole,
+          approverPosition,
         }),
       });
       if (!response.ok) throw new Error("Failed to approve");

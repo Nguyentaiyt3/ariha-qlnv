@@ -1,5 +1,7 @@
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
+import type { CostItem } from '@/types';
+import { calculateCostItemAmount } from './costCalculator';
 
 export async function generatePaymentProposalPDF(
   trialCode: string,
@@ -7,14 +9,7 @@ export async function generatePaymentProposalPDF(
   paymentName: string,
   date: string,
   totalAmount: number,
-  splits: {
-    splitAriha?: number;
-    splitDepartment?: number;
-    splitSubUnit1?: number;
-    splitSubUnit2?: number;
-    splitFinance?: number;
-    splitPharmacy?: number;
-  },
+  costItems: CostItem[] = [],
   splitMode: 'percentage' | 'amount' = 'percentage',
   department?: string,
   submitterName?: string,
@@ -60,59 +55,25 @@ export async function generatePaymentProposalPDF(
       <h3 style="font-size: 14px; font-weight: bold; margin: 20px 0 10px 0;">Phân chia chi phí</h3>
       <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
         <tr style="border: 1px solid #000; background-color: #f0f0f0;">
-          <td style="padding: 8px; font-weight: bold; border-right: 1px solid #000; width: 40%;">Đơn vị/Bộ phận</td>
-          <td style="padding: 8px; font-weight: bold; text-align: right;">
+          <td style="padding: 8px; font-weight: bold; border-right: 1px solid #000; width: 40%;">Khoản chi</td>
+          <td style="padding: 8px; font-weight: bold; border-right: 1px solid #000; text-align: right;">
             ${splitMode === 'percentage' ? 'Phần trăm (%)' : 'Số tiền (VND)'}
           </td>
+          <td style="padding: 8px; font-weight: bold; text-align: right;">Đơn vị nhận</td>
         </tr>
-        ${splits.splitAriha ? `
+        ${costItems.map(item => {
+          const amount = calculateCostItemAmount(item, totalAmount);
+          const displayValue = splitMode === 'percentage'
+            ? `${((amount / totalAmount) * 100).toFixed(1)}%`
+            : amount.toLocaleString('vi-VN');
+          return `
         <tr style="border: 1px solid #000; border-top: none;">
-          <td style="padding: 8px; border-right: 1px solid #000;">ARiHA</td>
-          <td style="padding: 8px; text-align: right;">
-            ${splitMode === 'percentage' ? `${splits.splitAriha}%` : splits.splitAriha?.toLocaleString('vi-VN')}
-          </td>
+          <td style="padding: 8px; border-right: 1px solid #000;">${item.name}</td>
+          <td style="padding: 8px; border-right: 1px solid #000; text-align: right;">${displayValue}</td>
+          <td style="padding: 8px; text-align: right;">${item.unit || '—'}</td>
         </tr>
-        ` : ''}
-        ${splits.splitDepartment ? `
-        <tr style="border: 1px solid #000; border-top: none;">
-          <td style="padding: 8px; border-right: 1px solid #000;">Khoa chủ trì</td>
-          <td style="padding: 8px; text-align: right;">
-            ${splitMode === 'percentage' ? `${splits.splitDepartment}%` : splits.splitDepartment?.toLocaleString('vi-VN')}
-          </td>
-        </tr>
-        ` : ''}
-        ${splits.splitSubUnit1 ? `
-        <tr style="border: 1px solid #000; border-top: none;">
-          <td style="padding: 8px; border-right: 1px solid #000;">Đơn vị phụ 1</td>
-          <td style="padding: 8px; text-align: right;">
-            ${splitMode === 'percentage' ? `${splits.splitSubUnit1}%` : splits.splitSubUnit1?.toLocaleString('vi-VN')}
-          </td>
-        </tr>
-        ` : ''}
-        ${splits.splitSubUnit2 ? `
-        <tr style="border: 1px solid #000; border-top: none;">
-          <td style="padding: 8px; border-right: 1px solid #000;">Đơn vị phụ 2</td>
-          <td style="padding: 8px; text-align: right;">
-            ${splitMode === 'percentage' ? `${splits.splitSubUnit2}%` : splits.splitSubUnit2?.toLocaleString('vi-VN')}
-          </td>
-        </tr>
-        ` : ''}
-        ${splits.splitFinance ? `
-        <tr style="border: 1px solid #000; border-top: none;">
-          <td style="padding: 8px; border-right: 1px solid #000;">Tài chính</td>
-          <td style="padding: 8px; text-align: right;">
-            ${splitMode === 'percentage' ? `${splits.splitFinance}%` : splits.splitFinance?.toLocaleString('vi-VN')}
-          </td>
-        </tr>
-        ` : ''}
-        ${splits.splitPharmacy ? `
-        <tr style="border: 1px solid #000; border-top: none;">
-          <td style="padding: 8px; border-right: 1px solid #000;">Dược</td>
-          <td style="padding: 8px; text-align: right;">
-            ${splitMode === 'percentage' ? `${splits.splitPharmacy}%` : splits.splitPharmacy?.toLocaleString('vi-VN')}
-          </td>
-        </tr>
-        ` : ''}
+          `;
+        }).join('')}
       </table>
 
       <h3 style="font-size: 14px; font-weight: bold; margin: 30px 0 10px 0;">Phê duyệt</h3>

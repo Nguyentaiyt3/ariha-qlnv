@@ -48,13 +48,14 @@ import {
   markReimbursementPaid,
   rejectReimbursement,
 } from "@/lib/firebase/finance";
-import type { AdvanceRequest, ReimbursementRequest, FinancialTransaction, TaskFinancialSummary } from "@/types";
+import type { AdvanceRequest, ReimbursementRequest, FinancialTransaction, TaskFinancialSummary, CostItem } from "@/types";
 import {
   format, subMonths, startOfMonth, endOfMonth, parseISO, isWithinInterval,
   startOfQuarter, endOfQuarter, startOfYear, endOfYear, subQuarters, subYears, addMonths, addQuarters, addYears,
 } from "date-fns";
 import { vi } from "date-fns/locale";
 import { ClinicalTrialPaymentApprovals } from "@/components/finance/ClinicalTrialPaymentApprovals";
+import { DistributionApprovalsList } from "@/components/finance/DistributionApprovalsList";
 import { EditDeleteRequestsList } from "@/components/finance/EditDeleteRequestsList";
 import { SettlementConfirmationUI } from "@/components/finance/SettlementConfirmation";
 
@@ -199,6 +200,10 @@ export default function FinanceDashboardPage() {
   // Payment editing
   const [editingPayment, setEditingPayment] = useState<any>(null);
 
+  // Clinical trial pending payments
+  const [pendingTrialPayments, setPendingTrialPayments] = useState<any[]>([]);
+  const [pendingTrialPaymentsLoading, setPendingTrialPaymentsLoading] = useState(false);
+
   const canApprove = currentUser && ["director", "hrAdmin", "teamLead"].includes(currentUser.role);
 
   // ── Subscriptions realtime (phân quyền: approver thấy tất cả, staff thấy của mình) ──
@@ -216,6 +221,35 @@ export default function FinanceDashboardPage() {
     const unsub5 = isApprover ? subscribeAllTransactionsForReport(setReportTx) : () => {};
     const unsub6 = isApprover ? subscribeOpeningBalance(setOpeningBal) : () => {};
     return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); unsub6(); };
+  }, [currentUser]);
+
+  // Gọi lại sau khi duyệt hoàn tất bàn giao (ghi nhận thu Viện ARiHA) để bảng "Chi tiết phát sinh trong kỳ" cập nhật ngay
+  function refetchTransactions() {
+    subscribeAllTransactionsForReport(setReportTx);
+    subscribeRecentTransactions(setTransactions, 100);
+  }
+
+  // ── Fetch pending clinical trial payments ──
+  useEffect(() => {
+    if (!currentUser || !["director", "hrAdmin", "teamLead"].includes(currentUser.role)) return;
+    const fetchPendingPayments = async () => {
+      setPendingTrialPaymentsLoading(true);
+      try {
+        const response = await fetch("/api/clinical-trials/payments/approvals?status=pending");
+        if (response.ok) {
+          const data = await response.json();
+          setPendingTrialPayments(data || []);
+        }
+      } catch (error) {
+        console.error("Failed to fetch pending payments:", error);
+      } finally {
+        setPendingTrialPaymentsLoading(false);
+      }
+    };
+    fetchPendingPayments();
+    // Poll every 30 seconds for updates
+    const interval = setInterval(fetchPendingPayments, 30000);
+    return () => clearInterval(interval);
   }, [currentUser]);
 
   // ── KPI aggregates ────────────────────────────────────────────────────────
@@ -516,6 +550,53 @@ export default function FinanceDashboardPage() {
           <span className="inline-block w-2 h-2 rounded-full bg-green-500 ml-1.5 animate-pulse" />
         </div>
       </div>
+
+      {/* ── Alert: Pending Clinical Trial Payments ── */}
+      {canApprove && pendingTrialPayments.length > 0 && (
+        <div
+          onClick={() => setActiveTab("trial-payments")}
+          className="rounded-xl p-4 bg-gradient-to-r from-red-50 to-orange-50 dark:from-red-900/30 dark:to-orange-900/30 border-2 border-red-300 dark:border-red-800 cursor-pointer hover:shadow-lg dark:hover:shadow-red-900/20 transition-all transform hover:scale-[1.01]"
+        >
+          <div className="flex items-start gap-4">
+            <div className="w-10 h-10 rounded-full bg-red-100 dark:bg-red-800 flex items-center justify-center shrink-0 mt-0.5 animate-pulse">
+              <AlertTriangle className="w-6 h-6 text-red-600 dark:text-red-300" />
+            </div>
+            <div className="flex-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-sm font-bold text-red-700 dark:text-red-300">
+                  ⚠️ Có {pendingTrialPayments.length} đề nghị thanh toán thử nghiệm chờ phê duyệt
+                </h3>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-2">
+                <div>
+                  <p className="text-xs text-red-600 dark:text-red-400">Tổng số tiền</p>
+                  <p className="text-base font-bold text-red-700 dark:text-red-300">
+                    {vnd(pendingTrialPayments.reduce((sum, p) => sum + (p.totalAmount || 0), 0))}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-red-600 dark:text-red-400">Số đề nghị</p>
+                  <p className="text-base font-bold text-red-700 dark:text-red-300">
+                    {pendingTrialPayments.length}
+                  </p>
+                </div>
+                <div className="sm:col-span-1 col-span-2 sm:col-span-auto">
+                  <p className="text-xs text-red-600 dark:text-red-400">Hành động</p>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setActiveTab("trial-payments");
+                    }}
+                    className="mt-1 px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-semibold transition"
+                  >
+                    Xem ngay →
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── KPI Cards ── */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
@@ -1562,11 +1643,13 @@ export default function FinanceDashboardPage() {
 
         {/* ── Tab: Thanh toán thử nghiệm lâm sàng ── */}
         {activeTab === "trial-payments" && isApproverView && (
-          <div className="p-4">
+          <div className="p-4 space-y-6">
+            <DistributionApprovalsList onApproved={refetchTransactions} />
             <ClinicalTrialPaymentApprovals
               approverUserId={currentUser?.id || ""}
               approverName={currentUser?.name || ""}
               approverRole={currentUser?.role}
+              approverPosition={currentUser?.position}
               canApprove={true}
               onEditPayment={(payment) => setEditingPayment(payment)}
             />
@@ -1652,70 +1735,23 @@ export default function FinanceDashboardPage() {
             </div>
 
             {/* Cost Splitting */}
-            {(editingPayment.splitAriha || editingPayment.splitDepartment || editingPayment.splitSubUnit1 || editingPayment.splitSubUnit2 || editingPayment.splitFinance || editingPayment.splitPharmacy) && (
+            {editingPayment.costItems && editingPayment.costItems.length > 0 && (
               <div className="border-t border-slate-200 dark:border-slate-700 pt-4">
-                <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3">Phân chia chi phí {editingPayment.splitMode === "percentage" ? "(%)" : "(VND)"}</p>
-                <div className="grid grid-cols-2 gap-3 text-sm">
-                  {editingPayment.splitAriha !== undefined && editingPayment.splitAriha > 0 && (
-                    <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-800 p-2 rounded">
-                      <span className="text-slate-600 dark:text-slate-400">ARiHA</span>
+                <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3">Phân chia chi phí</p>
+                <div className="space-y-2 text-sm">
+                  {editingPayment.costItems.map((item: CostItem) => (
+                    <div key={item.id} className="flex items-center justify-between bg-slate-50 dark:bg-slate-800 p-2 rounded">
+                      <div>
+                        <p className="text-slate-600 dark:text-slate-400">{item.name}</p>
+                        {item.unit && <p className="text-xs text-slate-500 dark:text-slate-400">→ {item.unit}</p>}
+                      </div>
                       <span className="font-medium text-slate-800 dark:text-white">
-                        {editingPayment.splitMode === "percentage"
-                          ? `${editingPayment.splitAriha}%`
-                          : vnd(editingPayment.splitAriha)}
+                        {vnd(editingPayment.totalAmount && item.percentage
+                          ? (editingPayment.totalAmount * item.percentage) / 100
+                          : item.amount || 0)}
                       </span>
                     </div>
-                  )}
-                  {editingPayment.splitDepartment !== undefined && editingPayment.splitDepartment > 0 && (
-                    <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-800 p-2 rounded">
-                      <span className="text-slate-600 dark:text-slate-400">Khoa chủ trì</span>
-                      <span className="font-medium text-slate-800 dark:text-white">
-                        {editingPayment.splitMode === "percentage"
-                          ? `${editingPayment.splitDepartment}%`
-                          : vnd(editingPayment.splitDepartment)}
-                      </span>
-                    </div>
-                  )}
-                  {editingPayment.splitSubUnit1 !== undefined && editingPayment.splitSubUnit1 > 0 && (
-                    <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-800 p-2 rounded">
-                      <span className="text-slate-600 dark:text-slate-400">Đơn vị phụ 1</span>
-                      <span className="font-medium text-slate-800 dark:text-white">
-                        {editingPayment.splitMode === "percentage"
-                          ? `${editingPayment.splitSubUnit1}%`
-                          : vnd(editingPayment.splitSubUnit1)}
-                      </span>
-                    </div>
-                  )}
-                  {editingPayment.splitSubUnit2 !== undefined && editingPayment.splitSubUnit2 > 0 && (
-                    <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-800 p-2 rounded">
-                      <span className="text-slate-600 dark:text-slate-400">Đơn vị phụ 2</span>
-                      <span className="font-medium text-slate-800 dark:text-white">
-                        {editingPayment.splitMode === "percentage"
-                          ? `${editingPayment.splitSubUnit2}%`
-                          : vnd(editingPayment.splitSubUnit2)}
-                      </span>
-                    </div>
-                  )}
-                  {editingPayment.splitFinance !== undefined && editingPayment.splitFinance > 0 && (
-                    <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-800 p-2 rounded">
-                      <span className="text-slate-600 dark:text-slate-400">Tài chính</span>
-                      <span className="font-medium text-slate-800 dark:text-white">
-                        {editingPayment.splitMode === "percentage"
-                          ? `${editingPayment.splitFinance}%`
-                          : vnd(editingPayment.splitFinance)}
-                      </span>
-                    </div>
-                  )}
-                  {editingPayment.splitPharmacy !== undefined && editingPayment.splitPharmacy > 0 && (
-                    <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-800 p-2 rounded">
-                      <span className="text-slate-600 dark:text-slate-400">Dược</span>
-                      <span className="font-medium text-slate-800 dark:text-white">
-                        {editingPayment.splitMode === "percentage"
-                          ? `${editingPayment.splitPharmacy}%`
-                          : vnd(editingPayment.splitPharmacy)}
-                      </span>
-                    </div>
-                  )}
+                  ))}
                 </div>
               </div>
             )}

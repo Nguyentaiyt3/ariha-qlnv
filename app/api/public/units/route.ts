@@ -3,6 +3,9 @@ import { connectDB } from "@/lib/mongodb/config";
 import { AppConfigModel } from "@/lib/mongodb/models";
 import type { UnitDef } from "@/types";
 
+// Đọc DB mỗi request — không cho Next.js prerender tĩnh (sẽ cache catalog rỗng lúc build)
+export const dynamic = "force-dynamic";
+
 // Public — no auth required (used by registration form before login)
 export async function GET() {
   try {

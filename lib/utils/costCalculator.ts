@@ -1,4 +1,4 @@
-import type { CostItem } from "@/types";
+import type { CostItem, ClinicalTrialPayment, HandoverDistribution } from "@/types";
 
 export function calculateCostItemAmount(
   item: CostItem,
@@ -84,4 +84,23 @@ export function calculateCostItemDistribution(
   }
 
   return distribution;
+}
+
+/** Suy ra danh sách bàn giao cho từng đơn vị từ các khoản chi đã chọn (handoverSelection) */
+export function deriveHandoverDistributions(
+  payment: Pick<ClinicalTrialPayment, "costItems" | "handoverSelection" | "totalAmount">
+): HandoverDistribution[] {
+  const selectedIds = payment.handoverSelection?.selectedCostItemIds;
+  const items = payment.costItems || [];
+  const filtered =
+    selectedIds && selectedIds.length > 0
+      ? items.filter((i) => selectedIds.includes(i.id))
+      : items;
+
+  return filtered.map((item) => ({
+    costItemId: item.id,
+    unit: item.unit || item.name,
+    amount: calculateCostItemAmount(item, payment.totalAmount || 0),
+    status: "pending" as const,
+  }));
 }

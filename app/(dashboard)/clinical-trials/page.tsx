@@ -2,13 +2,14 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { FlaskConical, Plus, Loader2, Search } from "lucide-react";
+import { FlaskConical, Plus, Loader2, Search, LayoutGrid, GanttChartSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { getClinicalTrials } from "@/lib/firebase/firestore";
 import { TrialFormModal } from "@/components/clinical-trials/TrialFormModal";
 import { TrialListItem } from "@/components/clinical-trials/TrialListItem";
+import { TrialGanttView } from "@/components/clinical-trials/TrialGanttView";
 import { ImportTrialsModal } from "@/components/clinical-trials/ImportTrialsModal";
 import { useDashboardFilter } from "@/stores/useDashboardFilter";
 import { CLINICAL_TRIAL_STATUS_LABEL, CLINICAL_TRIAL_TERMINAL_BRANCHES } from "@/types";
@@ -71,6 +72,7 @@ export default function ClinicalTrialsPage() {
   const [statusFilter, setStatusFilter] = useState<ClinicalTrialStatus | "all" | "running" | "ended">("all");
   const [showForm, setShowForm] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [viewMode, setViewMode] = useState<"kanban" | "gantt">("kanban");
 
   const canCreate = !!currentUser && hasPermission(currentUser.role, "trial:create");
 
@@ -181,20 +183,51 @@ export default function ClinicalTrialsPage() {
         <StatCard label="Đã kết thúc"    value={stats.completed + stats.ended} active={statusFilter === "ended"} onClick={() => setStatusFilter("ended")} />
       </div>
 
-      {/* Search */}
-      <div className="relative max-w-md">
-        <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Tìm theo mã, tên, PI, khoa, tài trợ..."
-          className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-400"
-        />
+      {/* Search + View toggle */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="relative max-w-md flex-1">
+          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Tìm theo mã, tên, PI, khoa, tài trợ..."
+            className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+          />
+        </div>
+        <div className="flex text-sm rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden shrink-0">
+          <button
+            onClick={() => setViewMode("kanban")}
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-2 font-medium transition",
+              viewMode === "kanban"
+                ? "bg-blue-600 text-white"
+                : "text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
+            )}
+          >
+            <LayoutGrid className="w-4 h-4" /> Kanban
+          </button>
+          <button
+            onClick={() => setViewMode("gantt")}
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-2 font-medium transition",
+              viewMode === "gantt"
+                ? "bg-blue-600 text-white"
+                : "text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
+            )}
+          >
+            <GanttChartSquare className="w-4 h-4" /> Gantt
+          </button>
+        </div>
       </div>
 
-      {/* Trial List by Phase — 3 column layout */}
+      {/* Trial List */}
       {filtered.length === 0 ? (
         <div className="text-center py-16 text-slate-400 text-sm">Chưa có thử nghiệm lâm sàng nào</div>
+      ) : viewMode === "gantt" ? (
+        <TrialGanttView
+          trials={filtered}
+          onSelectTrial={(trial) => router.push(`/clinical-trials/${trial.id}`)}
+        />
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {groupTrialsByPhase(filtered).map((phase) => (

@@ -66,5 +66,17 @@ export const DEPARTMENTS: Department[] = [
 export const DEPT_BY_ABBR = Object.fromEntries(DEPARTMENTS.map(d => [d.abbr, d]));
 export const DEPT_OPTIONS  = DEPARTMENTS.map(d => ({ value: d.abbr, label: `${d.abbr} — ${d.name}` }));
 
+/** Các tên gọi (đầy đủ/viết tắt) đều chỉ Viện ARiHA — dùng để nhận diện khoản thu của Viện trong các đơn vị nhận. */
+export const ARIHA_UNIT_NAMES = [
+  "Viện ARiHA",
+  "Viện Nghiên cứu Ứng dụng Khoa học Sức khỏe và Lão hóa",
+];
+
+export function isArihaUnit(unitName?: string): boolean {
+  if (!unitName) return false;
+  const normalized = unitName.trim().toLowerCase();
+  return ARIHA_UNIT_NAMES.some((name) => normalized.includes(name.toLowerCase()) || name.toLowerCase().includes(normalized));
+}
+
 export const COMPLETION_QUARTERS = ["Quý I", "Quý II", "Quý III", "Quý IV"] as const;
 export const COMPLETION_YEARS    = [2026, 2027, 2028, 2029] as const;
