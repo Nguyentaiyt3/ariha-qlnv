@@ -18,6 +18,7 @@ import { TrialFormModal } from "@/components/clinical-trials/TrialFormModal";
 import { EnrollmentDashboard } from "@/components/clinical-trials/EnrollmentDashboard";
 import { PaymentLedger } from "@/components/clinical-trials/PaymentLedger";
 import { PaymentFormModal } from "@/components/clinical-trials/PaymentFormModal";
+import { HandoverFormModal } from "@/components/finance/HandoverFormModal";
 import { UpdateEnrollmentModal } from "@/components/clinical-trials/UpdateEnrollmentModal";
 import { EnrollmentShareModal } from "@/components/clinical-trials/EnrollmentShareModal";
 import { EnrollmentLinkModal } from "@/components/clinical-trials/EnrollmentLinkModal";
@@ -51,6 +52,7 @@ export default function ClinicalTrialDetailPage() {
   const [showLinkEnrollment, setShowLinkEnrollment] = useState(false);
   const [showAddPayment, setShowAddPayment] = useState(false);
   const [editingPayment, setEditingPayment] = useState<ClinicalTrialPayment | undefined>();
+  const [handoverPayment, setHandoverPayment] = useState<ClinicalTrialPayment | undefined>();
   const [activeTab, setActiveTab] = useState<"enrollment" | "info" | "payment">("enrollment");
 
   const canManage = !!currentUser && hasPermission(currentUser.role, "trial:manage");
@@ -276,6 +278,9 @@ export default function ClinicalTrialDetailPage() {
                   onPaymentsChange={(payments) => {
                     setTrial({ ...trial, payments });
                   }}
+                  onOpenHandover={(payment) => {
+                    setHandoverPayment(payment);
+                  }}
                 />
               ) : (
                 <p className="text-sm text-slate-400 py-4">Chưa có bản ghi thanh toán</p>
@@ -355,6 +360,20 @@ export default function ClinicalTrialDetailPage() {
             setTrial(updatedTrial);
             setShowAddPayment(false);
             setEditingPayment(undefined);
+          }}
+        />
+      )}
+
+      {handoverPayment && (
+        <HandoverFormModal
+          isOpen={!!handoverPayment}
+          onClose={() => setHandoverPayment(undefined)}
+          payment={handoverPayment}
+          trialCode={trial?.code || ""}
+          onSuccess={() => {
+            setHandoverPayment(undefined);
+            // Reload trial data to show updated settlement info
+            getClinicalTrial(id).then((t) => setTrial(t));
           }}
         />
       )}

@@ -1,10 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, FileText, DollarSign, CheckCircle2, Clock, Edit2, Trash2 } from "lucide-react";
+import { ChevronDown, FileText, DollarSign, CheckCircle2, Clock, Edit2, Trash2, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { updateClinicalTrial } from "@/lib/firebase/firestore";
+import { calculateCostItemAmount } from "@/lib/utils/costCalculator";
 import type { ClinicalTrialPayment } from "@/types";
 
 interface PaymentLedgerProps {
@@ -12,6 +13,7 @@ interface PaymentLedgerProps {
   trialId?: string;
   onEdit?: (payment: ClinicalTrialPayment) => void;
   onPaymentsChange?: (payments: ClinicalTrialPayment[]) => void;
+  onOpenHandover?: (payment: ClinicalTrialPayment) => void;
 }
 
 function formatCurrency(value?: number) {
@@ -35,14 +37,17 @@ function PaymentRow({
   onToggle,
   onEdit,
   onDelete,
+  onOpenHandover,
 }: {
   payment: ClinicalTrialPayment
   isExpanded: boolean
   onToggle: () => void
   onEdit?: (payment: ClinicalTrialPayment) => void
   onDelete?: (paymentId: string) => void
+  onOpenHandover?: (payment: ClinicalTrialPayment) => void
 }) {
   const hasSplits = payment.splitAriha || payment.splitDepartment || payment.splitSubUnit1 || payment.splitSubUnit2 || payment.splitFinance || payment.splitPharmacy;
+  const hasCostItems = payment.costItems && payment.costItems.length > 0;
 
   return (
     <div className="border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden">
@@ -76,6 +81,15 @@ function PaymentRow({
           />
         </button>
         <div className="flex items-center gap-1 ml-2 opacity-0 group-hover:opacity-100 transition">
+          {payment.status === "approved" && onOpenHandover && (
+            <button
+              onClick={() => onOpenHandover(payment)}
+              className="p-1.5 rounded-lg hover:bg-green-50 dark:hover:bg-green-900/20 text-green-600 dark:text-green-400 transition"
+              title="Lập biên bản bàn giao"
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+          )}
           {onEdit && (
             <button
               onClick={() => onEdit(payment)}
@@ -99,8 +113,41 @@ function PaymentRow({
 
       {isExpanded && (
         <div className="border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/30 p-4 space-y-4">
-          {/* Cost Splitting — only show if splitMode is "percentage" */}
-          {hasSplits && payment.splitMode === "percentage" && (
+          {/* Cost Items (New Model) */}
+          {hasCostItems && (
+            <div className="space-y-2">
+              <h4 className="text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wide">Phân chia chi phí</h4>
+              <div className="space-y-1.5">
+                {payment.costItems?.map((item) => {
+                  const amount = calculateCostItemAmount(item, payment.totalAmount || 0);
+                  const percentage = payment.totalAmount ? ((amount / payment.totalAmount) * 100).toFixed(1) : "0";
+                  return (
+                    <div key={item.id} className="flex items-center justify-between text-xs px-2.5 py-1.5 bg-white dark:bg-slate-800 rounded border border-slate-200 dark:border-slate-700">
+                      <div className="flex-1">
+                        <p className="text-slate-700 dark:text-slate-300 font-medium">{item.name}</p>
+                        {item.unit && (
+                          <p className="text-slate-500 dark:text-slate-400 text-xs">→ {item.unit}</p>
+                        )}
+                      </div>
+                      <div className="text-right ml-2">
+                        <p className="text-slate-700 dark:text-slate-300 font-semibold">
+                          {new Intl.NumberFormat("vi-VN", {
+                            style: "currency",
+                            currency: "VND",
+                            maximumFractionDigits: 0,
+                          }).format(amount)}
+                        </p>
+                        <p className="text-slate-500 dark:text-slate-400">{percentage}%</p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Cost Splitting — Legacy (shown only if no costItems) */}
+          {!hasCostItems && hasSplits && payment.splitMode === "percentage" && (
             <div className="space-y-2">
               <h4 className="text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wide">Phân chia chi phí (%)</h4>
               <div className="grid grid-cols-2 gap-2">
@@ -156,7 +203,7 @@ function PaymentRow({
   );
 }
 
-export function PaymentLedger({ payments, trialId, onEdit, onPaymentsChange }: PaymentLedgerProps) {
+export function PaymentLedger({ payments, trialId, onEdit, onPaymentsChange, onOpenHandover }: PaymentLedgerProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -230,6 +277,7 @@ export function PaymentLedger({ payments, trialId, onEdit, onPaymentsChange }: P
               onToggle={() => setExpandedId(expandedId === payment.id ? null : payment.id)}
               onEdit={onEdit}
               onDelete={() => setDeleteConfirm(payment.id)}
+              onOpenHandover={onOpenHandover}
             />
             {/* Delete Confirmation */}
             {deleteConfirm === payment.id && (

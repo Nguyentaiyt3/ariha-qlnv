@@ -4,7 +4,8 @@ import { useState } from "react";
 import { X, Loader2, FileText } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import type { ClinicalTrialPayment } from "@/types";
+import { calculateCostItemAmount } from "@/lib/utils/costCalculator";
+import type { ClinicalTrialPayment, CostItem } from "@/types";
 
 interface HandoverFormModalProps {
   isOpen: boolean;
@@ -33,9 +34,27 @@ export function HandoverFormModal({
     payment.settlement?.actualReceivedAmount || payment.totalAmount || 0
   );
 
+  // Use new costItems if available, otherwise fall back to legacy splits
+  const useCostItems = payment.costItems && payment.costItems.length > 0;
   const isPercentage = payment.splitMode === "percentage";
 
-  function calculateSplits() {
+  function getCostItemsForHandover(): Array<{
+    id: string;
+    name: string;
+    unit?: string;
+    amount: number;
+  }> {
+    if (!useCostItems || !payment.costItems) return [];
+
+    return payment.costItems.map((item: CostItem) => ({
+      id: item.id,
+      name: item.name,
+      unit: item.unit,
+      amount: calculateCostItemAmount(item, actualAmount),
+    }));
+  }
+
+  function getLegacySplits() {
     if (isPercentage) {
       return {
         ariha: (actualAmount * (payment.splitAriha || 0)) / 100,
@@ -46,7 +65,6 @@ export function HandoverFormModal({
         pharmacy: (actualAmount * (payment.splitPharmacy || 0)) / 100,
       };
     }
-    // Nếu là số tiền, tính lại tỷ lệ dựa trên số tiền thực lĩnh
     const ratio = (payment.totalAmount || 1) / (actualAmount || 1);
     return {
       ariha: (payment.splitAriha || 0) / ratio,
@@ -58,8 +76,11 @@ export function HandoverFormModal({
     };
   }
 
-  const splits = calculateSplits();
-  const total = Object.values(splits).reduce((a, b) => a + b, 0);
+  const costItemsForHandover = getCostItemsForHandover();
+  const splits = useCostItems ? null : getLegacySplits();
+  const total = useCostItems
+    ? costItemsForHandover.reduce((sum, item) => sum + item.amount, 0)
+    : Object.values(splits || {}).reduce((a, b) => a + b, 0);
 
   async function handleSubmit() {
     if (!actualAmount || actualAmount <= 0) {
@@ -69,15 +90,22 @@ export function HandoverFormModal({
 
     setLoading(true);
     try {
+      const payload: any = {
+        actualReceivedAmount: actualAmount,
+      };
+
+      if (useCostItems) {
+        payload.costItems = costItemsForHandover;
+      } else {
+        payload.splits = splits;
+      }
+
       const response = await fetch(
         `/api/clinical-trials/payments/${payment.id}/create-handover`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            actualReceivedAmount: actualAmount,
-            splits,
-          }),
+          body: JSON.stringify(payload),
         }
       );
 
@@ -176,52 +204,77 @@ export function HandoverFormModal({
         {/* Cost Split Preview */}
         <div className="space-y-3">
           <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-            Phân chia chi phí {isPercentage ? "(Phần trăm)" : "(Số tiền)"}
+            Phân chia chi phí
           </h4>
           <div className="space-y-2">
-            {payment.splitAriha !== undefined && payment.splitAriha > 0 && (
-              <div className="flex justify-between items-center p-2 bg-slate-50 dark:bg-slate-800 rounded-lg text-sm">
-                <span className="text-slate-600 dark:text-slate-400">
-                  ARiHA
-                  {isPercentage ? ` (${payment.splitAriha}%)` : ""}
-                </span>
-                <span className="font-semibold text-slate-700 dark:text-white">
-                  {vnd(splits.ariha)}
-                </span>
-              </div>
-            )}
-            {payment.splitDepartment !== undefined && payment.splitDepartment > 0 && (
-              <div className="flex justify-between items-center p-2 bg-slate-50 dark:bg-slate-800 rounded-lg text-sm">
-                <span className="text-slate-600 dark:text-slate-400">
-                  Khoa chủ trì
-                  {isPercentage ? ` (${payment.splitDepartment}%)` : ""}
-                </span>
-                <span className="font-semibold text-slate-700 dark:text-white">
-                  {vnd(splits.department)}
-                </span>
-              </div>
-            )}
-            {payment.splitFinance !== undefined && payment.splitFinance > 0 && (
-              <div className="flex justify-between items-center p-2 bg-amber-50 dark:bg-amber-900/20 rounded-lg text-sm border border-amber-200 dark:border-amber-800">
-                <span className="text-amber-700 dark:text-amber-300">
-                  Tài chính (có thể giữ lại)
-                  {isPercentage ? ` (${payment.splitFinance}%)` : ""}
-                </span>
-                <span className="font-semibold text-amber-700 dark:text-amber-300">
-                  {vnd(splits.finance)}
-                </span>
-              </div>
-            )}
-            {payment.splitPharmacy !== undefined && payment.splitPharmacy > 0 && (
-              <div className="flex justify-between items-center p-2 bg-slate-50 dark:bg-slate-800 rounded-lg text-sm">
-                <span className="text-slate-600 dark:text-slate-400">
-                  Khoa Dược
-                  {isPercentage ? ` (${payment.splitPharmacy}%)` : ""}
-                </span>
-                <span className="font-semibold text-slate-700 dark:text-white">
-                  {vnd(splits.pharmacy)}
-                </span>
-              </div>
+            {useCostItems ? (
+              <>
+                {costItemsForHandover.map((item) => (
+                  <div
+                    key={item.id}
+                    className="flex justify-between items-center p-2 bg-slate-50 dark:bg-slate-800 rounded-lg text-sm"
+                  >
+                    <div>
+                      <p className="text-slate-600 dark:text-slate-400">{item.name}</p>
+                      {item.unit && (
+                        <p className="text-xs text-slate-500 dark:text-slate-400">
+                          → {item.unit}
+                        </p>
+                      )}
+                    </div>
+                    <span className="font-semibold text-slate-700 dark:text-white">
+                      {vnd(item.amount)}
+                    </span>
+                  </div>
+                ))}
+              </>
+            ) : (
+              <>
+                {payment.splitAriha !== undefined && payment.splitAriha > 0 && (
+                  <div className="flex justify-between items-center p-2 bg-slate-50 dark:bg-slate-800 rounded-lg text-sm">
+                    <span className="text-slate-600 dark:text-slate-400">
+                      ARiHA
+                      {isPercentage ? ` (${payment.splitAriha}%)` : ""}
+                    </span>
+                    <span className="font-semibold text-slate-700 dark:text-white">
+                      {vnd(splits?.ariha || 0)}
+                    </span>
+                  </div>
+                )}
+                {payment.splitDepartment !== undefined && payment.splitDepartment > 0 && (
+                  <div className="flex justify-between items-center p-2 bg-slate-50 dark:bg-slate-800 rounded-lg text-sm">
+                    <span className="text-slate-600 dark:text-slate-400">
+                      Khoa chủ trì
+                      {isPercentage ? ` (${payment.splitDepartment}%)` : ""}
+                    </span>
+                    <span className="font-semibold text-slate-700 dark:text-white">
+                      {vnd(splits?.department || 0)}
+                    </span>
+                  </div>
+                )}
+                {payment.splitFinance !== undefined && payment.splitFinance > 0 && (
+                  <div className="flex justify-between items-center p-2 bg-amber-50 dark:bg-amber-900/20 rounded-lg text-sm border border-amber-200 dark:border-amber-800">
+                    <span className="text-amber-700 dark:text-amber-300">
+                      Tài chính (có thể giữ lại)
+                      {isPercentage ? ` (${payment.splitFinance}%)` : ""}
+                    </span>
+                    <span className="font-semibold text-amber-700 dark:text-amber-300">
+                      {vnd(splits?.finance || 0)}
+                    </span>
+                  </div>
+                )}
+                {payment.splitPharmacy !== undefined && payment.splitPharmacy > 0 && (
+                  <div className="flex justify-between items-center p-2 bg-slate-50 dark:bg-slate-800 rounded-lg text-sm">
+                    <span className="text-slate-600 dark:text-slate-400">
+                      Khoa Dược
+                      {isPercentage ? ` (${payment.splitPharmacy}%)` : ""}
+                    </span>
+                    <span className="font-semibold text-slate-700 dark:text-white">
+                      {vnd(splits?.pharmacy || 0)}
+                    </span>
+                  </div>
+                )}
+              </>
             )}
             <div className="flex justify-between items-center p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800">
               <span className="font-semibold text-blue-700 dark:text-blue-300">
