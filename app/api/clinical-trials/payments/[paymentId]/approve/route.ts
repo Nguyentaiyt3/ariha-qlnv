@@ -8,7 +8,7 @@ export async function POST(
   try {
     const { paymentId } = params;
     const body = await request.json();
-    const { approvedBy, approvedByUserId, approverRole } = body;
+    const { approvedBy, approvedByUserId, approverRole, approverPosition } = body;
 
     // Find trial with this payment
     const trials = await getClinicalTrials();
@@ -32,6 +32,7 @@ export async function POST(
             approvedBy,
             approvedByUserId,
             approverRole,
+            approverPosition,
             approvedAt: new Date().toISOString(),
           }
         : p

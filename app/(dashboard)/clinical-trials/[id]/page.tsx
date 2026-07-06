@@ -19,6 +19,7 @@ import { EnrollmentDashboard } from "@/components/clinical-trials/EnrollmentDash
 import { PaymentLedger } from "@/components/clinical-trials/PaymentLedger";
 import { PaymentFormModal } from "@/components/clinical-trials/PaymentFormModal";
 import { HandoverFormModal } from "@/components/finance/HandoverFormModal";
+import { HandoverDistributionModal } from "@/components/finance/HandoverDistributionModal";
 import { UpdateEnrollmentModal } from "@/components/clinical-trials/UpdateEnrollmentModal";
 import { EnrollmentShareModal } from "@/components/clinical-trials/EnrollmentShareModal";
 import { EnrollmentLinkModal } from "@/components/clinical-trials/EnrollmentLinkModal";
@@ -53,6 +54,7 @@ export default function ClinicalTrialDetailPage() {
   const [showAddPayment, setShowAddPayment] = useState(false);
   const [editingPayment, setEditingPayment] = useState<ClinicalTrialPayment | undefined>();
   const [handoverPayment, setHandoverPayment] = useState<ClinicalTrialPayment | undefined>();
+  const [distributionPayment, setDistributionPayment] = useState<ClinicalTrialPayment | undefined>();
   const [activeTab, setActiveTab] = useState<"enrollment" | "info" | "payment">("enrollment");
 
   const canManage = !!currentUser && hasPermission(currentUser.role, "trial:manage");
@@ -74,13 +76,18 @@ export default function ClinicalTrialDetailPage() {
   async function handleStatusChange(status: ClinicalTrialStatus) {
     if (!trial || !canManage) return;
     const prev = trial.status;
-    setTrial({ ...trial, status });
+    const prevHistory = trial.statusHistory;
+    const statusHistory = [
+      ...(trial.statusHistory || []),
+      { status, changedAt: new Date().toISOString(), changedBy: currentUser?.name },
+    ];
+    setTrial({ ...trial, status, statusHistory });
     try {
-      await updateClinicalTrial(trial.id, { status });
+      await updateClinicalTrial(trial.id, { status, statusHistory });
       toast.success("Đã cập nhật trạng thái");
     } catch {
       toast.error("Cập nhật thất bại — đang hoàn tác");
-      setTrial({ ...trial, status: prev });
+      setTrial({ ...trial, status: prev, statusHistory: prevHistory });
     }
   }
 
@@ -281,6 +288,9 @@ export default function ClinicalTrialDetailPage() {
                   onOpenHandover={(payment) => {
                     setHandoverPayment(payment);
                   }}
+                  onOpenDistribution={(payment) => {
+                    setDistributionPayment(payment);
+                  }}
                 />
               ) : (
                 <p className="text-sm text-slate-400 py-4">Chưa có bản ghi thanh toán</p>
@@ -372,8 +382,27 @@ export default function ClinicalTrialDetailPage() {
           trialCode={trial?.code || ""}
           onSuccess={() => {
             setHandoverPayment(undefined);
-            // Reload trial data to show updated settlement info
             getClinicalTrial(id).then((t) => setTrial(t));
+          }}
+          onSave={() => {
+            // Refresh trial data after save (without closing modal)
+            getClinicalTrial(id).then((t) => setTrial(t));
+          }}
+        />
+      )}
+
+      {distributionPayment && (
+        <HandoverDistributionModal
+          isOpen={!!distributionPayment}
+          onClose={() => setDistributionPayment(undefined)}
+          payment={distributionPayment}
+          trialCode={trial?.code || ""}
+          onSuccess={() => {
+            getClinicalTrial(id).then((t) => {
+              setTrial(t);
+              const updated = t?.payments?.find((p) => p.id === distributionPayment.id);
+              if (updated) setDistributionPayment(updated);
+            });
           }}
         />
       )}

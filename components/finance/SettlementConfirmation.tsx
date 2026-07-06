@@ -94,6 +94,8 @@ export function SettlementConfirmationUI({
   const [verificationNote, setVerificationNote] = useState("");
   const [showVerifyModal, setShowVerifyModal] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [selectedCostItems, setSelectedCostItems] = useState<Record<string, boolean>>({});
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
 
   const settlement = payment.settlement;
   const isFinancialApprover = ["director", "teamLead", "financeSupervisor"].includes(
@@ -234,6 +236,106 @@ export function SettlementConfirmationUI({
 
   // Confirmed but not verified
   if (settlement?.status === "confirmed") {
+    const costItems = payment.costItems || [];
+    const vnd = (n: number) =>
+      new Intl.NumberFormat("vi-VN", { style: "currency", currency: "VND", maximumFractionDigits: 0 }).format(n);
+
+    // Initialize selected items on first render
+    if (Object.keys(selectedCostItems).length === 0 && costItems.length > 0) {
+      const initial: Record<string, boolean> = {};
+      costItems.forEach((item) => {
+        initial[item.id] = true; // Default: all selected
+      });
+      setSelectedCostItems(initial);
+    }
+
+    const totalNetAmount = costItems
+      .filter((item) => selectedCostItems[item.id])
+      .reduce((sum, item) => {
+        const amount = item.percentage
+          ? (payment.totalAmount || 0) * (item.percentage / 100)
+          : item.amount || 0;
+        return sum + amount;
+      }, 0);
+
+    const handleToggleCostItem = (itemId: string) => {
+      setSelectedCostItems((prev) => ({
+        ...prev,
+        [itemId]: !prev[itemId],
+      }));
+      setHasUnsavedChanges(true);
+    };
+
+    const handleSaveSelection = async () => {
+      setLoading(true);
+      try {
+        const selectedItems = costItems.filter((item) => selectedCostItems[item.id]);
+        const response = await fetch(
+          `/api/clinical-trials/payments/${payment.id}/update-handover-selection`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              selectedCostItemIds: selectedItems.map((item) => item.id),
+              netAmount: totalNetAmount,
+              updatedBy: currentUser?.name,
+              updatedByUserId: currentUser?.id,
+            }),
+          }
+        );
+
+        if (!response.ok) throw new Error("Failed to save selection");
+        toast.success("Đã lưu lựa chọn khoản chi");
+        setHasUnsavedChanges(false);
+      } catch (error) {
+        toast.error("Lỗi khi lưu lựa chọn");
+        console.error(error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    const handleGenerateHandover = async () => {
+      setLoading(true);
+      try {
+        const response = await fetch(
+          `/api/clinical-trials/payments/${payment.id}/generate-handover`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              selectedCostItemIds: Object.entries(selectedCostItems)
+                .filter(([, selected]) => selected)
+                .map(([id]) => id),
+              netAmount: totalNetAmount,
+              generatedBy: currentUser?.name,
+              generatedByUserId: currentUser?.id,
+            }),
+          }
+        );
+
+        if (!response.ok) throw new Error("Failed to generate handover");
+
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `bienbangiaonhan_${payment.id}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+
+        toast.success("Đã tạo biên bản giao nhận");
+        onSettlementUpdated?.();
+      } catch (error) {
+        toast.error("Lỗi khi tạo biên bản");
+        console.error(error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
     return (
       <div className="space-y-4">
         <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-4">
@@ -247,17 +349,6 @@ export function SettlementConfirmationUI({
                 {settlement.confirmedBy} xác nhận lúc{" "}
                 {new Date(settlement.confirmedAt!).toLocaleString("vi-VN")}
               </p>
-              {settlement.handoverDocumentUrl && (
-                <a
-                  href={settlement.handoverDocumentUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-sm text-blue-600 dark:text-blue-400 hover:underline mt-1 inline-flex items-center gap-1"
-                >
-                  <FileText className="w-3 h-3" />
-                  Xem biên bản giao nhận
-                </a>
-              )}
             </div>
           </div>
         </div>
