@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyToken, getUser } from "@/lib/mongodb/auth";
-import { getClinicalTrials, createClinicalTrial } from "@/lib/mongodb/firestore";
+import { getClinicalTrials, getClinicalTrial, createClinicalTrial } from "@/lib/mongodb/firestore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { generateId } from "@/lib/utils";
+import { ensurePhaseTask } from "@/lib/mongodb/clinicalTrialTask";
 
 async function auth(req: NextRequest) {
   const token = req.cookies.get("auth-token")?.value;
@@ -42,5 +43,13 @@ export async function POST(req: NextRequest) {
     createdBy: body.createdBy || session.userId,
     createdByName: body.createdByName || me.name,
   });
+
+  // Chỉ sinh Task pha "Khảo sát tính khả thi" cho trial MỚI bắt đầu (không spam khi import Excel
+  // dữ liệu lịch sử đã ở giai đoạn sau — các trial đó bỏ qua điều kiện này).
+  if (!body.status || body.status === "feasibility") {
+    const trial = await getClinicalTrial(id);
+    if (trial) await ensurePhaseTask(trial, "feasibility", session.userId);
+  }
+
   return NextResponse.json({ success: true, id });
 }

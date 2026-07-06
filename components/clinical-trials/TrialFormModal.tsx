@@ -1,12 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { X, Loader2, FlaskConical } from "lucide-react";
 import { toast } from "sonner";
 import { generateId } from "@/lib/utils";
 import { saveClinicalTrial, updateClinicalTrial } from "@/lib/firebase/firestore";
 import { ContactListEditor } from "./ContactListEditor";
-import type { ClinicalTrial, ClinicalTrialStatus, ClinicalTrialContact } from "@/types";
+import type { ClinicalTrial, ClinicalTrialStatus, ClinicalTrialContact, UnitDef, User } from "@/types";
 import { CLINICAL_TRIAL_STATUS_LABEL } from "@/types";
 
 interface Props {
@@ -16,20 +16,6 @@ interface Props {
   onClose: () => void;
   onSaved: (t: ClinicalTrial) => void;
 }
-
-const DEPARTMENTS = [
-  "Cấp cứu", "Chẩn đoán hình ảnh", "Điều dưỡng", "Dinh dưỡng lâm sàng", "Dược",
-  "Giải phẫu bệnh", "Hóa sinh", "Hồi sức tích cực-chống độc", "Huyết học",
-  "Khám bệnh", "Khám bệnh theo yêu cầu", "Kiểm soát nhiễm khuẩn", "Mắt",
-  "Ngoại chấn thương chỉnh hình", "Ngoại điều trị theo yêu cầu", "Ngoại gan mật",
-  "Ngoại thần kinh", "Ngoại tiết niệu", "Ngoại tiêu hoá", "Nhịp tim",
-  "Nội cơ xương khớp", "Nội Điều trị theo yêu cầu", "Nội hô hấp", "Nội nhiễm",
-  "Nội thần kinh", "Nội thận-lọc máu", "Nội tiết", "Nội tim mạch",
-  "Phẫu thuật gây mê hồi sức", "Phẫu thuật hàm mặt thẩm mỹ",
-  "Phòng Bảo vệ sức khỏe trung ương 2B", "Phục hồi chức năng", "Tai mũi họng",
-  "Thăm dò chức năng & Nội soi", "Tim mạch cấp cứu can thiệp", "Ung bướu",
-  "Vi sinh", "Y học cổ truyền",
-];
 
 const SPONSORS = [
   "AstraZeneca", "Boehringer Ingelheim", "Janssen Research & Development, LLC",
@@ -65,8 +51,20 @@ export function TrialFormModal({ initialData, creatorId, creatorName, onClose, o
   const [abbreviation, setAbbreviation] = useState(initialData?.abbreviation ?? "");
   const [nctCode, setNctCode] = useState(initialData?.nctCode ?? "");
   const [piName, setPiName] = useState(initialData?.principalInvestigatorName ?? "");
+  const [piId, setPiId] = useState(initialData?.principalInvestigatorId ?? "");
   const [department, setDepartment] = useState(initialData?.department ?? "");
   const [sponsor, setSponsor] = useState(initialData?.sponsor ?? "");
+
+  // Autocomplete: Khoa thực hiện (bảng đơn vị) + Nghiên cứu viên chính (bảng nhân viên)
+  const [units, setUnits] = useState<UnitDef[]>([]);
+  const [employees, setEmployees] = useState<User[]>([]);
+  const [editingDept, setEditingDept] = useState(false);
+  const [editingPi, setEditingPi] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/units").then((r) => r.json()).then((d) => setUnits(d.catalog || [])).catch(() => setUnits([]));
+    fetch("/api/users").then((r) => r.json()).then((d) => setEmployees(d.users || [])).catch(() => setEmployees([]));
+  }, []);
   const [cro, setCro] = useState(initialData?.cro ?? "");
   const [smo, setSmo] = useState(initialData?.smo ?? "");
   const [cra, setCra] = useState<ClinicalTrialContact[]>(initialData?.cra ?? []);
@@ -93,6 +91,7 @@ export function TrialFormModal({ initialData, creatorId, creatorName, onClose, o
         const updates: Partial<ClinicalTrial> = {
           code, title, abbreviation, nctCode,
           principalInvestigatorName: piName,
+          principalInvestigatorId: piId || undefined,
           department, sponsor, cro, smo, cra: craFiltered, crc: crcFiltered,
           startPeriod, endPeriod, status, statusReason, zaloGroupUrl,
         };
@@ -104,6 +103,7 @@ export function TrialFormModal({ initialData, creatorId, creatorName, onClose, o
           id: generateId("trial"),
           code, title, abbreviation, nctCode,
           principalInvestigatorName: piName,
+          principalInvestigatorId: piId || undefined,
           department, sponsor, cro, smo, cra: craFiltered, crc: crcFiltered,
           startPeriod, endPeriod, status, statusReason, zaloGroupUrl,
           documents: [], payments: [],
@@ -153,14 +153,70 @@ export function TrialFormModal({ initialData, creatorId, creatorName, onClose, o
               <input className={inputCls} value={nctCode} onChange={(e) => setNctCode(e.target.value)} />
             </Field>
             <Field label="Nghiên cứu viên chính (PI)">
-              <input className={inputCls} value={piName} onChange={(e) => setPiName(e.target.value)} placeholder="PGS.TS.BS. ..." />
+              <div className="relative">
+                <input
+                  className={inputCls}
+                  value={piName}
+                  onChange={(e) => { setPiName(e.target.value); setPiId(""); setEditingPi(true); }}
+                  onFocus={() => setEditingPi(true)}
+                  onBlur={() => setTimeout(() => setEditingPi(false), 200)}
+                  placeholder="PGS.TS.BS. ..."
+                />
+                {editingPi && (
+                  <div className="absolute top-full left-0 right-0 mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg z-50 max-h-60 overflow-y-auto">
+                    {employees
+                      .filter((u) => u.name.toLowerCase().includes(piName.toLowerCase()))
+                      .slice(0, 20)
+                      .map((u) => (
+                        <button
+                          key={u.id}
+                          type="button"
+                          onClick={() => { setPiName(u.name); setPiId(u.id); setEditingPi(false); }}
+                          className="w-full text-left px-3 py-2 text-sm text-slate-700 dark:text-slate-300 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition"
+                        >
+                          <div className="font-medium">{u.name}</div>
+                          {u.position && <div className="text-xs text-slate-400">{u.position}</div>}
+                        </button>
+                      ))}
+                    {employees.filter((u) => u.name.toLowerCase().includes(piName.toLowerCase())).length === 0 && (
+                      <div className="px-3 py-2 text-sm text-slate-500 dark:text-slate-400">Không tìm thấy nhân viên</div>
+                    )}
+                  </div>
+                )}
+              </div>
             </Field>
 
             <Field label="Khoa thực hiện">
-              <input list="trial-departments" className={inputCls} value={department} onChange={(e) => setDepartment(e.target.value)} />
-              <datalist id="trial-departments">
-                {DEPARTMENTS.map((d) => <option key={d} value={d} />)}
-              </datalist>
+              <div className="relative">
+                <input
+                  className={inputCls}
+                  value={department}
+                  onChange={(e) => { setDepartment(e.target.value); setEditingDept(true); }}
+                  onFocus={() => setEditingDept(true)}
+                  onBlur={() => setTimeout(() => setEditingDept(false), 200)}
+                  placeholder="Chọn đơn vị"
+                />
+                {editingDept && (
+                  <div className="absolute top-full left-0 right-0 mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg z-50 max-h-60 overflow-y-auto">
+                    {units
+                      .filter((u) => u.name.toLowerCase().includes(department.toLowerCase()))
+                      .slice(0, 20)
+                      .map((u) => (
+                        <button
+                          key={u.id}
+                          type="button"
+                          onClick={() => { setDepartment(u.name); setEditingDept(false); }}
+                          className="w-full text-left px-3 py-2 text-sm text-slate-700 dark:text-slate-300 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition"
+                        >
+                          {u.name}
+                        </button>
+                      ))}
+                    {units.filter((u) => u.name.toLowerCase().includes(department.toLowerCase())).length === 0 && (
+                      <div className="px-3 py-2 text-sm text-slate-500 dark:text-slate-400">Không tìm thấy đơn vị</div>
+                    )}
+                  </div>
+                )}
+              </div>
             </Field>
             <Field label="Nhà tài trợ">
               <input list="trial-sponsors" className={inputCls} value={sponsor} onChange={(e) => setSponsor(e.target.value)} />

@@ -1,9 +1,13 @@
 "use client";
 
-import { useMemo } from "react";
-import { format, startOfMonth, endOfMonth, addMonths, differenceInDays, parseISO, isValid } from "date-fns";
+import { useMemo, useRef, useState, useEffect, useLayoutEffect } from "react";
+import {
+  format, startOfMonth, endOfMonth, addMonths, differenceInDays, parseISO, isValid,
+  startOfQuarter, endOfQuarter, addQuarters, startOfYear, endOfYear, addYears,
+} from "date-fns";
 import { vi } from "date-fns/locale";
 import { cn } from "@/lib/utils";
+import { parseTrialPeriod } from "@/lib/utils/clinicalTrialPeriod";
 import { CLINICAL_TRIAL_STATUS_LABEL, CLINICAL_TRIAL_PIPELINE, CLINICAL_TRIAL_TERMINAL_BRANCHES } from "@/types";
 import type { ClinicalTrial, ClinicalTrialStatus } from "@/types";
 
@@ -33,7 +37,22 @@ function colorOf(status: ClinicalTrialStatus | "unknown") {
 const ROW_H = 44;
 const HEADER_H = 40;
 const LABEL_W = 240;
-const MONTH_W = 56; // px per month column
+
+type ZoomLevel = "month" | "quarter" | "year";
+
+// Mật độ px/ngày theo từng mức zoom — Năm mặc định để cả nhiều năm gọn trong màn hình,
+// Tháng chi tiết hơn nhưng cần cuộn ngang.
+const ZOOM_PX_PER_DAY: Record<ZoomLevel, number> = {
+  month: 1.85,
+  quarter: 0.7,
+  year: 0.22,
+};
+
+const ZOOM_LABEL: Record<ZoomLevel, string> = {
+  month: "Tháng",
+  quarter: "Quý",
+  year: "Năm",
+};
 
 interface TrialGanttViewProps {
   trials: ClinicalTrial[];
@@ -45,72 +64,6 @@ interface GanttRow {
   start: Date;
   end: Date;
   firstEnrollmentAt: Date | null;
-}
-
-function stripDiacritics(str: string): string {
-  return str.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/đ/gi, "d");
-}
-
-const ROMAN_QUARTER: Record<string, number> = { i: 1, ii: 2, iii: 3, iv: 4 };
-const QUARTER_START_MONTH = [-1, 0, 3, 6, 9]; // index 1-4 -> month (0-indexed); index 0 unused
-
-/**
- * Dữ liệu startPeriod/endPeriod thực tế không thống nhất định dạng — có thể là
- * "M/YYYY", "Quý N/YYYY" (số hoặc số La Mã, có/không dấu, viết tắt "Q"), "DD/MM/YYYY",
- * chỉ năm, có tiền tố "Dự kiến"/"Tháng", hoặc câu tự do có chứa ngày (vd "Đã ngừng thu tuyển ngày 23/8/2025").
- * Parser này thử lần lượt từ chặt chẽ nhất đến "cứu vãn" ngày nhúng trong câu.
- */
-function parsePeriod(raw?: string): Date | null {
-  if (!raw) return null;
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-
-  // 1. Ngày đầy đủ (3 phần số) — ưu tiên DD/MM/YYYY, fallback MM/DD/YYYY nếu DD/MM không hợp lệ
-  let m = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (m) {
-    const a = parseInt(m[1], 10), b = parseInt(m[2], 10), year = parseInt(m[3], 10);
-    if (b >= 1 && b <= 12 && a >= 1 && a <= 31) return new Date(year, b - 1, a);
-    if (a >= 1 && a <= 12 && b >= 1 && b <= 31) return new Date(year, a - 1, b);
-  }
-
-  // Chuẩn hoá + bỏ tiền tố quen thuộc cho các bước còn lại
-  let s = stripDiacritics(trimmed).toLowerCase().trim();
-  s = s.replace(/^du\s+kien\s+/, "");
-  s = s.replace(/^thang\s+/, "");
-
-  // 2. Định dạng quý: "Quý IV/2023", "Q4/2024", "Quý 3/2024 (ghi chú)"...
-  m = s.match(/^q[a-z]*\s*([ivx]+|\d)\s*\/\s*(\d{4})/);
-  if (m) {
-    const qRaw = m[1];
-    const quarter = /^\d+$/.test(qRaw) ? parseInt(qRaw, 10) : ROMAN_QUARTER[qRaw];
-    const year = parseInt(m[2], 10);
-    if (quarter >= 1 && quarter <= 4) return new Date(year, QUARTER_START_MONTH[quarter], 1);
-  }
-
-  // 3. M/YYYY
-  m = s.match(/^(\d{1,2})\/(\d{4})/);
-  if (m) {
-    const month = parseInt(m[1], 10);
-    const year = parseInt(m[2], 10);
-    if (month >= 1 && month <= 12) return new Date(year, month - 1, 1);
-  }
-
-  // 4. Chỉ có năm
-  m = s.match(/^(\d{4})/);
-  if (m) return new Date(parseInt(m[1], 10), 0, 1);
-
-  // 5. Cứu vãn: tìm ngày DD/MM/YYYY nhúng trong câu tự do
-  m = trimmed.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-  if (m) {
-    const day = parseInt(m[1], 10), month = parseInt(m[2], 10), year = parseInt(m[3], 10);
-    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) return new Date(year, month - 1, day);
-  }
-
-  return null;
-}
-
-function monthsBetween(a: Date, b: Date): number {
-  return (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth());
 }
 
 interface Segment {
@@ -168,15 +121,45 @@ function buildSegments(trial: ClinicalTrial, barStart: Date, barEnd: Date, today
   return segments;
 }
 
-function buildMonths(start: Date, end: Date): { label: string }[] {
-  const months: { label: string }[] = [];
-  let cursor = startOfMonth(start);
-  const last = startOfMonth(end);
-  while (cursor <= last) {
-    months.push({ label: format(cursor, "MM/yyyy", { locale: vi }) });
-    cursor = addMonths(cursor, 1);
+interface Column {
+  label: string;
+  days: number; // số ngày thực tế của cột (dùng để tính bề rộng tỉ lệ, khớp vị trí bar)
+}
+
+/** Sinh danh sách cột tiêu đề (tháng/quý/năm) trong khoảng [start, end], bề rộng tỉ lệ theo số ngày thực. */
+function buildColumns(start: Date, end: Date, zoom: ZoomLevel): Column[] {
+  const columns: Column[] = [];
+
+  if (zoom === "year") {
+    let cursor = startOfYear(start);
+    while (cursor <= end) {
+      const colEnd = endOfYear(cursor);
+      const clampStart = cursor < start ? start : cursor;
+      const clampEnd = colEnd > end ? end : colEnd;
+      columns.push({ label: format(cursor, "yyyy"), days: differenceInDays(clampEnd, clampStart) + 1 });
+      cursor = addYears(cursor, 1);
+    }
+  } else if (zoom === "quarter") {
+    let cursor = startOfQuarter(start);
+    while (cursor <= end) {
+      const colEnd = endOfQuarter(cursor);
+      const clampStart = cursor < start ? start : cursor;
+      const clampEnd = colEnd > end ? end : colEnd;
+      columns.push({ label: `Q${Math.floor(cursor.getMonth() / 3) + 1}/${format(cursor, "yyyy")}`, days: differenceInDays(clampEnd, clampStart) + 1 });
+      cursor = addQuarters(cursor, 1);
+    }
+  } else {
+    let cursor = startOfMonth(start);
+    while (cursor <= end) {
+      const colEnd = endOfMonth(cursor);
+      const clampStart = cursor < start ? start : cursor;
+      const clampEnd = colEnd > end ? end : colEnd;
+      columns.push({ label: format(cursor, "MM/yyyy", { locale: vi }), days: differenceInDays(clampEnd, clampStart) + 1 });
+      cursor = addMonths(cursor, 1);
+    }
   }
-  return months;
+
+  return columns;
 }
 
 const PHASE_GROUPS: { label: string; icon: string; statuses: ClinicalTrialStatus[] }[] = [
@@ -191,38 +174,40 @@ const PHASE_GROUPS: { label: string; icon: string; statuses: ClinicalTrialStatus
 
 export function TrialGanttView({ trials, onSelectTrial }: TrialGanttViewProps) {
   const today = useMemo(() => new Date(), []);
+  const [zoom, setZoom] = useState<ZoomLevel>("year");
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   const { rows, noDateTrials } = useMemo(() => {
     const rows: GanttRow[] = [];
     const noDateTrials: ClinicalTrial[] = [];
     for (const trial of trials) {
-      const startRaw = parsePeriod(trial.startPeriod);
-      const endRaw = parsePeriod(trial.endPeriod);
+      const startRaw = parseTrialPeriod(trial.startPeriod);
+      const endRaw = parseTrialPeriod(trial.endPeriod);
       if (!startRaw || !endRaw) {
         noDateTrials.push(trial);
         continue;
       }
       const start = startOfMonth(startRaw < endRaw ? startRaw : endRaw);
       const end = endOfMonth(startRaw < endRaw ? endRaw : startRaw);
-      const firstEnrollmentAt = parsePeriod(trial.firstEnrollmentDate);
+      const firstEnrollmentAt = parseTrialPeriod(trial.firstEnrollmentDate);
       rows.push({ trial, start, end, firstEnrollmentAt });
     }
     return { rows, noDateTrials };
   }, [trials]);
 
-  const { ganttStart, ganttEnd, months, totalMonths } = useMemo(() => {
+  // Luôn bao gồm "hôm nay" trong khoảng hiển thị, kể cả khi nằm ngoài phạm vi start/end của các nghiên cứu
+  const { ganttStart, ganttEnd } = useMemo(() => {
     if (rows.length === 0) {
-      const s = startOfMonth(addMonths(today, -1));
-      const e = endOfMonth(addMonths(today, 5));
-      return { ganttStart: s, ganttEnd: e, months: buildMonths(s, e), totalMonths: monthsBetween(s, e) + 1 };
+      return { ganttStart: startOfMonth(addMonths(today, -1)), ganttEnd: endOfMonth(addMonths(today, 5)) };
     }
     const minDate = rows.reduce((m, r) => (r.start < m ? r.start : m), rows[0].start);
     const maxDate = rows.reduce((m, r) => (r.end > m ? r.end : m), rows[0].end);
-    const s = startOfMonth(addMonths(minDate, -1));
-    const e = endOfMonth(addMonths(maxDate, 1));
-    return { ganttStart: s, ganttEnd: e, months: buildMonths(s, e), totalMonths: monthsBetween(s, e) + 1 };
+    const s = startOfMonth(addMonths(minDate < today ? minDate : today, -1));
+    const e = endOfMonth(addMonths(maxDate > today ? maxDate : today, 1));
+    return { ganttStart: s, ganttEnd: e };
   }, [rows, today]);
 
+  const columns = useMemo(() => buildColumns(ganttStart, ganttEnd, zoom), [ganttStart, ganttEnd, zoom]);
   const totalDays = differenceInDays(ganttEnd, ganttStart) + 1;
 
   function pct(date: Date): number {
@@ -234,7 +219,15 @@ export function TrialGanttView({ trials, onSelectTrial }: TrialGanttViewProps) {
   }
 
   const todayPct = pct(today);
-  const timelineWidth = Math.max(800, totalMonths * MONTH_W);
+  const timelineWidth = Math.max(700, Math.round(totalDays * ZOOM_PX_PER_DAY[zoom]));
+
+  // Tự động cuộn để "hôm nay" nằm giữa khung nhìn mỗi khi đổi zoom hoặc dữ liệu thay đổi
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const todayPx = (todayPct / 100) * timelineWidth;
+    el.scrollLeft = Math.max(0, todayPx - el.clientWidth / 2);
+  }, [zoom, timelineWidth, todayPct]);
 
   const groupedRows = PHASE_GROUPS.map((group) => ({
     ...group,
@@ -250,8 +243,41 @@ export function TrialGanttView({ trials, onSelectTrial }: TrialGanttViewProps) {
     );
   }
 
+  function jumpToToday() {
+    const el = scrollRef.current;
+    if (!el) return;
+    const todayPx = (todayPct / 100) * timelineWidth;
+    el.scrollTo({ left: Math.max(0, todayPx - el.clientWidth / 2), behavior: "smooth" });
+  }
+
   return (
     <div className="flex flex-col bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+      {/* Toolbar: zoom + jump-to-today */}
+      <div className="flex items-center justify-between px-4 py-2 border-b border-slate-100 dark:border-slate-700">
+        <div className="flex text-xs rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
+          {(["month", "quarter", "year"] as ZoomLevel[]).map((z) => (
+            <button
+              key={z}
+              onClick={() => setZoom(z)}
+              className={cn(
+                "px-3 py-1.5 font-medium transition",
+                zoom === z
+                  ? "bg-blue-600 text-white"
+                  : "text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
+              )}
+            >
+              {ZOOM_LABEL[z]}
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={jumpToToday}
+          className="text-xs px-3 py-1.5 rounded-lg border border-blue-200 dark:border-blue-800 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 font-medium transition"
+        >
+          Hôm nay
+        </button>
+      </div>
+
       <div className="flex overflow-hidden">
         {/* Left: trial label column (fixed) */}
         <div className="shrink-0 flex flex-col border-r border-slate-200 dark:border-slate-700" style={{ width: LABEL_W }}>
@@ -292,20 +318,20 @@ export function TrialGanttView({ trials, onSelectTrial }: TrialGanttViewProps) {
         </div>
 
         {/* Right: timeline (scrollable horizontally) */}
-        <div className="flex-1 overflow-auto">
-          <div style={{ minWidth: timelineWidth }}>
-            {/* Month headers */}
+        <div ref={scrollRef} className="flex-1 overflow-auto">
+          <div style={{ width: timelineWidth }}>
+            {/* Period headers (tháng/quý/năm tuỳ zoom) */}
             <div
               className="flex border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 shrink-0 sticky top-0 z-10"
               style={{ height: HEADER_H }}
             >
-              {months.map((m) => (
+              {columns.map((col, i) => (
                 <div
-                  key={m.label}
+                  key={`${col.label}-${i}`}
                   className="border-r border-slate-200 dark:border-slate-700 flex items-center justify-center text-[11px] font-medium text-slate-600 dark:text-slate-300 shrink-0"
-                  style={{ width: MONTH_W }}
+                  style={{ width: `${(col.days / totalDays) * 100}%` }}
                 >
-                  {m.label}
+                  {col.label}
                 </div>
               ))}
             </div>
