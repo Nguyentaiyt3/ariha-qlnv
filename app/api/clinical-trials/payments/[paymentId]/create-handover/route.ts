@@ -28,15 +28,11 @@ export async function POST(
 
       // Update settlement with actual received amount
       payment.settlement = {
+        confirmationType: payment.settlement?.confirmationType ?? "app",
         ...payment.settlement,
         actualReceivedAmount,
         status: "confirmed",
       };
-
-      // Store costItems for reference
-      if (costItems && costItems.length > 0) {
-        payment.handoverCostItems = costItems;
-      }
 
       await updateClinicalTrial(trial.id, {
         payments: trial.payments,

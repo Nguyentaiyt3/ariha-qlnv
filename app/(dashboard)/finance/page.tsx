@@ -48,7 +48,7 @@ import {
   markReimbursementPaid,
   rejectReimbursement,
 } from "@/lib/firebase/finance";
-import type { AdvanceRequest, ReimbursementRequest, FinancialTransaction, TaskFinancialSummary } from "@/types";
+import type { AdvanceRequest, ReimbursementRequest, FinancialTransaction, TaskFinancialSummary, CostItem } from "@/types";
 import {
   format, subMonths, startOfMonth, endOfMonth, parseISO, isWithinInterval,
   startOfQuarter, endOfQuarter, startOfYear, endOfYear, subQuarters, subYears, addMonths, addQuarters, addYears,
@@ -1739,7 +1739,7 @@ export default function FinanceDashboardPage() {
               <div className="border-t border-slate-200 dark:border-slate-700 pt-4">
                 <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3">Phân chia chi phí</p>
                 <div className="space-y-2 text-sm">
-                  {editingPayment.costItems.map((item) => (
+                  {editingPayment.costItems.map((item: CostItem) => (
                     <div key={item.id} className="flex items-center justify-between bg-slate-50 dark:bg-slate-800 p-2 rounded">
                       <div>
                         <p className="text-slate-600 dark:text-slate-400">{item.name}</p>
