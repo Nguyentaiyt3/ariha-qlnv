@@ -5,6 +5,7 @@ import {
   createFinancialTransaction,
 } from "@/lib/mongodb/firestore";
 import { isArihaUnit } from "@/lib/research-departments";
+import { ensureTrialExecutionTask, completePhaseTask } from "@/lib/mongodb/clinicalTrialTask";
 
 export async function POST(
   request: NextRequest,
@@ -51,8 +52,11 @@ export async function POST(
     let arihaRevenueTransactionId: string | undefined;
 
     if (arihaDistribution && arihaDistribution.amount > 0) {
+      // Gắn vào Task theo dõi thật (tự sinh nếu chưa có) — tránh dùng trial.id giả làm taskId,
+      // vốn sẽ tạo link chết "/tasks/{trial.id}" trong trang Tài chính.
+      const executionTaskId = await ensureTrialExecutionTask(trial, approvedByUserId);
       const txn = await createFinancialTransaction({
-        taskId: trial.id,
+        taskId: executionTaskId,
         taskName: `${trial.code} — ${trial.title || ""}`,
         createdBy: approvedByUserId,
         createdByName: approvedBy,
@@ -83,6 +87,12 @@ export async function POST(
     );
 
     await updateClinicalTrial(trial.id, { payments: updatedPayments });
+
+    // Tất cả thanh toán của trial đã bàn giao xong → đóng pha "Kết thúc & Quyết toán" (nếu đang mở)
+    const allSettled = (updatedPayments || []).every((p) => p.distributionStatus === "approved");
+    if (allSettled && trial.phaseTaskIds?.closeout) {
+      await completePhaseTask({ ...trial, payments: updatedPayments }, "closeout", approvedByUserId);
+    }
 
     return NextResponse.json({ success: true, arihaRevenueTransactionId });
   } catch (error) {

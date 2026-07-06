@@ -731,6 +731,13 @@ export interface ClinicalTrial {
 
   payments?: ClinicalTrialPayment[]; // Ledger thanh toán theo đợt
 
+  executionTaskId?: string;          // Task theo dõi tự sinh (hub: tiến độ/tài chính/hiệu suất), tạo thủ công qua nút bấm
+  phaseTaskIds?: {                   // 3 Task nhỏ theo giai đoạn, tự sinh/tự đóng để cộng dồn vào Kế hoạch đúng kỳ hoàn thành
+    feasibility?: string;             // Khảo sát tính khả thi
+    execution?: string;               // Đang triển khai
+    closeout?: string;                // Kết thúc & Quyết toán
+  };
+
   createdBy: string;
   createdByName?: string;
   createdAt: string;
