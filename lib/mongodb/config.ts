@@ -1,11 +1,5 @@
 import mongoose, { Connection } from "mongoose";
 
-const MONGODB_URI = process.env.MONGODB_URI;
-
-if (!MONGODB_URI) {
-  throw new Error("MONGODB_URI environment variable is not set");
-}
-
 let cachedConnection: Connection | null = null;
 
 export async function connectDB(): Promise<Connection> {
@@ -13,8 +7,16 @@ export async function connectDB(): Promise<Connection> {
     return cachedConnection;
   }
 
+  // Kiểm tra env var lazily (tại thời điểm gọi), KHÔNG throw ở module-load —
+  // nếu throw ở top-level, bước "Collecting page data" của `next build` sẽ crash
+  // khi biến chưa được cấu hình lúc build (env chỉ cần có ở runtime).
+  const MONGODB_URI = process.env.MONGODB_URI;
+  if (!MONGODB_URI) {
+    throw new Error("MONGODB_URI environment variable is not set");
+  }
+
   try {
-    const conn = await mongoose.connect(MONGODB_URI!, {
+    const conn = await mongoose.connect(MONGODB_URI, {
       bufferCommands: false,
       serverSelectionTimeoutMS: 10000,
       connectTimeoutMS: 10000,
