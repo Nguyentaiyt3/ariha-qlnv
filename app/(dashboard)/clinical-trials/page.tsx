@@ -62,6 +62,11 @@ function groupTrialsByPhase(trials: ClinicalTrial[]): TrialPhase[] {
   ];
 }
 
+/** Trial mà user là PI hoặc điều phối viên — "nghiên cứu của mình", theo đúng nghĩa isMember dùng ở nơi khác trong module. */
+function isMyTrial(trial: ClinicalTrial, userId: string): boolean {
+  return trial.principalInvestigatorId === userId || trial.coordinatorId === userId;
+}
+
 export default function ClinicalTrialsPage() {
   const router = useRouter();
   const { currentUser } = useAuthStore();
@@ -75,23 +80,34 @@ export default function ClinicalTrialsPage() {
   const [viewMode, setViewMode] = useState<"kanban" | "gantt">("kanban");
 
   const canCreate = !!currentUser && hasPermission(currentUser.role, "trial:create");
+  // Vai trò quản lý (điều phối/theo dõi toàn bộ TNLS) — tab "Quản lý" chỉ hiện với nhóm này;
+  // người chỉ là PI/điều phối 1 vài nghiên cứu (server đã lọc sẵn chỉ trả về nghiên cứu của họ)
+  // chỉ thấy tab "Của tôi".
+  const canManageTrials = !!currentUser && hasPermission(currentUser.role, "trial:manage");
+  const [tab, setTab] = useState<"mine" | "manage">(canManageTrials ? "manage" : "mine");
 
   useEffect(() => {
     getClinicalTrials().then((data) => { setTrials(data); setLoading(false); });
   }, []);
 
+  // Nền cho cả stats + danh sách: tab "Của tôi" chỉ xét nghiên cứu mình là PI/điều phối viên.
+  const tabTrials = useMemo(() => {
+    if (tab === "mine" && currentUser) return trials.filter((t) => isMyTrial(t, currentUser.id));
+    return trials;
+  }, [trials, tab, currentUser]);
+
   const stats = useMemo(() => {
-    const running = trials.filter((t) => t.status === "running_pre_enroll" || t.status === "running_enrolled").length;
-    const pending = trials.filter((t) =>
+    const running = tabTrials.filter((t) => t.status === "running_pre_enroll" || t.status === "running_enrolled").length;
+    const pending = tabTrials.filter((t) =>
       !["running_pre_enroll", "running_enrolled", "completed", ...CLINICAL_TRIAL_TERMINAL_BRANCHES].includes(t.status)
     ).length;
-    const completed = trials.filter((t) => t.status === "completed").length;
-    const ended = trials.filter((t) => (CLINICAL_TRIAL_TERMINAL_BRANCHES as string[]).includes(t.status)).length;
-    return { total: trials.length, running, pending, completed, ended };
-  }, [trials]);
+    const completed = tabTrials.filter((t) => t.status === "completed").length;
+    const ended = tabTrials.filter((t) => (CLINICAL_TRIAL_TERMINAL_BRANCHES as string[]).includes(t.status)).length;
+    return { total: tabTrials.length, running, pending, completed, ended };
+  }, [tabTrials]);
 
   const filtered = useMemo(() => {
-    let list = trials;
+    let list = tabTrials;
     if (statusFilter === "running") {
       list = list.filter((t) => t.status === "running_pre_enroll" || t.status === "running_enrolled");
     } else if (statusFilter === "ended") {
@@ -136,7 +152,7 @@ export default function ClinicalTrialsPage() {
       );
     }
     return list;
-  }, [trials, statusFilter, mode, year, month, quarter, search]);
+  }, [tabTrials, statusFilter, mode, year, month, quarter, search]);
 
   if (loading) {
     return (
@@ -175,6 +191,27 @@ export default function ClinicalTrialsPage() {
           )}
         </div>
       </div>
+
+      {/* Tab: PI/điều phối viên theo dõi nghiên cứu của mình, vs. vai trò quản lý theo dõi toàn bộ */}
+      {canManageTrials && (
+        <div className="flex bg-[var(--muted)] rounded-xl p-1 w-fit">
+          {([
+            { key: "manage", label: "Quản lý (toàn bộ)" },
+            { key: "mine",   label: "Của tôi (PI/điều phối)" },
+          ] as const).map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className={cn(
+                "px-3 py-1.5 text-sm font-medium rounded-lg transition",
+                tab === t.key ? "bg-white dark:bg-slate-700 text-blue-600 shadow-sm" : "text-slate-500 hover:text-[var(--foreground)]"
+              )}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <StatCard label="Tổng số"        value={stats.total}     active={statusFilter === "all"}     onClick={() => setStatusFilter("all")} />
