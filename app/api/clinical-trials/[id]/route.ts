@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyToken, getUser } from "@/lib/mongodb/auth";
-import { getClinicalTrial, updateClinicalTrial, deleteClinicalTrial, updateTask } from "@/lib/mongodb/firestore";
+import { getClinicalTrial, updateClinicalTrial, deleteClinicalTrial } from "@/lib/mongodb/firestore";
 import { hasPermission } from "@/lib/rbac/permissions";
-import { mapTrialStatusToTaskStatus, ensurePhaseTask, completePhaseTask } from "@/lib/mongodb/clinicalTrialTask";
-import { CLINICAL_TRIAL_TERMINAL_BRANCHES } from "@/types";
+import { ensurePermissionOverridesLoaded } from "@/lib/rbac/ensurePermissions";
+import { applyTrialStatusChange } from "@/lib/mongodb/clinicalTrialTask";
 
 async function auth(req: NextRequest) {
   const token = req.cookies.get("auth-token")?.value;
@@ -16,6 +16,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   const trial = await getClinicalTrial(params.id);
   if (!trial) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
+  await ensurePermissionOverridesLoaded();
   const me = await getUser(u.userId);
   const isManager = !!me && hasPermission(me.role, "trial:manage");
 
@@ -34,6 +35,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   const u = await auth(req);
   if (!u) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
+  await ensurePermissionOverridesLoaded();
   const me = await getUser(u.userId);
   if (!me || !hasPermission(me.role, "trial:manage")) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
@@ -47,36 +49,13 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 
   await updateClinicalTrial(params.id, updates);
 
+  // Bọc try/catch: lỗi đồng bộ Task tổng theo dõi/3 Task pha không được làm hỏng việc đổi
+  // trạng thái trial (đã lưu thành công ở trên).
   if (updates.status) {
-    let trial = await getClinicalTrial(params.id);
-    if (trial) {
-      // Đồng bộ trạng thái sang Task tổng theo dõi (nếu đã sinh)
-      if (trial.executionTaskId) {
-        await updateTask(trial.executionTaskId, {
-          status: mapTrialStatusToTaskStatus(updates.status),
-          ...(updates.status === "completed" ? { completedAt: new Date().toISOString() } : {}),
-        });
-      }
-
-      const isTerminalOrCompleted =
-        updates.status === "completed" || (CLINICAL_TRIAL_TERMINAL_BRANCHES as string[]).includes(updates.status);
-      const wasTerminalOrCompleted =
-        prevStatus === "completed" || (CLINICAL_TRIAL_TERMINAL_BRANCHES as string[]).includes(prevStatus || "");
-
-      // Rời "Khảo sát tính khả thi" → đóng pha ①, mở pha ②
-      if (prevStatus === "feasibility" && updates.status !== "feasibility") {
-        await completePhaseTask(trial, "feasibility", u.userId);
-        await ensurePhaseTask(trial, "execution", u.userId);
-        // Refetch để có phaseTaskIds mới nhất trước khi xét bước tiếp theo (tránh dùng dữ liệu cũ
-        // nếu trial nhảy thẳng từ "feasibility" sang "completed"/dừng sớm trong cùng 1 lần cập nhật)
-        trial = await getClinicalTrial(params.id);
-      }
-
-      // Vừa đạt "Đã kết thúc" hoặc 1 trong 2 nhánh dừng sớm → đóng pha ②, mở pha ③
-      if (trial && isTerminalOrCompleted && !wasTerminalOrCompleted) {
-        await completePhaseTask(trial, "execution", u.userId);
-        await ensurePhaseTask(trial, "closeout", u.userId);
-      }
+    try {
+      await applyTrialStatusChange(params.id, updates.status, prevStatus, u.userId);
+    } catch (e) {
+      console.error("[clinical-trials/[id]:PATCH] Lỗi khi đồng bộ trạng thái sang Task:", e);
     }
   }
 
@@ -86,6 +65,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
   const u = await auth(req);
   if (!u) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  await ensurePermissionOverridesLoaded();
   const me = await getUser(u.userId);
   if (!me || !hasPermission(me.role, "trial:manage")) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });

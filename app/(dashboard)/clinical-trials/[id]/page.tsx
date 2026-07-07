@@ -11,7 +11,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { hasPermission } from "@/lib/rbac/permissions";
-import { getClinicalTrial, updateClinicalTrial, deleteClinicalTrial } from "@/lib/firebase/firestore";
+import { getClinicalTrial, updateClinicalTrial, deleteClinicalTrial, getWorkflows } from "@/lib/firebase/firestore";
 import { formatPeriodDDMMYY } from "@/lib/utils";
 import { TrialStatusPipeline } from "@/components/clinical-trials/TrialStatusPipeline";
 import { TrialFormModal } from "@/components/clinical-trials/TrialFormModal";
@@ -24,7 +24,7 @@ import { UpdateEnrollmentModal } from "@/components/clinical-trials/UpdateEnroll
 import { EnrollmentShareModal } from "@/components/clinical-trials/EnrollmentShareModal";
 import { EnrollmentLinkModal } from "@/components/clinical-trials/EnrollmentLinkModal";
 import { CLINICAL_TRIAL_STATUS_LABEL } from "@/types";
-import type { ClinicalTrial, ClinicalTrialStatus, ClinicalTrialPayment } from "@/types";
+import type { ClinicalTrial, ClinicalTrialStatus, ClinicalTrialPayment, Workflow } from "@/types";
 
 function InfoRow({ icon: Icon, label, value }: { icon: React.ComponentType<{ className?: string }>; label: string; value?: string }) {
   if (!value) return null;
@@ -57,6 +57,8 @@ export default function ClinicalTrialDetailPage() {
   const [distributionPayment, setDistributionPayment] = useState<ClinicalTrialPayment | undefined>();
   const [activeTab, setActiveTab] = useState<"enrollment" | "info" | "payment">("enrollment");
   const [generatingTask, setGeneratingTask] = useState(false);
+  const [workflows, setWorkflows] = useState<Workflow[]>([]);
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState("");
 
   const canManage = !!currentUser && hasPermission(currentUser.role, "trial:manage");
 
@@ -71,8 +73,28 @@ export default function ClinicalTrialDetailPage() {
   const canSeeEnrollmentData = canManage || isMember;
 
   useEffect(() => {
-    getClinicalTrial(id).then((t) => { setTrial(t); setLoading(false); });
+    getClinicalTrial(id).then(async (t) => {
+      setTrial(t);
+      setLoading(false);
+      // Tự phục hồi: nếu Task theo dõi đã bị xoá ở nơi khác (link chết), xoá tham chiếu để
+      // nút "Xem nhiệm vụ" quay lại thành "Tạo nhiệm vụ theo dõi" thay vì trỏ vào link 404.
+      if (t?.executionTaskId) {
+        try {
+          const res = await fetch(`/api/tasks/${t.executionTaskId}`);
+          if (res.status === 404) {
+            await updateClinicalTrial(t.id, { executionTaskId: "" });
+            setTrial({ ...t, executionTaskId: undefined });
+          }
+        } catch {
+          // Bỏ qua — không chặn trang nếu kiểm tra thất bại
+        }
+      }
+    });
   }, [id]);
+
+  useEffect(() => {
+    getWorkflows().then(setWorkflows).catch(() => {});
+  }, []);
 
   async function handleStatusChange(status: ClinicalTrialStatus) {
     if (!trial || !canManage) return;
@@ -96,7 +118,11 @@ export default function ClinicalTrialDetailPage() {
     if (!trial) return;
     setGeneratingTask(true);
     try {
-      const res = await fetch(`/api/clinical-trials/${trial.id}/generate-task`, { method: "POST" });
+      const res = await fetch(`/api/clinical-trials/${trial.id}/generate-task`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workflowId: selectedWorkflowId || undefined }),
+      });
       if (!res.ok) throw new Error();
       const data = await res.json();
       setTrial({ ...trial, executionTaskId: data.taskId });
@@ -164,14 +190,29 @@ export default function ClinicalTrialDetailPage() {
                 <ClipboardList className="w-3.5 h-3.5" /> Xem nhiệm vụ
               </Link>
             ) : (
-              <button
-                onClick={handleGenerateTask}
-                disabled={generatingTask}
-                className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/40 font-medium transition disabled:opacity-50"
-              >
-                {generatingTask ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ClipboardList className="w-3.5 h-3.5" />}
-                Tạo nhiệm vụ theo dõi
-              </button>
+              <>
+                {workflows.length > 0 && (
+                  <select
+                    value={selectedWorkflowId}
+                    onChange={(e) => setSelectedWorkflowId(e.target.value)}
+                    title="Chọn quy trình mẫu (để trống = dùng mẫu mặc định)"
+                    className="text-xs px-2 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300"
+                  >
+                    <option value="">Quy trình mặc định</option>
+                    {workflows.map((w) => (
+                      <option key={w.id} value={w.id}>{w.name}</option>
+                    ))}
+                  </select>
+                )}
+                <button
+                  onClick={handleGenerateTask}
+                  disabled={generatingTask}
+                  className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/40 font-medium transition disabled:opacity-50"
+                >
+                  {generatingTask ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ClipboardList className="w-3.5 h-3.5" />}
+                  Tạo nhiệm vụ theo dõi
+                </button>
+              </>
             )
           )}
           {canManage && (

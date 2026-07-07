@@ -1,4 +1,15 @@
 import mongoose, { Connection } from "mongoose";
+import dns from "dns";
+
+// Trên một số máy Windows, c-ares (Node) tự ý enumerate DNS server hệ thống thành 127.0.0.1
+// (bug đã biết khi máy có nhiều network adapter ảo/disconnected), khiến truy vấn SRV record
+// của MongoDB Atlas fail với ECONNREFUSED dù DNS thật của máy (qua nslookup/adapter) vẫn ổn.
+// Ép dùng DNS công cộng đáng tin cậy để không phụ thuộc vào lỗi enumerate này.
+try {
+  dns.setServers(["8.8.8.8", "1.1.1.1"]);
+} catch {
+  // Bỏ qua nếu môi trường không cho phép set (vd. một số runtime edge) — sẽ fallback về mặc định.
+}
 
 let cachedConnection: Connection | null = null;
 
