@@ -299,8 +299,11 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
   {
     id: "user", label: "Nhân viên",
     permissions: [
-      { id: "user:read",   label: "Xem nhân viên" },
-      { id: "user:manage", label: "Quản lý nhân viên" },
+      { id: "user:read",               label: "Xem nhân viên" },
+      { id: "user:manage",             label: "Quản lý nhân viên (vai trò, phòng ban, chức vụ)" },
+      { id: "user:create",             label: "Tạo/Import nhân viên mới" },
+      { id: "user:manageContract",     label: "Quản lý hồ sơ hợp đồng" },
+      { id: "user:manageCredentials",  label: "Quản lý chứng chỉ/bằng cấp" },
     ],
   },
   {
@@ -315,9 +318,10 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
   {
     id: "request", label: "Đơn từ",
     permissions: [
-      { id: "request:create",  label: "Tạo đơn từ" },
-      { id: "request:read",    label: "Xem đơn từ" },
-      { id: "request:approve", label: "Duyệt đơn từ" },
+      { id: "request:create",    label: "Tạo đơn từ" },
+      { id: "request:read",      label: "Xem đơn từ" },
+      { id: "request:approve",   label: "Duyệt đơn từ (thường: nghỉ phép, tăng ca...)" },
+      { id: "request:approveHR", label: "Duyệt đơn nhân sự (nghỉ việc, thay đổi thông tin)" },
     ],
   },
   {

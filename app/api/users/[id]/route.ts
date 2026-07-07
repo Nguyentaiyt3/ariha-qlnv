@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyToken } from "@/lib/mongodb/auth";
 import { getUser, saveUser, deleteUser } from "@/lib/mongodb/firestore";
 import { ensureOnboardingTask } from "@/lib/mongodb/employeeTask";
+import { hasPermission } from "@/lib/rbac/permissions";
+import { ensurePermissionOverridesLoaded } from "@/lib/rbac/ensurePermissions";
+
+const CONTRACT_FIELDS = ["employeeCode", "contractType", "contractStart", "contractEnd"];
 
 async function getAuth(req: NextRequest) {
   const token = req.cookies.get("auth-token")?.value;
@@ -25,6 +29,22 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
     const updates = await req.json();
+
+    // Chặn thay đổi hồ sơ hợp đồng/chứng chỉ nếu không có quyền tương ứng — kiểm tra field cụ
+    // thể (không phải "user:manage" chung), vì route này còn dùng cho các cập nhật ít nhạy cảm
+    // hơn (vd. tự đổi ảnh đại diện) mà không nên bị chặn bởi 2 quyền mới này.
+    const touchesContract = Object.keys(updates).some((k) => CONTRACT_FIELDS.includes(k));
+    const touchesCredentials = Object.prototype.hasOwnProperty.call(updates, "credentials");
+    if (touchesContract || touchesCredentials) {
+      await ensurePermissionOverridesLoaded();
+      const me = await getUser(auth.userId);
+      if (touchesContract && !(me && hasPermission(me.role, "user:manageContract"))) {
+        return NextResponse.json({ error: "Không có quyền quản lý hồ sơ hợp đồng" }, { status: 403 });
+      }
+      if (touchesCredentials && !(me && hasPermission(me.role, "user:manageCredentials"))) {
+        return NextResponse.json({ error: "Không có quyền quản lý chứng chỉ/bằng cấp" }, { status: 403 });
+      }
+    }
 
     // Lấy trạng thái TRƯỚC khi cập nhật để phát hiện đúng thời điểm "guest" được duyệt lên vai
     // trò chính thức (không phát hiện được sau khi đã ghi đè).

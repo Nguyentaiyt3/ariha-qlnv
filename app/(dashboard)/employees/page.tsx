@@ -2,12 +2,13 @@
 
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
-import { Users, Search, Edit2, UserCheck, UserX, Save, X, Clock, KeyRound, ChevronDown, Check, ShieldAlert, UserPlus, Loader2 } from "lucide-react";
+import { Users, Search, Edit2, UserCheck, UserX, Save, X, Clock, KeyRound, ChevronDown, Check, ShieldAlert, UserPlus, Loader2, FileUp } from "lucide-react";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { useUnitAbbr } from "@/hooks/useUnitAbbr";
 import { saveUser, getUsers } from "@/lib/firebase/firestore";
+import { ImportEmployeesModal } from "@/components/employees/ImportEmployeesModal";
 import type { User, UserRole, OrgPosition, ResearchDesignation } from "@/types";
 import { RESEARCH_DESIGNATION_LABEL } from "@/types";
 import { cn, getInitials, avatarColor, roleLabel, contractAlert, credentialAlert } from "@/lib/utils";
@@ -152,6 +153,7 @@ function AddEmployeeModal({
   const [position, setPosition] = useState("");
   const [role, setRole] = useState<UserRole>("staff");
   const [employeeCode, setEmployeeCode] = useState("");
+  const [idNumber, setIdNumber] = useState("");
   const [tempPassword, setTempPassword] = useState(genTempPassword());
   const [saving, setSaving] = useState(false);
 
@@ -174,6 +176,7 @@ function AddEmployeeModal({
           department: department.trim() || undefined,
           position: position.trim() || undefined,
           employeeCode: employeeCode.trim() || undefined,
+          idNumber: idNumber.trim() || undefined,
         }),
       });
       if (!res.ok) {
@@ -257,6 +260,14 @@ function AddEmployeeModal({
             </div>
           </div>
           <div>
+            <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Số CCCD</label>
+            <input
+              value={idNumber}
+              onChange={(e) => setIdNumber(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+            />
+          </div>
+          <div>
             <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Mật khẩu tạm</label>
             <div className="flex gap-2">
               <input
@@ -302,6 +313,7 @@ export default function EmployeesPage() {
   const [bulkRole, setBulkRole] = useState<UserRole>("staff");
   const [bulkApproving, setBulkApproving] = useState(false);
   const [showAddEmployee, setShowAddEmployee] = useState(false);
+  const [showImport, setShowImport] = useState(false);
 
   // Catalog data for comboboxes
   const [unitOptions, setUnitOptions] = useState<Array<{ label: string; sub?: string }>>([]);
@@ -344,6 +356,7 @@ export default function EmployeesPage() {
 
   const canManage = currentUser ? hasPermission(currentUser.role, "user:manage") : false;
   const canRead   = currentUser ? hasPermission(currentUser.role, "user:read")   : false;
+  const canCreate = currentUser ? hasPermission(currentUser.role, "user:create") : false;
 
   if (!canRead) {
     return (
@@ -491,13 +504,21 @@ export default function EmployeesPage() {
             ({users.filter(u => u.isActive).length} hoạt động)
           </span>
         </h1>
-        {canManage && (
-          <button
-            onClick={() => setShowAddEmployee(true)}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition"
-          >
-            <UserPlus className="w-4 h-4" /> Thêm nhân viên
-          </button>
+        {canCreate && (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowImport(true)}
+              className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium border border-[var(--border)] text-[var(--foreground)] hover:bg-[var(--muted)] rounded-lg transition"
+            >
+              <FileUp className="w-4 h-4" /> Import Excel
+            </button>
+            <button
+              onClick={() => setShowAddEmployee(true)}
+              className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition"
+            >
+              <UserPlus className="w-4 h-4" /> Thêm nhân viên
+            </button>
+          </div>
         )}
       </div>
 
@@ -507,6 +528,13 @@ export default function EmployeesPage() {
           posOptions={posOptions}
           onClose={() => setShowAddEmployee(false)}
           onCreated={() => { getUsers().then(setUsers); }}
+        />
+      )}
+
+      {showImport && (
+        <ImportEmployeesModal
+          onClose={() => setShowImport(false)}
+          onImported={() => { getUsers().then(setUsers); }}
         />
       )}
 

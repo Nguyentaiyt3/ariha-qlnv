@@ -36,12 +36,12 @@ export async function POST(req: NextRequest) {
 
   await ensurePermissionOverridesLoaded();
   const me = await getUser(auth.userId);
-  if (!me || !hasPermission(me.role, "user:manage")) {
+  if (!me || !hasPermission(me.role, "user:create")) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   try {
-    const { email, name, tempPassword, role, department, position, employeeCode } = await req.json();
+    const { email, name, tempPassword, role, department, position, employeeCode, idNumber } = await req.json();
     if (!email || !name || !tempPassword || !role) {
       return NextResponse.json({ error: "Email, tên, mật khẩu tạm và vai trò là bắt buộc" }, { status: 400 });
     }
@@ -53,12 +53,13 @@ export async function POST(req: NextRequest) {
       email, tempPassword, name, role as UserRole, department || undefined, position || undefined,
     );
 
-    // Bắt đổi mật khẩu ở lần đăng nhập đầu (giống luồng reset mật khẩu) + lưu mã nhân viên nếu có.
+    // Bắt đổi mật khẩu ở lần đăng nhập đầu (giống luồng reset mật khẩu) + lưu mã nhân viên/CCCD nếu có.
     await saveUser({
       id: newUser.id,
       mustChangePassword: true,
       passwordUpdatedAt: new Date().toISOString(),
       ...(employeeCode ? { employeeCode } : {}),
+      ...(idNumber ? { idNumber } : {}),
     });
 
     try {

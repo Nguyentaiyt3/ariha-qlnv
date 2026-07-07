@@ -12,6 +12,7 @@ import { useAuthStore } from "@/stores/useAuthStore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { getRequest, updateRequest, addNotification, getUsers } from "@/lib/firebase/firestore";
 import { useUnitAbbr } from "@/hooks/useUnitAbbr";
+import { PROFILE_FIELD_LABEL } from "@/types";
 import type { WorkRequest, RequestStatus } from "@/types";
 
 const STATUS_CONFIG: Record<RequestStatus, { label: string; color: string }> = {
@@ -23,7 +24,7 @@ const STATUS_CONFIG: Record<RequestStatus, { label: string; color: string }> = {
 
 const TYPE_ICONS: Record<string, string> = {
   leave: "🏖️", overtime: "⏰", expense: "💰", equipment: "🖥️",
-  training: "📚", wfh: "🏠", resignation: "🚪", custom: "📄",
+  training: "📚", wfh: "🏠", resignation: "🚪", profile_change: "📝", custom: "📄",
 };
 
 const FIELD_LABELS: Record<string, string> = {
@@ -33,6 +34,7 @@ const FIELD_LABELS: Record<string, string> = {
   amount: "Số tiền", description: "Mô tả", location: "Địa điểm",
   plan: "Kế hoạch công việc",
   lastWorkDate: "Ngày làm việc cuối cùng",
+  ...PROFILE_FIELD_LABEL,
 };
 
 export default function RequestDetailPage() {
@@ -45,7 +47,10 @@ export default function RequestDetailPage() {
   const [comment, setComment] = useState("");
   const [acting, setActing] = useState(false);
 
-  const canApprove = !!(currentUser && hasPermission(currentUser.role, "request:approve"));
+  // Đơn "Nghỉ việc"/"Thay đổi thông tin" đụng tới hồ sơ nhân sự/CCCD — cần quyền request:approveHR
+  // riêng (chỉ HR/Admin), khác với request:approve dùng cho đơn thường (nghỉ phép, tăng ca...).
+  const isHRSensitive = request?.type === "resignation" || request?.type === "profile_change";
+  const canApprove = !!(currentUser && hasPermission(currentUser.role, isHRSensitive ? "request:approveHR" : "request:approve"));
   const isOwner = request?.submittedBy === currentUser?.id;
   const canReview = canApprove && !isOwner && request?.status === "pending";
 

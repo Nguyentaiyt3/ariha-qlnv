@@ -576,8 +576,15 @@ export default function RequestsPage() {
   const [rejectingTpl, setRejectingTpl] = useState<{ id: string; reason: string } | null>(null);
 
   const canApprove = !!(currentUser && hasPermission(currentUser.role, "request:approve"));
+  const canApproveHR = !!(currentUser && hasPermission(currentUser.role, "request:approveHR"));
   const canCreateTemplate = !!(currentUser && hasPermission(currentUser.role, "template:create"));
   const canApproveTemplate = !!(currentUser && hasPermission(currentUser.role, "template:approve"));
+
+  // Đơn "Nghỉ việc"/"Thay đổi thông tin" cần request:approveHR riêng — không tính vào "Cần duyệt"
+  // của người chỉ có request:approve (vd. teamLead), tránh đếm nhầm/hiện đơn không duyệt được.
+  function canApproveRequest(r: WorkRequest): boolean {
+    return r.type === "resignation" || r.type === "profile_change" ? canApproveHR : canApprove;
+  }
 
   useEffect(() => {
     if (!currentUser) return;
@@ -643,7 +650,7 @@ export default function RequestsPage() {
   const filtered = useMemo(() => {
     let result = requests;
     if (tab === "mine") result = result.filter((r) => r.submittedBy === currentUser?.id);
-    if (tab === "pending") result = result.filter((r) => r.status === "pending");
+    if (tab === "pending") result = result.filter((r) => r.status === "pending" && canApproveRequest(r));
     if (statusFilter !== "all") result = result.filter((r) => r.status === statusFilter);
     if (search) {
       const q = search.toLowerCase();
@@ -652,7 +659,7 @@ export default function RequestsPage() {
     return result;
   }, [requests, tab, statusFilter, search, currentUser]);
 
-  const pendingCount = requests.filter((r) => r.status === "pending" && canApprove && r.submittedBy !== currentUser?.id).length;
+  const pendingCount = requests.filter((r) => r.status === "pending" && canApproveRequest(r) && r.submittedBy !== currentUser?.id).length;
 
   return (
     <div className="px-4 py-6 max-w-5xl mx-auto space-y-6">
@@ -771,8 +778,8 @@ export default function RequestsPage() {
         <div className="flex bg-[var(--muted)] rounded-xl p-1">
           {([
             { key: "mine", label: "Của tôi" },
-            ...(canApprove ? [{ key: "pending", label: `Cần duyệt${pendingCount > 0 ? ` (${pendingCount})` : ""}` }] : []),
-            ...(canApprove ? [{ key: "all", label: "Tất cả" }] : []),
+            ...(canApprove || canApproveHR ? [{ key: "pending", label: `Cần duyệt${pendingCount > 0 ? ` (${pendingCount})` : ""}` }] : []),
+            ...(canApprove || canApproveHR ? [{ key: "all", label: "Tất cả" }] : []),
           ] as { key: string; label: string }[]).map((t) => (
             <button
               key={t.key}
