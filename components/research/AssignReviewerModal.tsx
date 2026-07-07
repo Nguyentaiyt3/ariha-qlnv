@@ -6,6 +6,7 @@ import { cn, getInitials, avatarColor } from "@/lib/utils";
 import { toast } from "sonner";
 import type { User, ResearchReview } from "@/types";
 import { generateId } from "@/lib/utils";
+import { useUnitAbbr } from "@/hooks/useUnitAbbr";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -48,6 +49,7 @@ function MiniAvatar({ user }: { user: User }) {
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export function AssignReviewerModal({ users, existingReviews, slotsLeft, stage = "proposal", onAssign, onClose }: Props) {
+  const abbr = useUnitAbbr();
   const [tab, setTab] = useState<Tab>("internal");
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState("");
@@ -217,7 +219,7 @@ export function AssignReviewerModal({ users, existingReviews, slotsLeft, stage =
                         <div className="flex items-center gap-2 flex-wrap mt-0.5">
                           {u.department && (
                             <span className="flex items-center gap-1 text-xs text-slate-400">
-                              <Building2 className="w-3 h-3" />{u.department}
+                              <Building2 className="w-3 h-3" />{abbr(u.department)}
                             </span>
                           )}
                           {u.position && (

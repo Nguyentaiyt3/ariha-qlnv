@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyToken, getUser } from "@/lib/mongodb/auth";
 import { getClinicalTrial, getTask } from "@/lib/mongodb/firestore";
 import { hasPermission } from "@/lib/rbac/permissions";
+import { ensurePermissionOverridesLoaded } from "@/lib/rbac/ensurePermissions";
 import { ensureTrialExecutionTask } from "@/lib/mongodb/clinicalTrialTask";
 
 async function auth(req: NextRequest) {
@@ -18,6 +19,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const u = await auth(req);
   if (!u) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
+  await ensurePermissionOverridesLoaded();
   const me = await getUser(u.userId);
   const trial = await getClinicalTrial(params.id);
   if (!trial) return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -29,8 +31,15 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const alreadyExists = !!(trial.executionTaskId && (await getTask(trial.executionTaskId)));
-  const taskId = await ensureTrialExecutionTask(trial, u.userId);
+  const body = await req.json().catch(() => ({}));
+  const workflowId: string | undefined = body?.workflowId || undefined;
 
-  return NextResponse.json({ taskId, created: !alreadyExists });
+  try {
+    const alreadyExists = !!(trial.executionTaskId && (await getTask(trial.executionTaskId)));
+    const taskId = await ensureTrialExecutionTask(trial, u.userId, workflowId);
+    return NextResponse.json({ taskId, created: !alreadyExists });
+  } catch (e) {
+    console.error("[generate-task] Lỗi khi tạo nhiệm vụ theo dõi:", e);
+    return NextResponse.json({ error: "Lỗi khi tạo nhiệm vụ theo dõi" }, { status: 500 });
+  }
 }

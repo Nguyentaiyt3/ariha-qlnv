@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import type { Task, Evaluation, User } from "@/types";
 import { cn } from "@/lib/utils";
+import { useUnitAbbr } from "@/hooks/useUnitAbbr";
 
 // ─── Shared config ────────────────────────────────────────────
 
@@ -40,6 +41,7 @@ interface Props {
 // ─── Component ────────────────────────────────────────────────
 
 export default function CompletedTasksTab({ currentUser, users, tasks, evaluations, canManageKPI }: Props) {
+  const abbr = useUnitAbbr();
   const [viewUserId,      setViewUserId]      = useState(currentUser.id);
   const [taskSearch,      setTaskSearch]      = useState("");
   const [gradeFilter,     setGradeFilter]     = useState<GradeFilter>("all");
@@ -119,7 +121,7 @@ export default function CompletedTasksTab({ currentUser, users, tasks, evaluatio
               .filter((u) => u.isActive && u.role !== "guest")
               .map((u) => (
                 <option key={u.id} value={u.id}>
-                  {u.name}{u.department ? ` — ${u.department}` : ""}{u.id === currentUser.id ? " (bạn)" : ""}
+                  {u.name}{u.department ? ` — ${abbr(u.department)}` : ""}{u.id === currentUser.id ? " (bạn)" : ""}
                 </option>
               ))}
           </select>

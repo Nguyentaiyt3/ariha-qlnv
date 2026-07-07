@@ -17,6 +17,7 @@ import KPIFrameworkEditor from "@/components/performance/KPIFramework";
 import CompletedTasksTab from "@/components/performance/CompletedTasksTab";
 import { getInitials, avatarColor, formatDate } from "@/lib/utils";
 import { hasPermission } from "@/lib/rbac/permissions";
+import { useUnitAbbr } from "@/hooks/useUnitAbbr";
 import { cn } from "@/lib/utils";
 
 // ─── Period helpers ───────────────────────────────────────────
@@ -143,6 +144,7 @@ interface UserDetailPanelProps {
 }
 
 function UserDetailPanel({ user, score, evals, loadingEvals, period, canEvaluate, onEvaluate, onClose }: UserDetailPanelProps) {
+  const abbr          = useUnitAbbr();
   const rank          = getRank(score.totalScore);
   const isManagerScore = score.teamMemberCount > 0;
   const mw            = getManagerWeights(user.role);
@@ -173,7 +175,7 @@ function UserDetailPanel({ user, score, evals, loadingEvals, period, canEvaluate
           </div>
           <div>
             <p className="font-semibold text-slate-800 dark:text-white">{user.name}</p>
-            <p className="text-xs text-slate-400">{user.department} · {user.position ?? user.role}</p>
+            <p className="text-xs text-slate-400">{abbr(user.department)} · {user.position ?? user.role}</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -259,6 +261,7 @@ function UserDetailPanel({ user, score, evals, loadingEvals, period, canEvaluate
 export default function PerformancePage() {
   const { currentUser } = useAuthStore();
   const { tasks, users } = useTaskStore();
+  const abbr = useUnitAbbr();
 
   const [evaluations,    setEvaluations]    = useState<Evaluation[]>([]);
   const [allEvaluations, setAllEvaluations] = useState<Evaluation[]>([]);
@@ -622,7 +625,7 @@ export default function PerformancePage() {
             >
               <option value="">-- Chọn nhân viên --</option>
               {users.filter((u) => u.isActive && u.role !== "guest").map((u) => (
-                <option key={u.id} value={u.id}>{u.name} — {u.department}</option>
+                <option key={u.id} value={u.id}>{u.name} — {abbr(u.department)}</option>
               ))}
             </select>
           </div>
@@ -667,7 +670,7 @@ export default function PerformancePage() {
               >
                 <option value="">-- Tự đánh giá --</option>
                 {users.filter((u) => u.isActive && u.id !== currentUser?.id).map((u) => (
-                  <option key={u.id} value={u.id}>{u.name} — {u.department}</option>
+                  <option key={u.id} value={u.id}>{u.name} — {abbr(u.department)}</option>
                 ))}
               </select>
             </div>

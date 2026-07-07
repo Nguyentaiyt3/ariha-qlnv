@@ -12,6 +12,7 @@ import { cn, generateId } from "@/lib/utils";
 import { normText, jaccardWords, isTopicAuthor } from "@/lib/researchUtils";
 import { DocxAnnotator } from "./DocxAnnotator";
 import { addAnnotation, updateAnnotation, deleteAnnotation } from "@/lib/researchAnnotations";
+import { useUnitAbbr } from "@/hooks/useUnitAbbr";
 import type { ResearchTopic, Task } from "@/types";
 
 // ─── Intake checklist ─────────────────────────────────────────────────────────
@@ -95,6 +96,7 @@ export function IntakeReviewModal({
   onLinkTask?: (linkedTaskId: string) => Promise<void>;
   onClose: () => void;
 }) {
+  const abbr = useUnitAbbr();
   const [checks, setChecks] = useState<Record<CheckKey, boolean>>({
     authorInfo: false, topicTitle: false, objectives: false, timeline: false, fileFormat: false,
   });
@@ -526,7 +528,7 @@ export function IntakeReviewModal({
                       <p className="text-[11px] font-medium text-blue-800 dark:text-blue-200">{matchedUser.user.name}</p>
                       <p className="text-[10px] text-blue-500 dark:text-blue-400">{matchedUser.user.email}</p>
                       {matchedUser.user.department && (
-                        <p className="text-[10px] text-blue-400 dark:text-blue-500">{matchedUser.user.department}</p>
+                        <p className="text-[10px] text-blue-400 dark:text-blue-500">{abbr(matchedUser.user.department)}</p>
                       )}
                     </div>
                     <p className="text-[10px] text-blue-500 dark:text-blue-400 italic">
@@ -567,7 +569,7 @@ export function IntakeReviewModal({
                       <p className="text-[11px] font-medium text-blue-800 dark:text-blue-200">{matchedUser.user.name}</p>
                       <p className="text-[10px] text-blue-500 dark:text-blue-400">{matchedUser.user.email}</p>
                       {matchedUser.user.department && (
-                        <p className="text-[10px] text-blue-400 dark:text-blue-500">{matchedUser.user.department}</p>
+                        <p className="text-[10px] text-blue-400 dark:text-blue-500">{abbr(matchedUser.user.department)}</p>
                       )}
                     </div>
                     <p className="text-[10px] text-blue-500 dark:text-blue-400 italic">

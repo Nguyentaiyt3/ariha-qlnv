@@ -4,9 +4,9 @@ import { useState, useEffect } from "react";
 import { X, Loader2, FlaskConical } from "lucide-react";
 import { toast } from "sonner";
 import { generateId } from "@/lib/utils";
-import { saveClinicalTrial, updateClinicalTrial } from "@/lib/firebase/firestore";
+import { saveClinicalTrial, updateClinicalTrial, getWorkflows } from "@/lib/firebase/firestore";
 import { ContactListEditor } from "./ContactListEditor";
-import type { ClinicalTrial, ClinicalTrialStatus, ClinicalTrialContact, UnitDef, User } from "@/types";
+import type { ClinicalTrial, ClinicalTrialStatus, ClinicalTrialContact, UnitDef, User, Workflow } from "@/types";
 import { CLINICAL_TRIAL_STATUS_LABEL } from "@/types";
 
 interface Props {
@@ -61,10 +61,14 @@ export function TrialFormModal({ initialData, creatorId, creatorName, onClose, o
   const [editingDept, setEditingDept] = useState(false);
   const [editingPi, setEditingPi] = useState(false);
 
+  const [workflows, setWorkflows] = useState<Workflow[]>([]);
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState("");
+
   useEffect(() => {
     fetch("/api/units").then((r) => r.json()).then((d) => setUnits(d.catalog || [])).catch(() => setUnits([]));
     fetch("/api/users").then((r) => r.json()).then((d) => setEmployees(d.users || [])).catch(() => setEmployees([]));
-  }, []);
+    if (!isEdit) getWorkflows().then(setWorkflows).catch(() => {});
+  }, [isEdit]);
   const [cro, setCro] = useState(initialData?.cro ?? "");
   const [smo, setSmo] = useState(initialData?.smo ?? "");
   const [cra, setCra] = useState<ClinicalTrialContact[]>(initialData?.cra ?? []);
@@ -111,7 +115,9 @@ export function TrialFormModal({ initialData, creatorId, creatorName, onClose, o
           createdByName: creatorName,
           createdAt: new Date().toISOString(),
         };
-        const result = await saveClinicalTrial(trial);
+        const result = await saveClinicalTrial(
+          selectedWorkflowId ? ({ ...trial, workflowId: selectedWorkflowId } as ClinicalTrial & { workflowId: string }) : trial
+        );
         toast.success("Đã tạo thử nghiệm lâm sàng");
         onSaved(result?.id ? { ...trial, id: result.id } : trial);
       }
@@ -252,6 +258,17 @@ export function TrialFormModal({ initialData, creatorId, creatorName, onClose, o
             <Field label="Link nhóm Zalo">
               <input className={inputCls} value={zaloGroupUrl} onChange={(e) => setZaloGroupUrl(e.target.value)} placeholder="https://zalo.me/g/..." />
             </Field>
+
+            {!isEdit && workflows.length > 0 && (
+              <Field label="Quy trình mẫu theo dõi (nhiệm vụ sẽ tự sinh)">
+                <select className={inputCls} value={selectedWorkflowId} onChange={(e) => setSelectedWorkflowId(e.target.value)}>
+                  <option value="">Mặc định — Thử nghiệm lâm sàng</option>
+                  {workflows.map((w) => (
+                    <option key={w.id} value={w.id}>{w.name}</option>
+                  ))}
+                </select>
+              </Field>
+            )}
 
             <Field label="Lý do chưa triển khai / ghi chú trạng thái" full>
               <textarea className={inputCls} rows={2} value={statusReason} onChange={(e) => setStatusReason(e.target.value)} />

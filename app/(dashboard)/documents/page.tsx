@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import { cn, generateId } from "@/lib/utils";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { hasPermission } from "@/lib/rbac/permissions";
+import { useUnitAbbr } from "@/hooks/useUnitAbbr";
 import {
   getFolders, saveFolder, deleteFolder,
   saveDocument, deleteDocument, subscribeDocuments,
@@ -64,6 +65,7 @@ function ShareWithPicker({
   selected: string[];
   onChange: (ids: string[]) => void;
 }) {
+  const abbr = useUnitAbbr();
   const [mode, setMode] = useState<ShareMode>("multi");
   const [search, setSearch] = useState("");
   const [taskId, setTaskId] = useState("");
@@ -264,7 +266,7 @@ function ShareWithPicker({
                           {u.name}
                         </p>
                         {u.department && (
-                          <p className="text-[10px] text-slate-400 truncate">{u.department}</p>
+                          <p className="text-[10px] text-slate-400 truncate">{abbr(u.department)}</p>
                         )}
                       </div>
                     </button>

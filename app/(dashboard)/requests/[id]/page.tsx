@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { getRequest, updateRequest, addNotification, getUsers } from "@/lib/firebase/firestore";
+import { useUnitAbbr } from "@/hooks/useUnitAbbr";
 import type { WorkRequest, RequestStatus } from "@/types";
 
 const STATUS_CONFIG: Record<RequestStatus, { label: string; color: string }> = {
@@ -22,7 +23,7 @@ const STATUS_CONFIG: Record<RequestStatus, { label: string; color: string }> = {
 
 const TYPE_ICONS: Record<string, string> = {
   leave: "🏖️", overtime: "⏰", expense: "💰", equipment: "🖥️",
-  training: "📚", wfh: "🏠", custom: "📄",
+  training: "📚", wfh: "🏠", resignation: "🚪", custom: "📄",
 };
 
 const FIELD_LABELS: Record<string, string> = {
@@ -31,12 +32,14 @@ const FIELD_LABELS: Record<string, string> = {
   fromTime: "Từ giờ", toTime: "Đến giờ", expenseType: "Loại chi phí",
   amount: "Số tiền", description: "Mô tả", location: "Địa điểm",
   plan: "Kế hoạch công việc",
+  lastWorkDate: "Ngày làm việc cuối cùng",
 };
 
 export default function RequestDetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const { currentUser } = useAuthStore();
+  const abbr = useUnitAbbr();
   const [request, setRequest] = useState<WorkRequest | null>(null);
   const [loading, setLoading] = useState(true);
   const [comment, setComment] = useState("");
@@ -129,7 +132,7 @@ export default function RequestDetailPage() {
             <div className="flex flex-wrap items-center gap-3 mt-2 text-xs text-slate-400">
               <span className="flex items-center gap-1"><User className="w-3 h-3" />{request.submittedByName}</span>
               <span className="flex items-center gap-1"><Calendar className="w-3 h-3" />{new Date(request.createdAt).toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" })}</span>
-              {request.department && <span>{request.department}</span>}
+              {request.department && <span>{abbr(request.department)}</span>}
             </div>
           </div>
           <span className={cn("px-3 py-1 text-xs font-semibold rounded-full border", cfg.color)}>

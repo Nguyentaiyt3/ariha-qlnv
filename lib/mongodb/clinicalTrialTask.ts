@@ -1,9 +1,19 @@
-import { getTask, createTask, updateTask, updateClinicalTrial, getUnitPlans } from "@/lib/mongodb/firestore";
+import {
+  getTask, createTask, updateTask, getClinicalTrial, getClinicalTrials, updateClinicalTrial,
+  getUnitPlans, getWorkflows, saveWorkflow,
+} from "@/lib/mongodb/firestore";
+import { getUser } from "@/lib/mongodb/auth";
+import { hasPermission } from "@/lib/rbac/permissions";
+import { ensurePermissionOverridesLoaded } from "@/lib/rbac/ensurePermissions";
 import { calcPhaseDeadlines, DEFAULT_MILESTONE_CONFIG } from "@/lib/deadline-calc";
 import { parseTrialPeriod } from "@/lib/utils/clinicalTrialPeriod";
+import { nodesToTaskSteps, linearStepsToTaskSteps } from "@/lib/workflow-engine";
 import { generateId } from "@/lib/utils";
-import { CLINICAL_TRIAL_TERMINAL_BRANCHES } from "@/types";
-import type { ClinicalTrial, ClinicalTrialStatus, Task, TaskStatus, TaskStep, Stakeholder } from "@/types";
+import { CLINICAL_TRIAL_PIPELINE, CLINICAL_TRIAL_TERMINAL_BRANCHES } from "@/types";
+import type {
+  ClinicalTrial, ClinicalTrialStatus, Task, TaskStatus, TaskStep, Stakeholder, Workflow,
+  WorkflowNode, WorkflowEdge,
+} from "@/types";
 
 /** Ánh xạ 12+2 trạng thái trial → 5 trạng thái thô của Task (Chuẩn bị + Đang chạy đều "in_progress"). */
 export function mapTrialStatusToTaskStatus(status: ClinicalTrialStatus): TaskStatus {
@@ -12,53 +22,101 @@ export function mapTrialStatusToTaskStatus(status: ClinicalTrialStatus): TaskSta
   return "in_progress";
 }
 
-/**
- * 9 node quy trình theo dõi TNLS (đã chốt với người dùng) — chuỗi tuyến tính,
- * mỗi node phụ thuộc node liền trước. assigneeId mặc định là người thực hiện chính;
- * helpers chỉ là GỢI Ý người hỗ trợ (không phải chỉ định cứng) — người thực hiện chính
- * có thể tự đề xuất lại khi cấp trên duyệt task.
- */
-function buildTrialTaskSteps(trial: ClinicalTrial, mainPerformerId: string): TaskStep[] {
-  const piHelper = trial.principalInvestigatorId && trial.principalInvestigatorId !== mainPerformerId
-    ? [trial.principalInvestigatorId]
-    : [];
+/** id Workflow mẫu mặc định "Thử nghiệm lâm sàng" — tự sinh 1 lần trong module Quy trình nếu chưa có. */
+export const CLINICAL_TRIAL_WORKFLOW_ID = "wf-clinical-trial";
 
-  const defs: { id: string; name: string; expectedOutput: string; helpers?: string[] }[] = [
-    { id: "feasibility", name: "Khảo sát tính khả thi", expectedOutput: "Báo cáo khảo sát tính khả thi" },
-    { id: "sponsor", name: "Chờ chấp thuận tài trợ", expectedOutput: "Hợp đồng tài trợ đã ký" },
-    { id: "ethics_prep", name: "Chuẩn bị hồ sơ HĐĐĐ Quốc gia", expectedOutput: "Bộ hồ sơ hoàn chỉnh đã nộp", helpers: piHelper },
-    { id: "ethics_meeting", name: "Họp HĐĐĐ Quốc gia", expectedOutput: "Biên bản họp + ý kiến hội đồng", helpers: piHelper },
-    { id: "lec", name: "Thông qua LEC (Hội đồng ĐĐ cơ sở)", expectedOutput: "Quyết định phê duyệt của LEC", helpers: piHelper },
-    { id: "moh", name: "Chờ chấp thuận Bộ Y tế", expectedOutput: "Công văn chấp thuận Bộ Y tế" },
-    { id: "pre_deploy", name: "Chuẩn bị triển khai", expectedOutput: "Số QĐ triển khai + site sẵn sàng thu tuyển" },
-    { id: "enrollment", name: "Thu tuyển bệnh nhân", expectedOutput: "Số liệu tuyển + báo cáo AE/SAE định kỳ", helpers: piHelper },
-    { id: "closeout", name: "Kết thúc & Quyết toán", expectedOutput: "Biên bản bàn giao đã ký + báo cáo tổng kết", helpers: piHelper },
+/** node nào có PI là người hỗ trợ GỢI Ý (giữ đúng nội dung 9-node đã chốt trước đây). */
+const PI_HELPER_NODE_IDS = new Set(["ethics_prep", "ethics_meeting", "lec", "enrollment", "closeout"]);
+
+/** node hoàn thành → trạng thái trial kế tiếp (chỉ áp dụng khi Task dùng đúng mẫu mặc định). */
+const NODE_ID_TO_NEXT_TRIAL_STATUS: Partial<Record<string, ClinicalTrialStatus>> = {
+  feasibility: "awaiting_sponsor",
+  sponsor: "preparing_ethics",
+  ethics_prep: "national_ethics_met",
+  ethics_meeting: "lec_approved",
+  lec: "awaiting_moh",
+  moh: "pre_deployment",
+  pre_deploy: "running_pre_enroll",
+  enrollment: "running_enrolled",
+  closeout: "completed",
+};
+
+function buildDefaultClinicalTrialWorkflow(actorUserId: string, actorName: string): Workflow {
+  const defs: { id: string; name: string; output: string }[] = [
+    { id: "feasibility", name: "Khảo sát tính khả thi", output: "Báo cáo khảo sát tính khả thi" },
+    { id: "sponsor", name: "Chờ chấp thuận tài trợ", output: "Hợp đồng tài trợ đã ký" },
+    { id: "ethics_prep", name: "Chuẩn bị hồ sơ HĐĐĐ Quốc gia", output: "Bộ hồ sơ hoàn chỉnh đã nộp" },
+    { id: "ethics_meeting", name: "Họp HĐĐĐ Quốc gia", output: "Biên bản họp + ý kiến hội đồng" },
+    { id: "lec", name: "Thông qua LEC (Hội đồng ĐĐ cơ sở)", output: "Quyết định phê duyệt của LEC" },
+    { id: "moh", name: "Chờ chấp thuận Bộ Y tế", output: "Công văn chấp thuận Bộ Y tế" },
+    { id: "pre_deploy", name: "Chuẩn bị triển khai", output: "Số QĐ triển khai + site sẵn sàng thu tuyển" },
+    { id: "enrollment", name: "Thu tuyển bệnh nhân", output: "Số liệu tuyển + báo cáo AE/SAE định kỳ" },
+    { id: "closeout", name: "Kết thúc & Quyết toán", output: "Biên bản bàn giao đã ký + báo cáo tổng kết" },
   ];
 
-  return defs.map((d, i) => ({
+  const nodes: WorkflowNode[] = defs.map((d, i) => ({
     id: d.id,
     name: d.name,
-    assigneeId: mainPerformerId,
-    status: "pending" as const,
-    progress: 0,
-    kpiTarget: 1,
-    kpiCurrent: 0,
-    kpiUnit: "bước",
-    proofs: [],
-    dependsOn: i > 0 ? [defs[i - 1].id] : [],
-    expectedOutput: d.expectedOutput,
-    ...(d.helpers && d.helpers.length > 0 ? { helpers: d.helpers } : {}),
+    status: "todo",
+    position: { x: i * 220, y: 120 },
+    output: d.output,
   }));
+  const edges: WorkflowEdge[] = defs.slice(1).map((d, i) => ({
+    id: `e-${defs[i].id}-${d.id}`,
+    source: defs[i].id,
+    target: d.id,
+    required: true,
+  }));
+
+  const now = new Date().toISOString();
+  return {
+    id: CLINICAL_TRIAL_WORKFLOW_ID,
+    name: "Thử nghiệm lâm sàng",
+    description: "Quy trình mẫu theo dõi thử nghiệm lâm sàng, từ khảo sát tính khả thi đến kết thúc & quyết toán.",
+    steps: [],
+    nodes,
+    edges,
+    status: "published",
+    createdBy: actorUserId,
+    createdByName: actorName,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+/**
+ * Lấy Workflow dùng để sinh Task theo dõi TNLS. Nếu chỉ định `workflowId` (chọn tay trong module
+ * Quy trình), dùng đúng workflow đó; nếu không, dùng mẫu mặc định — tự sinh 1 lần nếu chưa có.
+ */
+async function resolveTrialWorkflow(
+  workflowId: string | undefined,
+  actorUserId: string,
+  actorName: string
+): Promise<Workflow> {
+  const all = await getWorkflows(true);
+  if (workflowId) {
+    const picked = all.find((w) => w.id === workflowId);
+    if (picked) return picked;
+  }
+  const existing = all.find((w) => w.id === CLINICAL_TRIAL_WORKFLOW_ID);
+  if (existing) return existing;
+  const template = buildDefaultClinicalTrialWorkflow(actorUserId, actorName);
+  await saveWorkflow(template);
+  return template;
 }
 
 /**
  * Lấy Task theo dõi của 1 trial, tự sinh nếu chưa có (idempotent).
  * Dùng chung cho nút "Tạo nhiệm vụ theo dõi" và các luồng cần gắn dữ liệu tài chính vào Task thật
  * (vd. duyệt bàn giao thanh toán) — tránh gán taskId giả (trial.id) vào FinancialTransaction.
+ *
+ * `workflowId`: cho phép chọn tay 1 quy trình mẫu khác trong module Quy trình (mặc định dùng
+ * mẫu "Thử nghiệm lâm sàng", tự sinh 1 lần nếu chưa có).
  */
 export async function ensureTrialExecutionTask(
   trial: ClinicalTrial,
-  actorUserId: string
+  actorUserId: string,
+  workflowId?: string
 ): Promise<string> {
   if (trial.executionTaskId) {
     const existing = await getTask(trial.executionTaskId);
@@ -69,12 +127,38 @@ export async function ensureTrialExecutionTask(
   const base = (endDate || new Date(new Date().getFullYear() + 1, 11, 31)).toISOString();
   const phases = calcPhaseDeadlines(base, DEFAULT_MILESTONE_CONFIG);
 
-  const mainPerformerId = trial.coordinatorId || trial.principalInvestigatorId || actorUserId;
+  // Người thực hiện chính dự kiến = người đang thao tác (đăng nhập lúc đăng ký/sinh nhiệm vụ) —
+  // không còn suy ra từ coordinator/PI của trial như trước.
+  const mainPerformerId = actorUserId;
   const stakeholders: Stakeholder[] = [{ userId: mainPerformerId, role: "assignee" }];
   if (trial.principalInvestigatorId && trial.principalInvestigatorId !== mainPerformerId) {
     stakeholders.push({ userId: trial.principalInvestigatorId, role: "collaborator" });
   }
 
+  await ensurePermissionOverridesLoaded();
+  const actorUser = await getUser(actorUserId);
+  const canAutoApprove = !!actorUser && hasPermission(actorUser.role, "task:approve");
+
+  const workflow = await resolveTrialWorkflow(workflowId, actorUserId, actorUser?.name || "");
+  const nodes = workflow.nodes ?? [];
+  const edges = workflow.edges ?? [];
+  const assigneeByNode = Object.fromEntries(nodes.map((n) => [n.id, mainPerformerId]));
+  const steps = nodes.length > 0
+    ? nodesToTaskSteps(nodes, edges, { assigneeByNode, defaultKpiUnit: "bước" })
+    : linearStepsToTaskSteps(workflow.steps, { defaultKpiUnit: "bước" });
+  for (const step of steps) {
+    if (!step.assigneeId) step.assigneeId = mainPerformerId;
+  }
+
+  // PI chỉ là người hỗ trợ GỢI Ý ở các bước liên quan hồ sơ đạo đức/thu tuyển/kết thúc — giữ đúng
+  // hành vi cũ của mẫu mặc định (không áp dụng khi người dùng tự chọn quy trình khác).
+  if (workflow.id === CLINICAL_TRIAL_WORKFLOW_ID && trial.principalInvestigatorId && trial.principalInvestigatorId !== mainPerformerId) {
+    for (const step of steps) {
+      if (PI_HELPER_NODE_IDS.has(step.id)) step.helpers = [trial.principalInvestigatorId];
+    }
+  }
+
+  const now = new Date().toISOString();
   const taskId = generateId("t");
   const newTask: Omit<Task, "id"> & { id: string } = {
     id: taskId,
@@ -91,20 +175,20 @@ export async function ensureTrialExecutionTask(
     mainPerformerId,
     stakeholders,
     dependencies: [],
-    workflowName: "Thử nghiệm lâm sàng",
-    steps: buildTrialTaskSteps(trial, mainPerformerId),
+    workflowId: workflow.id,
+    workflowName: workflow.name,
+    steps,
     subtasks: [],
     kpi: { type: "custom", target: 1, current: 0, unit: "nghiên cứu" },
     progress: 0,
     riskFlag: false,
     timeLogs: [],
-    approved: true,
-    approvedBy: actorUserId,
-    approvedAt: new Date().toISOString(),
+    approved: canAutoApprove,
+    ...(canAutoApprove ? { approvedBy: actorUserId, approvedAt: now } : {}),
     department: trial.department,
     tags: ["TNLS"],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    createdAt: now,
+    updatedAt: now,
   };
 
   await createTask(newTask);
@@ -225,4 +309,99 @@ export async function completePhaseTask(
       score3T: { t1: 10, t2: 10, t3: 10, total: 10, grade: "hoanThanh", computedAt: now },
     },
   });
+}
+
+// ─── Đồng bộ 2 chiều Task ↔ ClinicalTrial ──────────────────────
+
+/**
+ * Áp dụng các side-effect khi trạng thái trial thay đổi: đồng bộ sang Task tổng theo dõi
+ * (executionTaskId) + cascade đóng/mở 3 Task pha. Trạng thái trial (và statusHistory, nếu có)
+ * PHẢI được ghi vào DB trước khi gọi hàm này — dùng chung cho cả 2 chiều đồng bộ:
+ * (a) đổi trạng thái thủ công tại trang chi tiết trial (PATCH /api/clinical-trials/[id]),
+ * (b) hoàn thành bước trong Task tổng theo dõi (PATCH /api/tasks/[id], xem hàm bên dưới).
+ */
+export async function applyTrialStatusChange(
+  trialId: string,
+  newStatus: ClinicalTrialStatus,
+  prevStatus: ClinicalTrialStatus | undefined,
+  actorUserId: string
+): Promise<void> {
+  let trial = await getClinicalTrial(trialId);
+  if (!trial) return;
+
+  if (trial.executionTaskId) {
+    await updateTask(trial.executionTaskId, {
+      status: mapTrialStatusToTaskStatus(newStatus),
+      ...(newStatus === "completed" ? { completedAt: new Date().toISOString() } : {}),
+    });
+  }
+
+  const isTerminalOrCompleted =
+    newStatus === "completed" || (CLINICAL_TRIAL_TERMINAL_BRANCHES as string[]).includes(newStatus);
+  const wasTerminalOrCompleted =
+    prevStatus === "completed" || (CLINICAL_TRIAL_TERMINAL_BRANCHES as string[]).includes(prevStatus || "");
+
+  // Rời "Khảo sát tính khả thi" → đóng pha ①, mở pha ②
+  if (prevStatus === "feasibility" && newStatus !== "feasibility") {
+    await completePhaseTask(trial, "feasibility", actorUserId);
+    await ensurePhaseTask(trial, "execution", actorUserId);
+    // Refetch để có phaseTaskIds mới nhất trước khi xét bước tiếp theo (tránh dùng dữ liệu cũ
+    // nếu trial nhảy thẳng từ "feasibility" sang "completed"/dừng sớm trong cùng 1 lần cập nhật)
+    trial = await getClinicalTrial(trialId);
+  }
+
+  // Vừa đạt "Đã kết thúc" hoặc 1 trong 2 nhánh dừng sớm → đóng pha ②, mở pha ③
+  if (trial && isTerminalOrCompleted && !wasTerminalOrCompleted) {
+    await completePhaseTask(trial, "execution", actorUserId);
+    await ensurePhaseTask(trial, "closeout", actorUserId);
+  }
+}
+
+/**
+ * Chiều đồng bộ ngược: khi 1 bước của Task tổng theo dõi được đánh dấu hoàn thành, tự động
+ * đẩy trạng thái ClinicalTrial tương ứng tiến lên (chỉ áp dụng cho Task sinh từ mẫu mặc định
+ * `CLINICAL_TRIAL_WORKFLOW_ID` — id bước khớp đúng thứ tự pipeline trial). Nếu người dùng chọn
+ * quy trình khác bằng tay, bước hoàn thành không khớp id nào trong pipeline → bỏ qua an toàn.
+ */
+export async function syncTrialStatusFromCompletedSteps(
+  taskId: string,
+  prevSteps: TaskStep[] | undefined,
+  newSteps: TaskStep[] | undefined,
+  actorUserId: string
+): Promise<void> {
+  if (!newSteps || newSteps.length === 0) return;
+
+  const trials = await getClinicalTrials();
+  const trial = trials.find((t) => t.executionTaskId === taskId);
+  if (!trial) return;
+
+  const prevCompletedIds = new Set((prevSteps ?? []).filter((s) => s.status === "completed").map((s) => s.id));
+  const newlyCompleted = newSteps.filter((s) => s.status === "completed" && !prevCompletedIds.has(s.id));
+  if (newlyCompleted.length === 0) return;
+
+  // Nếu nhiều bước hoàn thành cùng lúc (hoặc không theo thứ tự), nhảy tới trạng thái xa nhất
+  // trong pipeline — tránh lùi trạng thái nếu người dùng tick bỏ bước ở giữa.
+  const currentIdx = CLINICAL_TRIAL_PIPELINE.indexOf(trial.status);
+  let targetStatus: ClinicalTrialStatus | undefined;
+  let targetIdx = currentIdx;
+  for (const step of newlyCompleted) {
+    const candidate = NODE_ID_TO_NEXT_TRIAL_STATUS[step.id];
+    if (!candidate) continue;
+    const idx = CLINICAL_TRIAL_PIPELINE.indexOf(candidate);
+    if (idx > targetIdx) {
+      targetIdx = idx;
+      targetStatus = candidate;
+    }
+  }
+  if (!targetStatus) return;
+
+  const prevStatus = trial.status;
+  const actor = await getUser(actorUserId);
+  const statusHistory = [
+    ...(trial.statusHistory || []),
+    { status: targetStatus, changedAt: new Date().toISOString(), changedBy: actor?.name || actorUserId },
+  ];
+
+  await updateClinicalTrial(trial.id, { status: targetStatus, statusHistory });
+  await applyTrialStatusChange(trial.id, targetStatus, prevStatus, actorUserId);
 }

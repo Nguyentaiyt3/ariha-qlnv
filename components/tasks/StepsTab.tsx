@@ -12,6 +12,7 @@ import {
   nodesToTaskSteps, updateStepById,
 } from "@/lib/workflow-engine";
 import { canAssignTo } from "@/lib/rbac/permissions";
+import { useUnitAbbr } from "@/hooks/useUnitAbbr";
 import { uploadFile } from "@/lib/firebase/storage";
 import { UserAvatar } from "@/components/common/UserAvatar";
 import type { Task, TaskStep, StepSubTask, User, TaskPriority, Proof, AdvanceRequest, FinancialProof, ChangeRequest, Workflow, WorkflowNode, WorkflowEdge } from "@/types";
@@ -78,6 +79,7 @@ const BLANK_SUB = {
 // ── Main component ────────────────────────────────────────────
 
 export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove = false, onSave, onEmailSent }: Props) {
+  const abbr = useUnitAbbr();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [assigningStep, setAssigningStep] = useState<string | null>(null);
   const [addSubStep, setAddSubStep] = useState<string | null>(null);
@@ -1063,7 +1065,7 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
                         >
                           <option value="">Chọn người hỗ trợ...</option>
                           {assignableUsers.filter((u) => u.id !== step.assigneeId).map((u) => (
-                            <option key={u.id} value={u.id}>{u.name}{u.department ? ` — ${u.department}` : ""}</option>
+                            <option key={u.id} value={u.id}>{u.name}{u.department ? ` — ${abbr(u.department)}` : ""}</option>
                           ))}
                         </select>
                         <select
