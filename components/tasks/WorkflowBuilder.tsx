@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import type { Workflow, WorkflowNode, WorkflowEdge } from "@/types";
 import { generateId } from "@/lib/utils";
+import { useUnitAbbr } from "@/hooks/useUnitAbbr";
 
 // ── Zones ─────────────────────────────────────────────────────
 const ZONE_W = 520;
@@ -473,6 +474,7 @@ function NodeEditor({
   predecessors: Node[];
   onEditSubWorkflow?: (nodeId: string) => void;
 }) {
+  const abbr = useUnitAbbr();
   const [tab, setTab]             = useState<EditorTab>("chung");
   const [showExtForm, setShowExt] = useState(false);
   const [extWfId, setExtWfId]     = useState("");
@@ -742,7 +744,7 @@ function NodeEditor({
             <select value={d.assigneeId ?? ""} onChange={(e) => setAssignee(e.target.value)}
               style={{ ...inp, marginBottom: 12 }} disabled={d.locked}>
               <option value="">-- Chưa phân công --</option>
-              {users.map((u) => <option key={u.id} value={u.id}>{u.name}{u.department ? ` (${u.department})` : ""}</option>)}
+              {users.map((u) => <option key={u.id} value={u.id}>{u.name}{u.department ? ` (${abbr(u.department)})` : ""}</option>)}
             </select>
           ) : (
             <input value={d.assigneeName ?? ""} onChange={(e) => onUpdate(node.id, { assigneeName: e.target.value })}

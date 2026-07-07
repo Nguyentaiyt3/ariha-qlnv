@@ -90,6 +90,36 @@ export interface BankAccount {
   accountName: string;    // Tên chủ tài khoản
 }
 
+export type ContractType = "indefinite" | "fixed_term" | "probation" | "collaborator";
+
+export const CONTRACT_TYPE_LABEL: Record<ContractType, string> = {
+  indefinite:   "Không xác định thời hạn",
+  fixed_term:   "Có thời hạn",
+  probation:    "Thử việc",
+  collaborator: "Cộng tác viên",
+};
+
+export type CredentialType = "degree" | "license" | "cme" | "other";
+
+export const CREDENTIAL_TYPE_LABEL: Record<CredentialType, string> = {
+  degree:  "Bằng cấp",
+  license: "Chứng chỉ hành nghề",
+  cme:     "CME / Đào tạo liên tục",
+  other:   "Khác",
+};
+
+/** Chứng chỉ/bằng cấp của nhân viên — theo dõi hạn để cảnh báo trước khi hết hiệu lực. */
+export interface StaffCredential {
+  id: string;
+  name: string;          // Tên chứng chỉ/bằng cấp
+  type: CredentialType;
+  issuer?: string;        // Nơi cấp
+  issueDate?: string;
+  expiryDate?: string;    // Bỏ trống nếu không có hạn (vd. bằng đại học)
+  fileUrl?: string;       // Ảnh/PDF minh chứng — lưu dạng base64 data URL (theo pattern Proof hiện có)
+  fileName?: string;
+}
+
 export interface User {
   id: string;
   email: string;
@@ -103,6 +133,17 @@ export interface User {
   joinDate?: string;
   exitDate?: string;
   bio?: string;
+  // ── Hồ sơ hợp đồng ──
+  employeeCode?: string;      // Mã nhân viên
+  contractType?: ContractType;
+  contractStart?: string;     // Ngày bắt đầu hợp đồng hiện tại
+  contractEnd?: string;       // Ngày kết thúc — dùng để cảnh báo sắp hết hạn
+  /** Chứng chỉ/bằng cấp — dùng cho dashboard cảnh báo hết hạn CME/chứng chỉ hành nghề. */
+  credentials?: StaffCredential[];
+  /** Task quy trình hội nhập — tự sinh khi tài khoản được duyệt từ "guest" sang vai trò chính thức. */
+  onboardingTaskId?: string;
+  /** Task quy trình nghỉ việc — tự sinh khi đơn "Nghỉ việc" được phê duyệt. */
+  offboardingTaskId?: string;
   // ── Hồ sơ học vấn & khoa học ──
   educationLevel?: string;   // Trình độ (Đại học, Thạc sĩ, Tiến sĩ...)
   major?: string;            // Chuyên ngành
@@ -1382,6 +1423,7 @@ export type RequestType =
   | "equipment"       // Mượn / cấp thiết bị
   | "training"        // Đăng ký đào tạo
   | "wfh"             // Làm việc từ xa
+  | "resignation"     // Nghỉ việc — duyệt xong tự sinh Task quy trình bàn giao/thu hồi
   | "custom";         // Đơn tùy biến
 
 export type RequestStatus = "pending" | "approved" | "rejected" | "cancelled";

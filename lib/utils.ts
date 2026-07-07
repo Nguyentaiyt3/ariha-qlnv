@@ -15,6 +15,40 @@ export function formatDateTime(date: string | Date) {
   return format(new Date(date), "HH:mm dd/MM/yyyy", { locale: vi });
 }
 
+/** Số ngày tới hạn (âm = đã qua hạn). null nếu không có ngày hoặc ngày không hợp lệ. */
+export function daysUntil(dateStr?: string): number | null {
+  if (!dateStr) return null;
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return null;
+  return differenceInDays(d, new Date());
+}
+
+/** Cảnh báo hợp đồng nhân viên: đã hết hạn, hoặc còn ≤30 ngày. Dùng chung cho trang danh sách + hồ sơ. */
+export function contractAlert(contractEnd?: string): { label: string; days: number; cls: string } | null {
+  const days = daysUntil(contractEnd);
+  if (days === null) return null;
+  if (days < 0) {
+    return { label: `Hết hạn HĐ ${Math.abs(days)} ngày trước`, days, cls: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400" };
+  }
+  if (days <= 30) {
+    return { label: `Sắp hết hạn HĐ — còn ${days} ngày`, days, cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" };
+  }
+  return null;
+}
+
+/** Cảnh báo hết hạn chứng chỉ/bằng cấp — cùng ngưỡng 30 ngày với hợp đồng, dùng chung màu sắc. */
+export function credentialAlert(expiryDate?: string): { label: string; days: number; cls: string } | null {
+  const days = daysUntil(expiryDate);
+  if (days === null) return null;
+  if (days < 0) {
+    return { label: `Hết hạn ${Math.abs(days)} ngày trước`, days, cls: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400" };
+  }
+  if (days <= 30) {
+    return { label: `Còn ${days} ngày`, days, cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" };
+  }
+  return null;
+}
+
 /**
  * Format period string (month/year or year-month or day-month-year) to dd/mm/yy
  * Input: "3/2024" → "01/03/24", "2024-03-15" → "15/03/24"

@@ -14,6 +14,7 @@ import { generateId } from "@/lib/utils";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { hasPermission } from "@/lib/rbac/permissions";
+import { useUnitAbbr } from "@/hooks/useUnitAbbr";
 import {
   subscribeAnnouncements, saveAnnouncement, updateAnnouncement, deleteAnnouncement,
   reactToAnnouncement, markAnnouncementViewed, approveAnnouncement, addNotification,
@@ -617,6 +618,7 @@ function CreateChannelModal({
   onSave: (name: string, type: Channel["type"], memberIds: string[], description?: string) => Promise<void>;
   onClose: () => void;
 }) {
+  const abbr = useUnitAbbr();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [type, setType] = useState<Channel["type"]>("private");
@@ -819,7 +821,7 @@ function CreateChannelModal({
                           {u.name}
                         </p>
                         {u.department && (
-                          <p className="text-[10px] text-slate-400 truncate">{u.department}</p>
+                          <p className="text-[10px] text-slate-400 truncate">{abbr(u.department)}</p>
                         )}
                       </div>
                       <div className={cn(
@@ -873,6 +875,7 @@ function ManageChannelModal({
   onDelete: (id: string) => Promise<void>;
   onClose: () => void;
 }) {
+  const abbr = useUnitAbbr();
   const [tab, setTab] = useState<"members" | "settings">("members");
   const [name, setName] = useState(channel.name);
   const [description, setDescription] = useState(channel.description ?? "");
@@ -1035,7 +1038,7 @@ function ManageChannelModal({
                               </span>
                             )}
                           </p>
-                          {u.department && <p className="text-[10px] text-slate-400 truncate">{u.department}</p>}
+                          {u.department && <p className="text-[10px] text-slate-400 truncate">{abbr(u.department)}</p>}
                         </div>
                         {canEdit && !isOwner && (
                           <button
@@ -1092,7 +1095,7 @@ function ManageChannelModal({
                             </div>
                             <div className="flex-1 min-w-0">
                               <p className="text-sm font-medium text-[var(--foreground)] truncate">{u.name}</p>
-                              {u.department && <p className="text-[10px] text-slate-400 truncate">{u.department}</p>}
+                              {u.department && <p className="text-[10px] text-slate-400 truncate">{abbr(u.department)}</p>}
                             </div>
                             <span className="opacity-0 group-hover:opacity-100 flex items-center gap-1 text-[10px] text-blue-600 font-semibold transition">
                               <UserPlus className="w-3 h-3" /> Thêm

@@ -18,6 +18,7 @@ import { createTask, getWorkflows } from "@/lib/firebase/firestore";
 import WorkflowBuilder from "@/components/tasks/WorkflowBuilder";
 import type { WorkflowNode, WorkflowEdge } from "@/types";
 import { uploadFile } from "@/lib/firebase/storage";
+import { useUnitAbbr } from "@/hooks/useUnitAbbr";
 import { calcPhaseDeadlines } from "@/lib/deadline-calc";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useTaskStore } from "@/stores/useTaskStore";
@@ -51,6 +52,7 @@ interface CreateTaskModalProps {
 export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskModalProps) {
   const { currentUser } = useAuthStore();
   const { users } = useTaskStore();
+  const abbr = useUnitAbbr();
   const [loading, setLoading] = useState(false);
 
   // Kế hoạch đơn vị
@@ -547,7 +549,7 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
                 <SearchableSelect
                   value={mainPerformerId}
                   onChange={setMainPerformerId}
-                  options={activeUsers.map((u) => ({ id: u.id, label: u.name, sub: u.department ?? undefined }))}
+                  options={activeUsers.map((u) => ({ id: u.id, label: u.name, sub: u.department ? abbr(u.department) : undefined }))}
                   placeholder="Chọn nhân viên..."
                   emptyText="Không tìm thấy nhân viên"
                 />
@@ -646,7 +648,7 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
                   onChange={setStakeholderUserId}
                   options={activeUsers
                     .filter((u) => u.id !== mainPerformerId && !stakeholders.some((s) => s.userId === u.id))
-                    .map((u) => ({ id: u.id, label: u.name, sub: u.department ?? undefined }))}
+                    .map((u) => ({ id: u.id, label: u.name, sub: u.department ? abbr(u.department) : undefined }))}
                   placeholder="Chọn người..."
                   emptyText="Không tìm thấy"
                   className="flex-1"
@@ -911,6 +913,7 @@ interface SortableStepRowProps {
 }
 
 function SortableStepRow({ node, index, deps, candidates, assigneeValue, onAssigneeChange }: SortableStepRowProps) {
+  const abbr = useUnitAbbr();
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: node.id });
   const style = { transform: CSS.Transform.toString(transform), transition };
 
@@ -954,7 +957,7 @@ function SortableStepRow({ node, index, deps, candidates, assigneeValue, onAssig
         <SearchableSelect
           value={assigneeValue}
           onChange={(uid) => onAssigneeChange(node.id, uid)}
-          options={candidates.map((u) => ({ id: u.id, label: u.name, sub: u.department ?? undefined }))}
+          options={candidates.map((u) => ({ id: u.id, label: u.name, sub: u.department ? abbr(u.department) : undefined }))}
           placeholder="— Chưa gán (phân công sau) —"
           emptyText="Không tìm thấy"
           listHeight="max-h-36"

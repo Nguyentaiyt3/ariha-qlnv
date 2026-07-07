@@ -81,6 +81,20 @@ const DEFAULT_TEMPLATES: Omit<RequestTemplate, "id" | "createdBy" | "createdAt">
       { key: "plan", label: "Kế hoạch công việc", type: "textarea", required: true },
     ],
   },
+  {
+    name: "Đơn xin nghỉ việc",
+    type: "resignation",
+    icon: "🚪",
+    description: "Thông báo nghỉ việc — sau khi duyệt sẽ tự sinh checklist bàn giao/thu hồi",
+    approverRole: "director",
+    isActive: true,
+    status: "published",
+    fields: [
+      { key: "lastWorkDate", label: "Ngày làm việc cuối cùng", type: "date", required: true },
+      { key: "reason", label: "Lý do nghỉ việc", type: "textarea", required: true },
+      { key: "handover", label: "Người nhận bàn giao công việc", type: "text", required: false },
+    ],
+  },
 ];
 
 const STATUS_CONFIG: Record<RequestStatus, { label: string; color: string; Icon: React.ComponentType<{ className?: string }> }> = {

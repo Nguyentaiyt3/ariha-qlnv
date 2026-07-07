@@ -1,14 +1,16 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Users, Search, Edit2, UserCheck, UserX, Save, X, Clock, KeyRound, ChevronDown, Check } from "lucide-react";
+import Link from "next/link";
+import { Users, Search, Edit2, UserCheck, UserX, Save, X, Clock, KeyRound, ChevronDown, Check, ShieldAlert, UserPlus, Loader2 } from "lucide-react";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { hasPermission } from "@/lib/rbac/permissions";
-import { saveUser } from "@/lib/firebase/firestore";
+import { useUnitAbbr } from "@/hooks/useUnitAbbr";
+import { saveUser, getUsers } from "@/lib/firebase/firestore";
 import type { User, UserRole, OrgPosition, ResearchDesignation } from "@/types";
 import { RESEARCH_DESIGNATION_LABEL } from "@/types";
-import { cn, getInitials, avatarColor, roleLabel } from "@/lib/utils";
+import { cn, getInitials, avatarColor, roleLabel, contractAlert, credentialAlert } from "@/lib/utils";
 import { toast } from "sonner";
 
 const ROLE_COLORS: Record<UserRole, string> = {
@@ -128,17 +130,178 @@ interface EditState {
   researchDesignations: ResearchDesignation[];
 }
 
+// ─── Thêm nhân viên mới (HR/Admin tạo trực tiếp, khác luồng tự đăng ký → guest → duyệt) ──
+
+const ASSIGNABLE_ROLES: UserRole[] = ["staff", "teamLead", "director", "hrAdmin", "financeViewer", "financeAuditor", "financeSupervisor"];
+
+function genTempPassword() {
+  return "Ariha@" + Math.random().toString(36).slice(-6);
+}
+
+function AddEmployeeModal({
+  unitOptions, posOptions, onClose, onCreated,
+}: {
+  unitOptions: Array<{ label: string; sub?: string }>;
+  posOptions: Array<{ label: string; sub?: string }>;
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [department, setDepartment] = useState("");
+  const [position, setPosition] = useState("");
+  const [role, setRole] = useState<UserRole>("staff");
+  const [employeeCode, setEmployeeCode] = useState("");
+  const [tempPassword, setTempPassword] = useState(genTempPassword());
+  const [saving, setSaving] = useState(false);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!name.trim() || !email.trim()) {
+      toast.error("Vui lòng nhập tên và email");
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await fetch("/api/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name.trim(),
+          email: email.trim(),
+          tempPassword,
+          role,
+          department: department.trim() || undefined,
+          position: position.trim() || undefined,
+          employeeCode: employeeCode.trim() || undefined,
+        }),
+      });
+      if (!res.ok) {
+        const d = await res.json();
+        throw new Error(d.error || "Tạo tài khoản thất bại");
+      }
+      toast.success(`Đã tạo tài khoản cho ${name.trim()}. Mật khẩu tạm: ${tempPassword}`, {
+        duration: 60000,
+        description: "Gửi cho nhân viên. Họ sẽ bị buộc đổi mật khẩu khi đăng nhập.",
+      });
+      onCreated();
+      onClose();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Tạo tài khoản thất bại");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-start justify-center z-50 p-4 overflow-y-auto">
+      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-md my-8">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-700">
+          <h2 className="font-bold text-slate-800 dark:text-white text-base flex items-center gap-2">
+            <UserPlus className="w-4 h-4 text-blue-500" /> Thêm nhân viên mới
+          </h2>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800">
+            <X className="w-4 h-4 text-slate-400" />
+          </button>
+        </div>
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          <div>
+            <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Họ tên *</label>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+              required
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Email *</label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+              required
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Phòng ban</label>
+              <InlineCombobox value={department} onChange={setDepartment} options={unitOptions} placeholder="Chọn phòng ban" className="w-full" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Chức danh</label>
+              <InlineCombobox value={position} onChange={setPosition} options={posOptions} placeholder="Chọn chức danh" className="w-full" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Vai trò *</label>
+              <select
+                value={role}
+                onChange={(e) => setRole(e.target.value as UserRole)}
+                className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+              >
+                {ASSIGNABLE_ROLES.map((r) => (
+                  <option key={r} value={r}>{roleLabel(r)}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Mã nhân viên</label>
+              <input
+                value={employeeCode}
+                onChange={(e) => setEmployeeCode(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">Mật khẩu tạm</label>
+            <div className="flex gap-2">
+              <input
+                value={tempPassword}
+                onChange={(e) => setTempPassword(e.target.value)}
+                className="flex-1 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+              />
+              <button
+                type="button"
+                onClick={() => setTempPassword(genTempPassword())}
+                className="px-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-700 text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800 transition"
+              >
+                Tạo lại
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-400 mt-1">Nhân viên sẽ bị buộc đổi mật khẩu ở lần đăng nhập đầu tiên.</p>
+          </div>
+          <div className="flex justify-end gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+            <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+              Huỷ
+            </button>
+            <button type="submit" disabled={saving} className="px-4 py-2 rounded-lg text-sm font-semibold bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white transition flex items-center gap-2">
+              {saving && <Loader2 className="w-4 h-4 animate-spin" />}
+              Tạo tài khoản
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────
 
 export default function EmployeesPage() {
   const { currentUser } = useAuthStore();
   const { users, setUsers } = useTaskStore();
+  const abbr = useUnitAbbr();
   const [search, setSearch] = useState("");
   const [editState, setEditState] = useState<EditState | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [selectedPending, setSelectedPending] = useState<Set<string>>(new Set());
   const [bulkRole, setBulkRole] = useState<UserRole>("staff");
   const [bulkApproving, setBulkApproving] = useState(false);
+  const [showAddEmployee, setShowAddEmployee] = useState(false);
 
   // Catalog data for comboboxes
   const [unitOptions, setUnitOptions] = useState<Array<{ label: string; sub?: string }>>([]);
@@ -191,6 +354,21 @@ export default function EmployeesPage() {
   }
 
   const pendingGuests = users.filter(u => u.role === "guest" && u.isActive);
+
+  // Dashboard cảnh báo hết hạn — gộp hợp đồng + chứng chỉ/bằng cấp sắp/đã hết hạn
+  const expiryAlerts = users
+    .filter(u => u.isActive)
+    .flatMap(u => {
+      const items: { user: User; label: string; expired: boolean }[] = [];
+      const cAlert = contractAlert(u.contractEnd);
+      if (cAlert) items.push({ user: u, label: "Hợp đồng — " + cAlert.label, expired: cAlert.days < 0 });
+      for (const cred of u.credentials ?? []) {
+        const credA = credentialAlert(cred.expiryDate);
+        if (credA) items.push({ user: u, label: `${cred.name} — ${credA.label}`, expired: credA.days < 0 });
+      }
+      return items;
+    });
+
   const filtered = users.filter(u =>
     u.name.toLowerCase().includes(search.toLowerCase()) ||
     u.email.toLowerCase().includes(search.toLowerCase()) ||
@@ -313,7 +491,53 @@ export default function EmployeesPage() {
             ({users.filter(u => u.isActive).length} hoạt động)
           </span>
         </h1>
+        {canManage && (
+          <button
+            onClick={() => setShowAddEmployee(true)}
+            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition"
+          >
+            <UserPlus className="w-4 h-4" /> Thêm nhân viên
+          </button>
+        )}
       </div>
+
+      {showAddEmployee && (
+        <AddEmployeeModal
+          unitOptions={unitOptions}
+          posOptions={posOptions}
+          onClose={() => setShowAddEmployee(false)}
+          onCreated={() => { getUsers().then(setUsers); }}
+        />
+      )}
+
+      {/* ── Dashboard cảnh báo hết hạn (hợp đồng + chứng chỉ/bằng cấp) ── */}
+      {canManage && expiryAlerts.length > 0 && (
+        <div className="mb-5 border border-amber-200 dark:border-amber-800 rounded-xl overflow-hidden">
+          <div className="flex items-center gap-2 px-4 py-3 bg-amber-50 dark:bg-amber-950/30 border-b border-amber-200 dark:border-amber-800">
+            <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
+            <p className="text-sm font-semibold text-amber-700 dark:text-amber-400">
+              {expiryAlerts.length} mục hợp đồng/chứng chỉ sắp hoặc đã hết hạn
+            </p>
+          </div>
+          <div className="divide-y divide-amber-100 dark:divide-amber-900/30 max-h-48 overflow-y-auto bg-white dark:bg-slate-900">
+            {expiryAlerts.map((item, i) => (
+              <Link
+                key={i}
+                href={`/employees/${item.user.id}`}
+                className="flex items-center gap-3 px-4 py-2 hover:bg-amber-50/60 dark:hover:bg-amber-950/20 transition-colors"
+              >
+                <Avatar user={item.user} size="sm" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-[var(--foreground)] truncate">{item.user.name}</p>
+                  <p className={cn("text-[11px] truncate", item.expired ? "text-red-600 dark:text-red-400" : "text-amber-600 dark:text-amber-400")}>
+                    {item.label}
+                  </p>
+                </div>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ── Approval Queue ── */}
       {canManage && pendingGuests.length > 0 && (
@@ -488,7 +712,12 @@ export default function EmployeesPage() {
                             className="text-sm font-medium border border-blue-400 rounded-lg px-2 py-0.5 bg-[var(--background)] text-[var(--foreground)] focus:outline-none w-36"
                           />
                         ) : (
-                          <p className="font-medium text-[var(--foreground)] truncate">{user.name}</p>
+                          <Link
+                            href={`/employees/${user.id}`}
+                            className="font-medium text-[var(--foreground)] truncate hover:text-blue-600 hover:underline block"
+                          >
+                            {user.name}
+                          </Link>
                         )}
                         <p className="text-xs text-[var(--muted-foreground)] truncate">{user.email}</p>
                       </div>
@@ -506,7 +735,7 @@ export default function EmployeesPage() {
                         className="w-40"
                       />
                     ) : (
-                      user.department ?? "—"
+                      abbr(user.department)
                     )}
                   </td>
 
@@ -694,11 +923,21 @@ export default function EmployeesPage() {
 
                   {/* Status */}
                   <td className="px-4 py-3">
-                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                      user.isActive ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"
-                    }`}>
-                      {user.isActive ? "Hoạt động" : "Vô hiệu"}
-                    </span>
+                    <div className="flex flex-col gap-1 items-start">
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                        user.isActive ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"
+                      }`}>
+                        {user.isActive ? "Hoạt động" : "Vô hiệu"}
+                      </span>
+                      {(() => {
+                        const alert = contractAlert(user.contractEnd);
+                        return alert ? (
+                          <span className={cn("flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full font-medium", alert.cls)}>
+                            <ShieldAlert className="w-2.5 h-2.5" /> {alert.label}
+                          </span>
+                        ) : null;
+                      })()}
+                    </div>
                   </td>
 
                   {/* Actions */}

@@ -15,6 +15,7 @@ import { useAuthStore } from "@/stores/useAuthStore";
 import { subscribeTask, updateTask, deleteTask, getEmailLogs, getAuditTrail, addAuditEvent, addNotification, getEvaluations, saveEvaluation, getEvaluationConfig, getTaskEvaluations, getResearchTopics } from "@/lib/firebase/firestore";
 import { uploadFile } from "@/lib/firebase/storage";
 import { hasPermission, canAssignTo } from "@/lib/rbac/permissions";
+import { useUnitAbbr } from "@/hooks/useUnitAbbr";
 import { updateStepById } from "@/lib/workflow-engine";
 import { StepsTab } from "@/components/tasks/StepsTab";
 import { TaskChat } from "@/components/tasks/TaskChat";
@@ -559,6 +560,7 @@ export default function TaskDetailsPage() {
   const router = useRouter();
   const { users } = useTaskStore();
   const { currentUser } = useAuthStore();
+  const abbr = useUnitAbbr();
 
   const [task, setTask] = useState<Task | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>("steps");
@@ -1437,7 +1439,7 @@ export default function TaskDetailsPage() {
                   >
                     <option value="">— Chọn người thực hiện —</option>
                     {users.filter((u) => u.isActive !== false).map((u) => (
-                      <option key={u.id} value={u.id}>{u.name} ({u.department ?? u.role})</option>
+                      <option key={u.id} value={u.id}>{u.name} ({u.department ? abbr(u.department) : u.role})</option>
                     ))}
                   </select>
                 </div>
@@ -1935,7 +1937,7 @@ export default function TaskDetailsPage() {
                         return (
                           <div key={s.userId} className="flex items-center gap-2 px-3 py-1.5 bg-amber-100 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-700 rounded-full text-xs">
                             <UserAvatar user={u} size="sm" showName />
-                            <span className="text-amber-500 dark:text-amber-400">{u.department}</span>
+                            <span className="text-amber-500 dark:text-amber-400">{abbr(u.department)}</span>
                             <button
                               onClick={() => handleRevokeSupervisor(s.userId)}
                               className="text-amber-400 hover:text-red-500 ml-1 transition"
@@ -1966,7 +1968,7 @@ export default function TaskDetailsPage() {
                           )
                           .map((u) => (
                             <option key={u.id} value={u.id}>
-                              {u.name} ({u.department ?? u.role})
+                              {u.name} ({u.department ? abbr(u.department) : u.role})
                             </option>
                           ))}
                       </select>
@@ -2013,7 +2015,7 @@ export default function TaskDetailsPage() {
                         return (
                           <div key={s.userId} className="flex items-center gap-2 px-3 py-2 bg-slate-50 dark:bg-slate-900 rounded-xl">
                             <UserAvatar user={u} size="sm" showName />
-                            <span className="text-xs text-slate-400">{u.department}</span>
+                            <span className="text-xs text-slate-400">{abbr(u.department)}</span>
                           </div>
                         );
                       })}
