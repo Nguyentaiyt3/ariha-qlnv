@@ -4,6 +4,7 @@ import { getUsers, saveUser } from "@/lib/mongodb/firestore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { ensurePermissionOverridesLoaded } from "@/lib/rbac/ensurePermissions";
 import { ensureOnboardingTask } from "@/lib/mongodb/employeeTask";
+import { logAudit } from "@/lib/mongodb/auditLog";
 import type { UserRole } from "@/types";
 
 async function getAuthUser(req: NextRequest) {
@@ -67,6 +68,17 @@ export async function POST(req: NextRequest) {
     } catch (e) {
       console.error("[users:POST] Lỗi khi tự sinh Task hội nhập:", e);
     }
+
+    await logAudit({
+      actorId: me.id,
+      actorName: me.name,
+      actorRole: me.role,
+      action: "user.created",
+      entityType: "User",
+      entityId: newUser.id,
+      entityLabel: newUser.name,
+      after: { email, name, role, department, position },
+    });
 
     return NextResponse.json({ success: true, id: newUser.id });
   } catch (error) {

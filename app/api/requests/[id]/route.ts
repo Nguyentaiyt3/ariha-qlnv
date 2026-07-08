@@ -4,6 +4,7 @@ import { getRequest, updateRequest, getUser, saveUser } from "@/lib/mongodb/fire
 import { ensureOffboardingTask } from "@/lib/mongodb/employeeTask";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { ensurePermissionOverridesLoaded } from "@/lib/rbac/ensurePermissions";
+import { logAudit } from "@/lib/mongodb/auditLog";
 import { PROFILE_EDITABLE_FIELDS } from "@/types";
 
 async function auth(req: NextRequest) {
@@ -79,6 +80,24 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     } catch (e) {
       console.error("[requests/[id]:PATCH] Lỗi khi áp dụng thay đổi hồ sơ:", e);
     }
+  }
+
+  // Truy vết quyết định duyệt/từ chối MỌI loại đơn từ (nghỉ phép, tăng ca... lẫn đơn nhân sự
+  // nhạy cảm hơn như nghỉ việc/thay đổi thông tin — cùng 1 action, phân biệt qua entityLabel/after.type).
+  if (
+    prevRequest &&
+    (updates.status === "approved" || updates.status === "rejected") &&
+    prevRequest.status !== updates.status
+  ) {
+    const actor = await getUser(u.userId);
+    await logAudit({
+      actorId: u.userId, actorName: actor?.name, actorRole: actor?.role,
+      action: updates.status === "approved" ? "request.approved" : "request.rejected",
+      entityType: "WorkRequest", entityId: params.id, entityLabel: prevRequest.title,
+      before: { status: prevRequest.status },
+      after: { status: updates.status, type: prevRequest.type, submittedBy: prevRequest.submittedBy },
+      note: updates.reviewComment,
+    });
   }
 
   return NextResponse.json({ success: true });

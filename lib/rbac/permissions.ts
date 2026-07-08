@@ -304,6 +304,7 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
       { id: "user:create",             label: "Tạo/Import nhân viên mới" },
       { id: "user:manageContract",     label: "Quản lý hồ sơ hợp đồng" },
       { id: "user:manageCredentials",  label: "Quản lý chứng chỉ/bằng cấp" },
+      { id: "user:merge",              label: "Gộp nhân viên trùng lặp" },
     ],
   },
   {
@@ -409,6 +410,12 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
     permissions: [
       { id: "plan:read",   label: "Xem kế hoạch" },
       { id: "plan:manage", label: "Quản lý kế hoạch" },
+    ],
+  },
+  {
+    id: "system", label: "Hệ thống",
+    permissions: [
+      { id: "system:auditRead", label: "Xem nhật ký hệ thống" },
     ],
   },
 ];

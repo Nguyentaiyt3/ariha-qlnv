@@ -1,6 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyToken } from "@/lib/mongodb/auth";
+import { verifyToken, getUser } from "@/lib/mongodb/auth";
 import { updateAdvanceRequest, submitAdvanceSettlement } from "@/lib/mongodb/firestore";
+import { AdvanceRequestModel } from "@/lib/mongodb/models";
+import { logAudit } from "@/lib/mongodb/auditLog";
+
+const AUDIT_ACTION: Record<string, string> = {
+  approve: "finance.advance_approved",
+  reject: "finance.advance_rejected",
+  approveSettlement: "finance.advance_settlement_approved",
+  rejectSettlement: "finance.advance_settlement_rejected",
+};
 
 async function auth(req: NextRequest) {
   const token = req.cookies.get("auth-token")?.value;
@@ -46,6 +55,20 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   const update = actions[body.action];
   if (!update) return NextResponse.json({ error: "Invalid action" }, { status: 400 });
 
+  const before = await AdvanceRequestModel.findById(params.id).lean() as any;
   await updateAdvanceRequest(params.id, update as any);
+
+  const auditAction = AUDIT_ACTION[body.action];
+  if (auditAction) {
+    const actor = await getUser(user.userId);
+    await logAudit({
+      actorId: user.userId, actorName: actor?.name, actorRole: actor?.role,
+      action: auditAction, entityType: "AdvanceRequest", entityId: params.id,
+      entityLabel: before ? `${before.requestedByName || ""} — ${before.amount ?? ""}đ`.trim() : undefined,
+      before: { status: before?.status }, after: { status: update.status },
+      note: body.reason,
+    });
+  }
+
   return NextResponse.json({ success: true });
 }

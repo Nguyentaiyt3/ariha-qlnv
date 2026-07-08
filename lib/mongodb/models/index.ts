@@ -19,6 +19,7 @@ export {
 } from "./Finance";
 export { WorkNodeModel } from "./WorkNode";
 export { AuditEventModel } from "./AuditEvent";
+export { SystemAuditLogModel } from "./SystemAuditLog";
 export { UnitPlanModel } from "./Plan";
 export { ResearchTopicModel } from "./Research";
 export { ResearchGroupModel } from "./ResearchGroup";

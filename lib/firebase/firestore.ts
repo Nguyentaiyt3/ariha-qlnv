@@ -114,10 +114,17 @@ export function subscribeTask(taskId: string, callback: (task: Task | null) => v
 
 // ─── AUDIT TRAIL ──────────────────────────────────────────────
 
-export async function addAuditEvent(_taskId: string, _event: Omit<AuditEvent, "id">): Promise<void> {}
+export async function addAuditEvent(taskId: string, event: Omit<AuditEvent, "id">): Promise<void> {
+  await api(`/api/tasks/${taskId}/audit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(event),
+  });
+}
 
-export async function getAuditTrail(_taskId: string): Promise<AuditEvent[]> {
-  return [];
+export async function getAuditTrail(taskId: string): Promise<AuditEvent[]> {
+  const data = await api<{ events: AuditEvent[] }>(`/api/tasks/${taskId}/audit`);
+  return data?.events ?? [];
 }
 
 // ─── MESSAGES ────────────────────────────────────────────────

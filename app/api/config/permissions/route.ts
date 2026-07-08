@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyToken, getUser } from "@/lib/mongodb/auth";
 import { getPermissionConfig, savePermissionConfig } from "@/lib/mongodb/firestore";
 import { applyPermissionOverrides, hasPermission } from "@/lib/rbac/permissions";
+import { logAudit } from "@/lib/mongodb/auditLog";
 import type { UserRole } from "@/types";
 
 async function getAuthUser(req: NextRequest) {
@@ -37,10 +38,23 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    const before = await getPermissionConfig();
     const body = await req.json();
     await savePermissionConfig(body);
     // Apply immediately in server memory
     applyPermissionOverrides(body as Partial<Record<UserRole, string[]>>);
+
+    await logAudit({
+      actorId: me.id,
+      actorName: me.name,
+      actorRole: me.role,
+      action: "permission.updated",
+      entityType: "PermissionConfig",
+      entityId: "permissions",
+      before,
+      after: body,
+    });
+
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("[POST /api/config/permissions]", error);

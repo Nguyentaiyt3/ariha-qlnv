@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyToken } from "@/lib/mongodb/auth";
+import { verifyToken, getUser } from "@/lib/mongodb/auth";
 import {
   getTask, updateTask, deleteTask,
   getClinicalTrials, updateClinicalTrial,
   getResearchTopics, updateResearchTopic,
 } from "@/lib/mongodb/firestore";
 import { syncTrialStatusFromCompletedSteps } from "@/lib/mongodb/clinicalTrialTask";
+import { logAudit } from "@/lib/mongodb/auditLog";
 
 /**
  * Dọn các back-reference trỏ tới task vừa xoá (ClinicalTrial.executionTaskId/phaseTaskIds,
@@ -83,10 +84,23 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 }
 
 export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
-  if (!await getAuth(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const auth = await getAuth(req);
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
+    // Lấy snapshot TRƯỚC khi xoá — sau khi xoá, trang chi tiết Task không còn để xem lại nữa,
+    // nên đây là nơi DUY NHẤT còn thấy nhiệm vụ này đã từng tồn tại (qua Nhật ký hệ thống).
+    const task = await getTask(params.id);
     await deleteTask(params.id);
     await cleanupTaskBackReferences(params.id);
+
+    const actor = await getUser(auth.userId);
+    await logAudit({
+      actorId: auth.userId, actorName: actor?.name, actorRole: actor?.role,
+      action: "deleted", entityType: "Task", entityId: params.id,
+      entityLabel: task?.name,
+      before: task ? { name: task.name, status: task.status, mainPerformerId: task.mainPerformerId } : undefined,
+    });
+
     return NextResponse.json({ success: true });
   } catch (e) {
     return NextResponse.json({ error: "Failed" }, { status: 500 });

@@ -1,14 +1,15 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import Link from "next/link";
-import { Users, Search, Edit2, UserCheck, UserX, Save, X, Clock, KeyRound, ChevronDown, Check, ShieldAlert, UserPlus, Loader2, FileUp } from "lucide-react";
+import { Users, Search, Edit2, UserCheck, UserX, Save, X, Clock, KeyRound, ChevronDown, Check, ShieldAlert, UserPlus, Loader2, FileUp, GitMerge } from "lucide-react";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { useUnitAbbr } from "@/hooks/useUnitAbbr";
 import { saveUser, getUsers } from "@/lib/firebase/firestore";
 import { ImportEmployeesModal } from "@/components/employees/ImportEmployeesModal";
+import { MergeEmployeesModal } from "@/components/employees/MergeEmployeesModal";
 import type { User, UserRole, OrgPosition, ResearchDesignation } from "@/types";
 import { RESEARCH_DESIGNATION_LABEL } from "@/types";
 import { cn, getInitials, avatarColor, roleLabel, contractAlert, credentialAlert } from "@/lib/utils";
@@ -24,6 +25,49 @@ const ROLE_COLORS: Record<UserRole, string> = {
   financeAuditor:    "bg-teal-100 text-teal-700",
   financeSupervisor: "bg-cyan-100 text-cyan-700",
 };
+
+// ─── Phát hiện nhân viên trùng lặp ──────────────────────────────
+
+interface DuplicatePair {
+  a: User;
+  b: User;
+  reasons: string[];
+}
+
+function normalizePhone(p?: string): string {
+  return (p || "").replace(/\D/g, "");
+}
+function normalizeName(n: string): string {
+  return n.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/**
+ * So khớp từng cặp nhân viên đang hoạt động theo CCCD/điện thoại (tín hiệu mạnh) hoặc tên + phòng
+ * ban trùng nhau (tín hiệu yếu hơn, vẫn đáng ngờ). O(n²) nhưng chấp nhận được với quy mô nhân sự
+ * 1 tổ chức (vài chục–vài trăm người), chỉ chạy khi hiển thị trang, không phải trên hot path.
+ */
+function findDuplicatePairs(users: User[]): DuplicatePair[] {
+  const active = users.filter((u) => u.isActive);
+  const pairs: DuplicatePair[] = [];
+  for (let i = 0; i < active.length; i++) {
+    for (let j = i + 1; j < active.length; j++) {
+      const a = active[i];
+      const b = active[j];
+      const reasons: string[] = [];
+      if (a.idNumber?.trim() && b.idNumber?.trim() && a.idNumber.trim() === b.idNumber.trim()) {
+        reasons.push("Trùng số CCCD");
+      }
+      const pa = normalizePhone(a.phone);
+      const pb = normalizePhone(b.phone);
+      if (pa && pb && pa === pb) reasons.push("Trùng số điện thoại");
+      if (normalizeName(a.name) === normalizeName(b.name) && a.department && b.department && a.department === b.department) {
+        reasons.push("Trùng tên + phòng ban");
+      }
+      if (reasons.length > 0) pairs.push({ a, b, reasons });
+    }
+  }
+  return pairs;
+}
 
 // ─── Inline Combobox ──────────────────────────────────────────
 // Combobox nhỏ gọn dùng trong table cell.
@@ -314,6 +358,7 @@ export default function EmployeesPage() {
   const [bulkApproving, setBulkApproving] = useState(false);
   const [showAddEmployee, setShowAddEmployee] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [mergeCandidate, setMergeCandidate] = useState<DuplicatePair | null>(null);
 
   // Catalog data for comboboxes
   const [unitOptions, setUnitOptions] = useState<Array<{ label: string; sub?: string }>>([]);
@@ -357,6 +402,9 @@ export default function EmployeesPage() {
   const canManage = currentUser ? hasPermission(currentUser.role, "user:manage") : false;
   const canRead   = currentUser ? hasPermission(currentUser.role, "user:read")   : false;
   const canCreate = currentUser ? hasPermission(currentUser.role, "user:create") : false;
+  const canMerge  = currentUser ? hasPermission(currentUser.role, "user:merge")  : false;
+
+  const duplicatePairs = useMemo(() => (canMerge ? findDuplicatePairs(users) : []), [users, canMerge]);
 
   if (!canRead) {
     return (
@@ -536,6 +584,45 @@ export default function EmployeesPage() {
           onClose={() => setShowImport(false)}
           onImported={() => { getUsers().then(setUsers); }}
         />
+      )}
+
+      {mergeCandidate && (
+        <MergeEmployeesModal
+          userA={mergeCandidate.a}
+          userB={mergeCandidate.b}
+          onClose={() => setMergeCandidate(null)}
+          onMerged={() => { getUsers().then(setUsers); }}
+        />
+      )}
+
+      {/* ── Cảnh báo nhân viên trùng lặp ── */}
+      {canMerge && duplicatePairs.length > 0 && (
+        <div className="mb-5 border border-violet-200 dark:border-violet-800 rounded-xl overflow-hidden">
+          <div className="flex items-center gap-2 px-4 py-3 bg-violet-50 dark:bg-violet-950/30 border-b border-violet-200 dark:border-violet-800">
+            <GitMerge className="w-4 h-4 text-violet-600 shrink-0" />
+            <p className="text-sm font-semibold text-violet-700 dark:text-violet-400">
+              {duplicatePairs.length} cặp nhân viên có khả năng trùng lặp
+            </p>
+          </div>
+          <div className="divide-y divide-violet-100 dark:divide-violet-900/30 max-h-64 overflow-y-auto bg-white dark:bg-slate-900">
+            {duplicatePairs.map((p, i) => (
+              <div key={i} className="flex items-center gap-3 px-4 py-2.5">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-[var(--foreground)] truncate">
+                    <span className="font-medium">{p.a.name}</span> ({p.a.email}) &nbsp;↔&nbsp; <span className="font-medium">{p.b.name}</span> ({p.b.email})
+                  </p>
+                  <p className="text-[11px] text-violet-600 dark:text-violet-400 truncate">{p.reasons.join(" · ")}</p>
+                </div>
+                <button
+                  onClick={() => setMergeCandidate(p)}
+                  className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-700 text-white font-medium transition shrink-0"
+                >
+                  <GitMerge className="w-3 h-3" /> Xem & Gộp
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
 
       {/* ── Dashboard cảnh báo hết hạn (hợp đồng + chứng chỉ/bằng cấp) ── */}
