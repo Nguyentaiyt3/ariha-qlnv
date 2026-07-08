@@ -1065,6 +1065,26 @@ export interface AuditEvent {
   timestamp: string;
 }
 
+/**
+ * Nhật ký hệ thống dùng chung cho mọi loại đối tượng (Task, User, ClinicalTrial, WorkRequest...) —
+ * append-only, không có API sửa/xoá. `entityType` + `entityId` xác định đối tượng bị tác động;
+ * `actorRole` lưu vai trò TẠI THỜI ĐIỂM hành động (vai trò người dùng có thể đổi sau này).
+ */
+export interface SystemAuditLog {
+  id: string;
+  createdAt: string;
+  actorId: string;
+  actorName?: string;
+  actorRole?: UserRole;
+  action: string;
+  entityType: string;
+  entityId: string;
+  entityLabel?: string;
+  before?: Record<string, unknown>;
+  after?: Record<string, unknown>;
+  note?: string;
+}
+
 // ─── MESSAGES ────────────────────────────────────────────────
 
 export interface Message {

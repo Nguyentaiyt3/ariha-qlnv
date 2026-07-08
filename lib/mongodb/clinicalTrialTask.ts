@@ -5,6 +5,7 @@ import {
 import { getUser } from "@/lib/mongodb/auth";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { ensurePermissionOverridesLoaded } from "@/lib/rbac/ensurePermissions";
+import { logAudit } from "@/lib/mongodb/auditLog";
 import { calcPhaseDeadlines, DEFAULT_MILESTONE_CONFIG } from "@/lib/deadline-calc";
 import { parseTrialPeriod } from "@/lib/utils/clinicalTrialPeriod";
 import { nodesToTaskSteps, linearStepsToTaskSteps } from "@/lib/workflow-engine";
@@ -328,6 +329,21 @@ export async function applyTrialStatusChange(
 ): Promise<void> {
   let trial = await getClinicalTrial(trialId);
   if (!trial) return;
+
+  if (prevStatus !== newStatus) {
+    const actor = await getUser(actorUserId);
+    await logAudit({
+      actorId: actorUserId,
+      actorName: actor?.name,
+      actorRole: actor?.role,
+      action: "trial.status_changed",
+      entityType: "ClinicalTrial",
+      entityId: trialId,
+      entityLabel: trial.abbreviation || trial.code,
+      before: { status: prevStatus },
+      after: { status: newStatus },
+    });
+  }
 
   if (trial.executionTaskId) {
     await updateTask(trial.executionTaskId, {

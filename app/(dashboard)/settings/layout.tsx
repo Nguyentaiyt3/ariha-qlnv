@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { User, Bell, Settings, ShieldCheck, KeyRound, GitMerge } from "lucide-react";
+import { User, Bell, Settings, ShieldCheck, KeyRound, GitMerge, ScrollText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { hasPermission } from "@/lib/rbac/permissions";
@@ -16,6 +16,7 @@ const TABS = [
 const ADMIN_TABS = [
   { href: "/settings/permissions",   label: "Phân quyền",    Icon: ShieldCheck },
   { href: "/settings/approval",      label: "Quy trình duyệt", Icon: GitMerge  },
+  { href: "/settings/audit-log",     label: "Nhật ký hệ thống", Icon: ScrollText },
   { href: "/settings/system",        label: "Hệ thống",      Icon: Settings    },
 ];
 

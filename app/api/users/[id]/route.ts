@@ -4,6 +4,7 @@ import { getUser, saveUser, deleteUser } from "@/lib/mongodb/firestore";
 import { ensureOnboardingTask } from "@/lib/mongodb/employeeTask";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { ensurePermissionOverridesLoaded } from "@/lib/rbac/ensurePermissions";
+import { logAudit } from "@/lib/mongodb/auditLog";
 
 const CONTRACT_FIELDS = ["employeeCode", "contractType", "contractStart", "contractEnd"];
 
@@ -47,8 +48,10 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     }
 
     // Lấy trạng thái TRƯỚC khi cập nhật để phát hiện đúng thời điểm "guest" được duyệt lên vai
-    // trò chính thức (không phát hiện được sau khi đã ghi đè).
-    const prevUser = updates.role ? await getUser(params.id) : null;
+    // trò chính thức (không phát hiện được sau khi đã ghi đè), và để ghi nhật ký đổi vai
+    // trò/vô hiệu hoá — đây là 2 hành động nhạy cảm cần truy vết.
+    const needsPrevSnapshot = updates.role !== undefined || updates.isActive !== undefined;
+    const prevUser = needsPrevSnapshot ? await getUser(params.id) : null;
 
     await saveUser({ ...updates, id: params.id });
 
@@ -63,6 +66,25 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       }
     }
 
+    if (prevUser) {
+      const actor = await getUser(auth.userId);
+      if (updates.role !== undefined && updates.role !== prevUser.role) {
+        await logAudit({
+          actorId: auth.userId, actorName: actor?.name, actorRole: actor?.role,
+          action: "user.role_changed", entityType: "User", entityId: params.id, entityLabel: prevUser.name,
+          before: { role: prevUser.role }, after: { role: updates.role },
+        });
+      }
+      if (updates.isActive !== undefined && updates.isActive !== prevUser.isActive) {
+        await logAudit({
+          actorId: auth.userId, actorName: actor?.name, actorRole: actor?.role,
+          action: updates.isActive ? "user.activated" : "user.deactivated",
+          entityType: "User", entityId: params.id, entityLabel: prevUser.name,
+          before: { isActive: prevUser.isActive }, after: { isActive: updates.isActive },
+        });
+      }
+    }
+
     return NextResponse.json({ success: true });
   } catch (e) {
     return NextResponse.json({ error: "Failed" }, { status: 500 });
@@ -70,9 +92,18 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 }
 
 export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
-  if (!await getAuth(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const auth = await getAuth(req);
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
+    const target = await getUser(params.id);
     await deleteUser(params.id);
+    const actor = await getUser(auth.userId);
+    await logAudit({
+      actorId: auth.userId, actorName: actor?.name, actorRole: actor?.role,
+      action: "user.deactivated", entityType: "User", entityId: params.id, entityLabel: target?.name,
+      before: { isActive: target?.isActive }, after: { isActive: false },
+      note: "Vô hiệu hoá qua DELETE /api/users/[id]",
+    });
     return NextResponse.json({ success: true });
   } catch (e) {
     return NextResponse.json({ error: "Failed" }, { status: 500 });

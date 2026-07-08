@@ -4,6 +4,7 @@ import { getResearchTopic, updateResearchTopic, deleteResearchTopic } from "@/li
 import { hasPermission } from "@/lib/rbac/permissions";
 import { redactReviewer } from "@/lib/research";
 import { isTopicAuthor } from "@/lib/researchUtils";
+import { logAudit } from "@/lib/mongodb/auditLog";
 
 async function auth(req: NextRequest) {
   const token = req.cookies.get("auth-token")?.value;
@@ -46,6 +47,8 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   if (!u) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const updates = await req.json();
 
+  const prevTopicForAudit = updates.stage ? await getResearchTopic(params.id) : null;
+
   // COI checks — fetch topic once if any protected field is being updated
   const needsCOICheck =
     Object.prototype.hasOwnProperty.call(updates, "intakeStatus") ||
@@ -77,6 +80,17 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   }
 
   await updateResearchTopic(params.id, updates);
+
+  if (prevTopicForAudit && updates.stage && updates.stage !== prevTopicForAudit.stage) {
+    const actor = await getUser(u.userId);
+    await logAudit({
+      actorId: u.userId, actorName: actor?.name, actorRole: actor?.role,
+      action: "research.stage_changed", entityType: "ResearchTopic", entityId: params.id,
+      entityLabel: prevTopicForAudit.code || prevTopicForAudit.title,
+      before: { stage: prevTopicForAudit.stage }, after: { stage: updates.stage },
+    });
+  }
+
   return NextResponse.json({ success: true });
 }
 

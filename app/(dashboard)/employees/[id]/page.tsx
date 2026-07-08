@@ -5,16 +5,17 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import {
   ArrowLeft, Pencil, Save, X, Loader2, Mail, ClipboardList,
-  GraduationCap, ShieldAlert, BadgeCheck, Briefcase, Award, Paperclip, Trash2, Plus,
+  GraduationCap, ShieldAlert, BadgeCheck, Briefcase, Award, Paperclip, Trash2, Plus, ScrollText,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { getUser, saveUser } from "@/lib/firebase/firestore";
 import { useUnitAbbr } from "@/hooks/useUnitAbbr";
-import { cn, getInitials, avatarColor, roleLabel, formatDate, contractAlert, credentialAlert, generateId } from "@/lib/utils";
+import { cn, getInitials, avatarColor, roleLabel, formatDate, formatDateTime, contractAlert, credentialAlert, generateId } from "@/lib/utils";
 import { RESEARCH_DESIGNATION_LABEL, CONTRACT_TYPE_LABEL, CREDENTIAL_TYPE_LABEL } from "@/types";
-import type { User, UserRole, ContractType, CredentialType, StaffCredential } from "@/types";
+import { actionLabel } from "@/lib/auditLabels";
+import type { User, UserRole, ContractType, CredentialType, StaffCredential, SystemAuditLog } from "@/types";
 
 const ROLE_COLORS: Record<UserRole, string> = {
   guest:             "bg-gray-100 text-gray-700",
@@ -81,6 +82,7 @@ export default function EmployeeDetailPage() {
   const [credForm, setCredForm] = useState(BLANK_CRED);
   const [credFile, setCredFile] = useState<File | null>(null);
   const [savingCred, setSavingCred] = useState(false);
+  const [history, setHistory] = useState<SystemAuditLog[]>([]);
 
   const canManage = !!currentUser && hasPermission(currentUser.role, "user:manage");
   const canManageContract = !!currentUser && hasPermission(currentUser.role, "user:manageContract");
@@ -102,6 +104,14 @@ export default function EmployeeDetailPage() {
       }
     });
   }, [id]);
+
+  useEffect(() => {
+    if (!canManage) return;
+    fetch(`/api/audit-logs?entityType=User&entityId=${id}`)
+      .then((r) => r.json())
+      .then((d) => setHistory(d.logs ?? []))
+      .catch(() => {});
+  }, [id, canManage]);
 
   if (!canRead && !isSelf) {
     return (
@@ -550,6 +560,25 @@ export default function EmployeeDetailPage() {
               <p className="text-sm text-[var(--foreground)] whitespace-pre-line">{user.scientificProfile}</p>
             </div>
           )}
+        </Section>
+      )}
+
+      {/* Lịch sử — chỉ HR/Admin (user:manage), có thể chứa đổi vai trò/vô hiệu hoá */}
+      {canManage && history.length > 0 && (
+        <Section title="Lịch sử" icon={ScrollText}>
+          <div className="space-y-2">
+            {history.map((h) => (
+              <div key={h.id} className="flex items-baseline gap-2 text-xs">
+                <span className="font-mono text-[var(--muted-foreground)] shrink-0 w-[130px]">{formatDateTime(h.createdAt)}</span>
+                <span className="text-[var(--foreground)]">
+                  <span className="font-medium">{h.actorName || h.actorId}</span>
+                  <span className="text-[var(--muted-foreground)] mx-1">–</span>
+                  {actionLabel(h.action)}
+                  {h.note && <span className="text-[var(--muted-foreground)]"> ({h.note})</span>}
+                </span>
+              </div>
+            ))}
+          </div>
         </Section>
       )}
     </div>

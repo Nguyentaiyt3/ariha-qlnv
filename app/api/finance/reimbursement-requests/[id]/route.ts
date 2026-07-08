@@ -1,11 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyToken } from "@/lib/mongodb/auth";
+import { verifyToken, getUser } from "@/lib/mongodb/auth";
 import { updateReimbursementRequest } from "@/lib/mongodb/firestore";
+import { ReimbursementRequestModel } from "@/lib/mongodb/models";
+import { logAudit } from "@/lib/mongodb/auditLog";
 
 async function auth(req: NextRequest) {
   const token = req.cookies.get("auth-token")?.value;
   return token ? verifyToken(token) : null;
 }
+
+const AUDIT_ACTION: Record<string, string> = {
+  approve: "finance.reimbursement_approved",
+  reject: "finance.reimbursement_rejected",
+};
 
 export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
   const user = await auth(req);
@@ -23,6 +30,20 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   const update = actions[body.action];
   if (!update) return NextResponse.json({ error: "Invalid action" }, { status: 400 });
 
+  const before = await ReimbursementRequestModel.findById(params.id).lean() as any;
   await updateReimbursementRequest(params.id, update as any);
+
+  const auditAction = AUDIT_ACTION[body.action];
+  if (auditAction) {
+    const actor = await getUser(user.userId);
+    await logAudit({
+      actorId: user.userId, actorName: actor?.name, actorRole: actor?.role,
+      action: auditAction, entityType: "ReimbursementRequest", entityId: params.id,
+      entityLabel: before ? `${before.requestedByName || ""} — ${before.amount ?? ""}đ`.trim() : undefined,
+      before: { status: before?.status }, after: { status: update.status },
+      note: body.reason,
+    });
+  }
+
   return NextResponse.json({ success: true });
 }
