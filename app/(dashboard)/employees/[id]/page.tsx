@@ -83,6 +83,8 @@ export default function EmployeeDetailPage() {
   const [savingCred, setSavingCred] = useState(false);
 
   const canManage = !!currentUser && hasPermission(currentUser.role, "user:manage");
+  const canManageContract = !!currentUser && hasPermission(currentUser.role, "user:manageContract");
+  const canManageCredentials = !!currentUser && hasPermission(currentUser.role, "user:manageCredentials");
   const canRead = !!currentUser && hasPermission(currentUser.role, "user:read");
   const isSelf = currentUser?.id === id;
 
@@ -267,10 +269,17 @@ export default function EmployeeDetailPage() {
           <Field label="Email" value={user.email} />
           <Field label="Điện thoại" value={user.phone} />
           <Field label="Đơn vị" value={abbr(user.department)} />
+          <Field label="Số CCCD" value={user.idNumber} />
           <Field label="Sinh nhật" value={user.birthday ? formatDate(user.birthday) : undefined} />
           <Field label="Ngày vào" value={user.joinDate ? formatDate(user.joinDate) : undefined} />
           <Field label="Ngày nghỉ" value={user.exitDate ? formatDate(user.exitDate) : undefined} />
         </div>
+        {isSelf && (
+          <p className="text-xs text-[var(--muted-foreground)] mt-3 pt-3 border-t border-[var(--border)]">
+            Đây là hồ sơ của bạn — muốn thay đổi thông tin, vào{" "}
+            <Link href="/settings/profile" className="text-blue-600 hover:underline">Cài đặt &gt; Hồ sơ cá nhân</Link>.
+          </p>
+        )}
       </Section>
 
       {/* Hợp đồng */}
@@ -352,7 +361,7 @@ export default function EmployeeDetailPage() {
                 <p className="text-sm text-[var(--muted-foreground)] col-span-2">Chưa có thông tin hợp đồng.</p>
               )}
             </div>
-            {canManage && (
+            {canManageContract && (
               <button
                 onClick={() => setEditingContract(true)}
                 className="p-1.5 text-[var(--muted-foreground)] hover:text-blue-600 rounded-lg hover:bg-blue-50 transition shrink-0"
@@ -394,7 +403,7 @@ export default function EmployeeDetailPage() {
                     </a>
                   )}
                 </div>
-                {canManage && (
+                {canManageCredentials && (
                   <button
                     onClick={() => handleDeleteCredential(c.id)}
                     className="p-1 text-[var(--muted-foreground)] hover:text-red-500 rounded-lg hover:bg-red-50 transition shrink-0"
@@ -411,7 +420,7 @@ export default function EmployeeDetailPage() {
             <p className="text-sm text-[var(--muted-foreground)]">Chưa có chứng chỉ/bằng cấp nào.</p>
           )}
 
-          {canManage && (
+          {canManageCredentials && (
             addingCred ? (
               <div className="border border-blue-200 dark:border-blue-800 rounded-lg p-3 space-y-2 bg-blue-50/40 dark:bg-blue-950/20">
                 <div className="grid grid-cols-2 gap-2">

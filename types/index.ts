@@ -133,6 +133,7 @@ export interface User {
   joinDate?: string;
   exitDate?: string;
   bio?: string;
+  idNumber?: string;          // Số CCCD/CMND
   // ── Hồ sơ hợp đồng ──
   employeeCode?: string;      // Mã nhân viên
   contractType?: ContractType;
@@ -1424,9 +1425,36 @@ export type RequestType =
   | "training"        // Đăng ký đào tạo
   | "wfh"             // Làm việc từ xa
   | "resignation"     // Nghỉ việc — duyệt xong tự sinh Task quy trình bàn giao/thu hồi
+  | "profile_change"  // Đề xuất thay đổi thông tin cá nhân — duyệt xong mới áp dụng vào hồ sơ
   | "custom";         // Đơn tùy biến
 
 export type RequestStatus = "pending" | "approved" | "rejected" | "cancelled";
+
+/**
+ * Các field hồ sơ nhân viên nhân viên được TỰ đề xuất thay đổi (qua đơn "profile_change",
+ * cần HR/Admin duyệt). Đây là whitelist dùng cả ở UI (settings/profile) lẫn server-side khi áp
+ * dụng thay đổi sau khi duyệt (app/api/requests/[id]/route.ts) — chỉ field trong danh sách này
+ * mới được ghi vào User, tránh 1 request bị chèn field khác (vd. role) để leo quyền.
+ */
+export const PROFILE_EDITABLE_FIELDS = [
+  "name", "phone", "position", "department", "birthday", "idNumber",
+  "educationLevel", "major", "academicTitle", "scientificProfile", "workHistory",
+] as const;
+export type ProfileEditableField = typeof PROFILE_EDITABLE_FIELDS[number];
+
+export const PROFILE_FIELD_LABEL: Record<ProfileEditableField, string> = {
+  name: "Họ tên",
+  phone: "Số điện thoại",
+  position: "Chức danh",
+  department: "Phòng ban",
+  birthday: "Ngày sinh",
+  idNumber: "Số CCCD",
+  educationLevel: "Trình độ",
+  major: "Chuyên ngành",
+  academicTitle: "Học hàm / học vị",
+  scientificProfile: "Lý lịch khoa học",
+  workHistory: "Quá trình công tác",
+};
 
 export interface RequestFieldDef {
   key: string;

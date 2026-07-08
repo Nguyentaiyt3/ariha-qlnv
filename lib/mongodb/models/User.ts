@@ -34,6 +34,19 @@ const userSchema = new Schema(
     joinDate: String,
     exitDate: String,
     bio: String,
+    idNumber: String,
+    // ── Hồ sơ hợp đồng ── (strict mode Mongoose bỏ qua $set field không khai báo ở đây —
+    // PHẢI khai báo mọi field mới của User tại đây, nếu không sẽ âm thầm không lưu được)
+    employeeCode: String,
+    contractType: String,
+    contractStart: String,
+    contractEnd: String,
+    credentials: Schema.Types.Mixed,
+    onboardingTaskId: String,
+    offboardingTaskId: String,
+    // ── Chức vụ / kiêm nhiệm & vai trò NCKH ──
+    positions: Schema.Types.Mixed,
+    researchDesignations: { type: [String], default: [] },
     educationLevel: String,
     major: String,
     academicTitle: String,
