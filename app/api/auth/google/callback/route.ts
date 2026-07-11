@@ -63,7 +63,7 @@ export async function GET(req: NextRequest) {
 
     response.cookies.set("auth-token", token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
+      secure: req.nextUrl.protocol === "https:",
       sameSite: "lax",
       maxAge: 7 * 24 * 60 * 60,
     });
