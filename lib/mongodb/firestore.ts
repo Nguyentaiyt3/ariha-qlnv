@@ -18,17 +18,25 @@ import type {
   WorkNode, UnitPlan, ResearchTopic, ResearchGroup, ClinicalTrial,
 } from "@/types";
 import { generateId } from "@/lib/utils";
+import { encryptField, decryptField } from "./fieldCrypto";
 
 const now = () => new Date().toISOString();
 
 // ─── USERS ──────────────────────────────────────────────────────
+
+function decryptIdNumber<T extends { idNumber?: unknown }>(u: T): T {
+  if (typeof u.idNumber === "string" && u.idNumber) {
+    (u as any).idNumber = decryptField(u.idNumber);
+  }
+  return u;
+}
 
 export async function getUser(userId: string): Promise<User | null> {
   await connectDB();
   const user = await UserModel.findById(userId).lean();
   if (!user) return null;
   const { password: _, ...rest } = user as any;
-  return { id: String(user._id), ...rest } as User;
+  return decryptIdNumber({ id: String(user._id), ...rest } as User);
 }
 
 export async function getUsers(): Promise<User[]> {
@@ -36,13 +44,16 @@ export async function getUsers(): Promise<User[]> {
   const users = await UserModel.find({ isActive: true }).lean();
   return users.map((u: any) => {
     const { password: _, ...rest } = u;
-    return { id: u._id as string, ...rest } as User;
+    return decryptIdNumber({ id: u._id as string, ...rest } as User);
   });
 }
 
 export async function saveUser(user: Partial<User> & { id: string }): Promise<void> {
   await connectDB();
   const { id, _id: _drop, ...updateData } = user as any;
+  if (typeof updateData.idNumber === "string" && updateData.idNumber) {
+    updateData.idNumber = encryptField(updateData.idNumber);
+  }
   await UserModel.findByIdAndUpdate(id, { $set: { ...updateData, updatedAt: now() } }, { upsert: false });
 }
 
