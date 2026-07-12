@@ -7,6 +7,10 @@ import { ensurePermissionOverridesLoaded } from "@/lib/rbac/ensurePermissions";
 import { logAudit } from "@/lib/mongodb/auditLog";
 
 const CONTRACT_FIELDS = ["employeeCode", "contractType", "contractStart", "contractEnd"];
+// Field tự phục vụ — không cần quyền user:manage vì bất kỳ ai cũng được tự sửa cho chính mình
+// (đổi ảnh đại diện, tuỳ chọn thông báo). Đổi thông tin hồ sơ khác (tên, đơn vị, chức vụ...) đi
+// qua luồng "Đề xuất thay đổi thông tin" (request duyệt), không qua route này.
+const SELF_SERVICE_FIELDS = new Set(["avatar", "notificationPrefs"]);
 
 async function getAuth(req: NextRequest) {
   const token = req.cookies.get("auth-token")?.value;
@@ -31,12 +35,32 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   try {
     const updates = await req.json();
 
-    // Chặn thay đổi hồ sơ hợp đồng/chứng chỉ nếu không có quyền tương ứng — kiểm tra field cụ
-    // thể (không phải "user:manage" chung), vì route này còn dùng cho các cập nhật ít nhạy cảm
-    // hơn (vd. tự đổi ảnh đại diện) mà không nên bị chặn bởi 2 quyền mới này.
+    // Lấy trạng thái TRƯỚC khi cập nhật — cần để (1) so sánh field nào THỰC SỰ đổi giá trị (vd.
+    // tự đổi avatar gửi kèm nguyên object nên có cả role/department cũ, không phải đang đổi
+    // chúng), và (2) ghi nhật ký đổi vai trò/vô hiệu hoá, phát hiện "guest" được duyệt lên vai
+    // trò chính thức.
+    const prevUser = await getUser(params.id);
+    if (!prevUser) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+    // Field tự phục vụ chỉ được miễn kiểm tra quyền khi người gọi đang sửa CHÍNH hồ sơ của mình —
+    // nếu không, ai đó có thể PATCH /api/users/{id-người-khác} với body chỉ gồm avatar/
+    // notificationPrefs để né hoàn toàn khối kiểm tra quyền bên dưới.
+    const isSelf = params.id === auth.userId;
+
     const touchesContract = Object.keys(updates).some((k) => CONTRACT_FIELDS.includes(k));
     const touchesCredentials = Object.prototype.hasOwnProperty.call(updates, "credentials");
-    if (touchesContract || touchesCredentials) {
+    // Field nào ngoài "tự phục vụ"/hợp đồng/chứng chỉ mà giá trị THỰC SỰ thay đổi so với hiện tại
+    // → coi là cập nhật hồ sơ nhân sự chung, cần quyền user:manage (vd. vai trò, đơn vị, chức
+    // vụ, trạng thái hoạt động...). Trước đây route này không kiểm tra gì cho các field này cả.
+    const touchesGeneralProfile = Object.keys(updates).some((k) =>
+      k !== "id" &&
+      !(isSelf && SELF_SERVICE_FIELDS.has(k)) &&
+      !CONTRACT_FIELDS.includes(k) &&
+      k !== "credentials" &&
+      JSON.stringify(updates[k]) !== JSON.stringify((prevUser as unknown as Record<string, unknown>)[k])
+    );
+
+    if (touchesContract || touchesCredentials || touchesGeneralProfile) {
       await ensurePermissionOverridesLoaded();
       const me = await getUser(auth.userId);
       if (touchesContract && !(me && hasPermission(me.role, "user:manageContract"))) {
@@ -45,13 +69,10 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       if (touchesCredentials && !(me && hasPermission(me.role, "user:manageCredentials"))) {
         return NextResponse.json({ error: "Không có quyền quản lý chứng chỉ/bằng cấp" }, { status: 403 });
       }
+      if (touchesGeneralProfile && !(me && hasPermission(me.role, "user:manage"))) {
+        return NextResponse.json({ error: "Không có quyền chỉnh sửa hồ sơ nhân viên" }, { status: 403 });
+      }
     }
-
-    // Lấy trạng thái TRƯỚC khi cập nhật để phát hiện đúng thời điểm "guest" được duyệt lên vai
-    // trò chính thức (không phát hiện được sau khi đã ghi đè), và để ghi nhật ký đổi vai
-    // trò/vô hiệu hoá — đây là 2 hành động nhạy cảm cần truy vết.
-    const needsPrevSnapshot = updates.role !== undefined || updates.isActive !== undefined;
-    const prevUser = needsPrevSnapshot ? await getUser(params.id) : null;
 
     await saveUser({ ...updates, id: params.id });
 
