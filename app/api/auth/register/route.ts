@@ -1,26 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { createUserAccount } from "@/lib/mongodb/auth";
 import { connectDB } from "@/lib/mongodb/config";
 import { UserModel } from "@/lib/mongodb/models";
+import { parseBody } from "@/lib/validation";
 import type { UserRole } from "@/types";
+
+const USER_ROLES = [
+  "guest", "staff", "teamLead", "director", "hrAdmin",
+  "financeViewer", "financeAuditor", "financeSupervisor",
+] as const;
+
+const registerSchema = z.object({
+  email: z.string().trim().min(1),
+  password: z.string().min(6, "Mật khẩu tối thiểu 6 ký tự"),
+  name: z.string().trim().min(1),
+  role: z.enum(USER_ROLES).optional(),
+  department: z.string().optional(),
+  position: z.string().optional(),
+});
 
 export async function POST(req: NextRequest) {
   try {
-    const { email, password, name, role: requestedRole, department, position } = await req.json();
-
-    if (!email || !password || !name) {
-      return NextResponse.json(
-        { error: "Email, mật khẩu và tên là bắt buộc" },
-        { status: 400 }
-      );
-    }
-
-    if (password.length < 6) {
-      return NextResponse.json(
-        { error: "Mật khẩu tối thiểu 6 ký tự" },
-        { status: 400 }
-      );
-    }
+    const parsed = await parseBody(req, registerSchema);
+    if ("error" in parsed) return parsed.error;
+    const { email, password, name, role: requestedRole, department, position } = parsed.data;
 
     // First user ever → allow requested role (setup flow); otherwise always guest
     await connectDB();

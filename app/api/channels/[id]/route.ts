@@ -30,12 +30,18 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const body = await req.json();
 
   if (body.action === "updateMessage") {
+    // msgId phải là string thuần — _id trong schema này là string tự do (không phải ObjectId),
+    // nên Mongoose không tự chặn injection kiểu { "$ne": null } nếu không kiểm tra kiểu trước.
+    if (typeof body.msgId !== "string") {
+      return NextResponse.json({ error: "msgId không hợp lệ" }, { status: 400 });
+    }
     // Chỉ chủ sở hữu tin nhắn được sửa nội dung tin nhắn của chính mình.
     const msg = await ChannelMessageModel.findById(body.msgId).lean() as any;
     if (!msg || msg.senderId !== user.userId) {
       return NextResponse.json({ error: "Bạn không có quyền sửa tin nhắn này" }, { status: 403 });
     }
-    await updateChannelMessage(params.id, body.msgId, body.data);
+    // Dùng lại _id đã xác thực từ msg, không dùng lại body.msgId cho lệnh ghi.
+    await updateChannelMessage(params.id, msg._id, body.data);
     return NextResponse.json({ success: true });
   }
 

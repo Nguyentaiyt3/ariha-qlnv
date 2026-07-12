@@ -1,17 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { loginWithEmail } from "@/lib/mongodb/auth";
 import { checkLoginRateLimit, recordFailedLogin, clearLoginAttempts, getClientIp } from "@/lib/mongodb/rateLimit";
+import { parseBody } from "@/lib/validation";
+
+const loginSchema = z.object({
+  email: z.string().trim().min(1),
+  password: z.string().min(1),
+});
 
 export async function POST(req: NextRequest) {
   try {
-    const { email, password } = await req.json();
-
-    if (!email || !password) {
-      return NextResponse.json(
-        { error: "Email và mật khẩu là bắt buộc" },
-        { status: 400 }
-      );
-    }
+    const parsed = await parseBody(req, loginSchema);
+    if ("error" in parsed) return parsed.error;
+    const { email, password } = parsed.data;
 
     // Giới hạn theo "ip:email" — chặn brute-force nhắm vào 1 tài khoản cụ thể mà không
     // khoá nhầm người dùng khác chung IP (mạng NAT/văn phòng).

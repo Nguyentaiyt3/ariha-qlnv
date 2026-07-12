@@ -3,6 +3,7 @@ import { verifyToken, getUser } from "@/lib/mongodb/auth";
 import { getClinicalTrials, getClinicalTrial, createClinicalTrial } from "@/lib/mongodb/firestore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { ensurePermissionOverridesLoaded } from "@/lib/rbac/ensurePermissions";
+import { isFullAccessRole, isClinicalTrialViewManager, sameUnit } from "@/lib/rbac/scope";
 import { generateId } from "@/lib/utils";
 import { ensurePhaseTask, ensureTrialExecutionTask } from "@/lib/mongodb/clinicalTrialTask";
 
@@ -19,10 +20,39 @@ export async function GET(req: NextRequest) {
 
   await ensurePermissionOverridesLoaded();
   const me = await getUser(session.userId);
-  const canSeeAll = !!me && hasPermission(me.role, "trial:manage");
-  const userId = canSeeAll ? undefined : session.userId;
+  const isManager = !!me && hasPermission(me.role, "trial:manage");
+  // Designation "clinicalTrialManager" chỉ cấp quyền XEM toàn bộ danh sách — không cấp trial:manage
+  // (sửa/xoá/duyệt thanh toán vẫn chỉ dựa vào role như cũ, không đổi ở đây).
+  const canSeeAll = (isManager && isFullAccessRole(me!.role)) || isClinicalTrialViewManager(me);
 
-  const trials = await getClinicalTrials(userId);
+  let trials;
+  if (canSeeAll) {
+    trials = await getClinicalTrials();
+  } else if (isManager) {
+    // teamLead: thấy trial mình là PI/điều phối/người tạo, HOẶC cùng đơn vị.
+    const all = await getClinicalTrials();
+    trials = all.filter((t) =>
+      t.principalInvestigatorId === session.userId ||
+      t.coordinatorId === session.userId ||
+      t.createdBy === session.userId ||
+      sameUnit(t.department, me!.department)
+    );
+  } else {
+    trials = await getClinicalTrials(session.userId);
+  }
+
+  // Lọc theo taskId (nếu có) — dùng để hiện card "Thử nghiệm lâm sàng liên kết" ở trang chi tiết
+  // nhiệm vụ. Lọc SAU khi đã áp quyền ở trên để không lộ trial ngoài phạm vi được xem.
+  const taskId = req.nextUrl.searchParams.get("taskId");
+  if (taskId) {
+    trials = trials.filter((t) =>
+      t.executionTaskId === taskId ||
+      t.phaseTaskIds?.feasibility === taskId ||
+      t.phaseTaskIds?.execution === taskId ||
+      t.phaseTaskIds?.closeout === taskId
+    );
+  }
+
   return NextResponse.json({ trials });
 }
 
@@ -40,11 +70,12 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json();
   const id = body.id || generateId("trial");
+  // createdBy luôn lấy từ phiên đăng nhập — không tin theo body, tránh gán nhầm/giả mạo người tạo.
   await createClinicalTrial({
     ...body,
     id,
-    createdBy: body.createdBy || session.userId,
-    createdByName: body.createdByName || me.name,
+    createdBy: session.userId,
+    createdByName: me.name,
   });
 
   // Chỉ tự sinh Task pha "Khảo sát tính khả thi" + Task tổng theo dõi cho trial MỚI bắt đầu

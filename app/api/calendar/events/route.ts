@@ -54,6 +54,9 @@ export async function POST(req: NextRequest) {
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const body = await req.json();
   if (body.action === "approve" || body.action === "reject") {
+    if (typeof body.id !== "string") {
+      return NextResponse.json({ error: "id không hợp lệ" }, { status: 400 });
+    }
     await ensurePermissionOverridesLoaded();
     const me = await getUser(user.userId);
     if (!me || !canApproveCalendar(me.role)) {

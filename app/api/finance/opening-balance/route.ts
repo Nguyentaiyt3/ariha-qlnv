@@ -1,9 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { verifyToken, getUser } from "@/lib/mongodb/auth";
 import { connectDB } from "@/lib/mongodb/config";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { ensurePermissionOverridesLoaded } from "@/lib/rbac/ensurePermissions";
+import { parseBody } from "@/lib/validation";
 import mongoose from "mongoose";
+
+const openingBalanceSchema = z.object({
+  amount: z.number().finite(),
+  date: z.string().optional(),
+});
 
 async function auth(req: NextRequest) {
   const token = req.cookies.get("auth-token")?.value;
@@ -31,12 +38,14 @@ export async function POST(req: NextRequest) {
   if (!me || !hasPermission(me.role, "finance:manage")) {
     return NextResponse.json({ error: "Không có quyền quản lý cấu hình tài chính" }, { status: 403 });
   }
-  const body = await req.json();
+  const parsed = await parseBody(req, openingBalanceSchema);
+  if ("error" in parsed) return parsed.error;
+  const { amount, date } = parsed.data;
   const col = await getConfigCollection();
   const now = new Date().toISOString();
   await col.updateOne(
     { _id: "opening_balance" as any },
-    { $set: { amount: body.amount ?? 0, date: body.date ?? now, updatedBy: user.userId, updatedAt: now } },
+    { $set: { amount, date: date ?? now, updatedBy: user.userId, updatedAt: now } },
     { upsert: true }
   );
   return NextResponse.json({ success: true });

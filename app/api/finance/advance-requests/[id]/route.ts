@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { verifyToken, getUser } from "@/lib/mongodb/auth";
 import { updateAdvanceRequest, submitAdvanceSettlement, createFinancialTransaction, recomputeFinancialSummary, getTask } from "@/lib/mongodb/firestore";
 import { AdvanceRequestModel } from "@/lib/mongodb/models";
@@ -6,6 +7,23 @@ import { logAudit } from "@/lib/mongodb/auditLog";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { ensurePermissionOverridesLoaded } from "@/lib/rbac/ensurePermissions";
 import { sameUnit } from "@/lib/rbac/scope";
+import { parseBody } from "@/lib/validation";
+
+const bankAccountSchema = z.object({
+  bankId: z.string(),
+  bankName: z.string(),
+  accountNumber: z.string(),
+  accountName: z.string(),
+});
+
+const patchSchema = z.object({
+  action: z.enum(["submitSettlement", "approve", "reject", "approveSettlement", "rejectSettlement"]),
+  amountUsed: z.number().nonnegative().optional(),
+  proofs: z.array(z.unknown()).optional(),
+  notes: z.string().optional(),
+  bankAccount: bankAccountSchema.optional(),
+  reason: z.string().optional(),
+});
 
 const AUDIT_ACTION: Record<string, string> = {
   approve: "finance.advance_approved",
@@ -24,7 +42,9 @@ async function auth(req: NextRequest) {
 export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
   const user = await auth(req);
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  const body = await req.json();
+  const parsed = await parseBody(req, patchSchema);
+  if ("error" in parsed) return parsed.error;
+  const body = parsed.data;
   const now = new Date().toISOString();
 
   if (body.action === "submitSettlement") {
@@ -35,6 +55,9 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       // đã đăng nhập có thể ghi đè quyết toán (kể cả số tài khoản nhận hoàn ứng) của người khác.
       if (target.requestedBy !== user.userId) {
         return NextResponse.json({ error: "Bạn không có quyền gửi quyết toán cho đơn tạm ứng này" }, { status: 403 });
+      }
+      if (typeof body.amountUsed !== "number") {
+        return NextResponse.json({ error: "Thiếu amountUsed" }, { status: 400 });
       }
       await submitAdvanceSettlement(params.id, {
         amountUsed: body.amountUsed,
@@ -49,18 +72,22 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     }
   }
 
+  // Danh tính người duyệt luôn lấy từ phiên đăng nhập, không tin theo body — tránh giả mạo
+  // approvedBy/approvedByName trong nhật ký kiểm toán.
+  const approverIdentity = await getUser(user.userId);
+
   const actions: Record<string, Record<string, unknown>> = {
     approve: {
       status: "APPROVED",
-      approvedBy: body.approvedBy ?? user.userId,
-      approvedByName: body.approvedByName,
+      approvedBy: user.userId,
+      approvedByName: approverIdentity?.name,
       approvedAt: now,
     },
     reject: { status: "REJECTED", rejectedReason: body.reason },
     approveSettlement: {
       status: "SETTLED",
-      settlementApprovedBy: body.approvedBy ?? user.userId,
-      settlementApprovedByName: body.approvedByName,
+      settlementApprovedBy: user.userId,
+      settlementApprovedByName: approverIdentity?.name,
       settledAt: now,
     },
     rejectSettlement: { status: "APPROVED", settlementRejectedReason: body.reason },
@@ -75,7 +102,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   // nhiệm vụ thuộc đơn vị mình (director/hrAdmin không giới hạn).
   if (DECISION_ACTIONS.has(body.action)) {
     await ensurePermissionOverridesLoaded();
-    const me = await getUser(user.userId);
+    const me = approverIdentity;
     if (!me || !hasPermission(me.role, "finance:approve")) {
       return NextResponse.json({ error: "Bạn không có quyền duyệt tạm ứng" }, { status: 403 });
     }
