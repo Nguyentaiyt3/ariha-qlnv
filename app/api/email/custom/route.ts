@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { sendMail } from "@/lib/email/mailer";
-import { getUsers, addEmailLog } from "@/lib/firebase/firestore";
+import { verifyToken, getUser } from "@/lib/mongodb/auth";
+import { addEmailLog } from "@/lib/firebase/firestore";
 
 interface Recipient {
   name: string;
@@ -9,10 +10,13 @@ interface Recipient {
 }
 
 export async function POST(req: NextRequest) {
+  const token = req.cookies.get("auth-token")?.value;
+  const authUser = token ? verifyToken(token) : null;
+  if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   try {
     const body = await req.json();
-    const { senderUserId, recipients, subject, body: emailBody, taskId, stepName } = body as {
-      senderUserId?: string;
+    const { recipients, subject, body: emailBody, taskId, stepName } = body as {
       recipients: Recipient[];
       subject: string;
       body: string;
@@ -29,8 +33,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Không có email hợp lệ" }, { status: 400 });
     }
 
-    const users = await getUsers();
-    const sender = senderUserId ? users.find((u) => u.id === senderUserId) : undefined;
+    // Danh tính người gửi luôn lấy từ phiên đăng nhập đã xác thực, không tin theo body — tránh
+    // giả mạo tên/avatar của người khác trong email gửi đi.
+    const sender = await getUser(authUser.userId);
 
     const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
     const taskUrl = taskId ? `${appUrl}/tasks/${taskId}` : null;

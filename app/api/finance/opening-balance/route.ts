@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyToken } from "@/lib/mongodb/auth";
+import { verifyToken, getUser } from "@/lib/mongodb/auth";
 import { connectDB } from "@/lib/mongodb/config";
+import { hasPermission } from "@/lib/rbac/permissions";
+import { ensurePermissionOverridesLoaded } from "@/lib/rbac/ensurePermissions";
 import mongoose from "mongoose";
 
 async function auth(req: NextRequest) {
@@ -24,6 +26,11 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const user = await auth(req);
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  await ensurePermissionOverridesLoaded();
+  const me = await getUser(user.userId);
+  if (!me || !hasPermission(me.role, "finance:manage")) {
+    return NextResponse.json({ error: "Không có quyền quản lý cấu hình tài chính" }, { status: 403 });
+  }
   const body = await req.json();
   const col = await getConfigCollection();
   const now = new Date().toISOString();

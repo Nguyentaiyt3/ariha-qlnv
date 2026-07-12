@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  getClinicalTrials,
   updateClinicalTrial,
   createFinancialTransaction,
 } from "@/lib/mongodb/firestore";
 import { isArihaUnit } from "@/lib/research-departments";
 import { ensureTrialExecutionTask, completePhaseTask } from "@/lib/mongodb/clinicalTrialTask";
+import { authorizePaymentAction, getTrialByPaymentId } from "@/lib/mongodb/clinicalTrialPayments";
 
 export async function POST(
   request: NextRequest,
@@ -13,24 +13,17 @@ export async function POST(
 ) {
   try {
     const { paymentId } = params;
-    const body = await request.json();
-    const { approvedBy, approvedByUserId } = body;
 
-    if (!approvedBy || !approvedByUserId) {
-      return NextResponse.json(
-        { error: "Missing required fields" },
-        { status: 400 }
-      );
-    }
-
-    const trials = await getClinicalTrials();
-    const trial = trials.find((t) =>
-      t.payments?.some((p) => p.id === paymentId)
-    );
-
+    const trial = await getTrialByPaymentId(paymentId);
     if (!trial) {
       return NextResponse.json({ error: "Payment not found" }, { status: 404 });
     }
+
+    const auth = await authorizePaymentAction(request, trial, { requireApprove: true });
+    if (!auth.ok) return auth.response;
+    const { me } = auth;
+    const approvedBy = me.name;
+    const approvedByUserId = me.id;
 
     const payment = trial.payments?.find((p) => p.id === paymentId);
     if (!payment) {

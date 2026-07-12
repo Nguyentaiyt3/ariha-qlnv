@@ -19,8 +19,16 @@ async function getAuth(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
-  if (!await getAuth(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const auth = await getAuth(req);
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
+    if (params.id !== auth.userId) {
+      await ensurePermissionOverridesLoaded();
+      const me = await getUser(auth.userId);
+      if (!me || !hasPermission(me.role, "user:read")) {
+        return NextResponse.json({ error: "Không có quyền xem hồ sơ nhân viên" }, { status: 403 });
+      }
+    }
     const user = await getUser(params.id);
     if (!user) return NextResponse.json({ error: "Not found" }, { status: 404 });
     return NextResponse.json({ user });
@@ -116,6 +124,11 @@ export async function DELETE(req: NextRequest, { params }: { params: { id: strin
   const auth = await getAuth(req);
   if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
+    await ensurePermissionOverridesLoaded();
+    const me = await getUser(auth.userId);
+    if (!me || !hasPermission(me.role, "user:manage")) {
+      return NextResponse.json({ error: "Không có quyền vô hiệu hoá nhân viên" }, { status: 403 });
+    }
     const target = await getUser(params.id);
     await deleteUser(params.id);
     const actor = await getUser(auth.userId);

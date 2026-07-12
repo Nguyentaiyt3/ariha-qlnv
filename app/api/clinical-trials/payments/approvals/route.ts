@@ -1,9 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
+import { verifyToken, getUser } from "@/lib/mongodb/auth";
 import { getClinicalTrials } from "@/lib/mongodb/firestore";
+import { hasPermission } from "@/lib/rbac/permissions";
+import { ensurePermissionOverridesLoaded } from "@/lib/rbac/ensurePermissions";
 import type { ClinicalTrial } from "@/types";
 
 export async function GET(request: NextRequest) {
   try {
+    const token = request.cookies.get("auth-token")?.value;
+    const auth = token ? verifyToken(token) : null;
+    if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+    await ensurePermissionOverridesLoaded();
+    const me = await getUser(auth.userId);
+    if (!me || !(hasPermission(me.role, "finance:approve") || hasPermission(me.role, "trial:manage"))) {
+      return NextResponse.json({ error: "Không có quyền xem danh sách chờ duyệt" }, { status: 403 });
+    }
+
     const searchParams = request.nextUrl.searchParams;
     const status = searchParams.get("status") || "pending";
     const distributionStatus = searchParams.get("distributionStatus");
