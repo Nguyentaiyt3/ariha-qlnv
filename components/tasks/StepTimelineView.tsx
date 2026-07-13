@@ -58,11 +58,14 @@ function StatusIcon({ status, locked }: { status: TaskStep["status"]; locked: bo
 interface Props {
   steps: TaskStep[];
   users: User[];
+  /** id bước đang mở card điều chỉnh — dùng để hiện hiệu ứng "đang chọn", tách biệt hẳn với màu
+   * nền (màu nền chỉ xoay vòng trang trí theo vị trí, không phản ánh trạng thái chọn). */
+  selectedStepId?: string | null;
   onStepClick?: (stepId: string) => void;
 }
 
 // ── Main component ────────────────────────────────────────────
-export function StepTimelineView({ steps, users, onStepClick }: Props) {
+export function StepTimelineView({ steps, users, selectedStepId, onStepClick }: Props) {
   if (steps.length === 0) return null;
 
   return (
@@ -73,6 +76,7 @@ export function StepTimelineView({ steps, users, onStepClick }: Props) {
         const isRunning  = !isDone && step.status === "in_progress";
         const inputState = computeInputState(step, steps);
         const isLocked   = !isDone && !isRunning && !inputState.ready;
+        const isSelected = step.id === selectedStepId;
         const assignee   = users.find(u => u.id === step.assigneeId);
         const label      = stepLabel(step, idx);
         const title      = stepTitle(step);
@@ -125,10 +129,15 @@ export function StepTimelineView({ steps, users, onStepClick }: Props) {
               <button
                 onClick={() => onStepClick?.(step.id)}
                 disabled={!onStepClick}
-                className="w-full rounded-2xl p-4 text-left transition-transform hover:scale-[1.01] active:scale-[0.99] focus:outline-none"
+                className={cn(
+                  "w-full rounded-2xl p-4 text-left transition-all hover:scale-[1.01] active:scale-[0.99] focus:outline-none",
+                  isSelected
+                    ? "ring-4 ring-blue-400 dark:ring-blue-500 ring-offset-2 ring-offset-white dark:ring-offset-slate-900 scale-[1.015]"
+                    : "ring-0",
+                )}
                 style={{
                   background: cardBg,
-                  boxShadow: cardShadow,
+                  boxShadow: isSelected ? `0 6px 20px rgba(59,130,246,0.35)` : cardShadow,
                   opacity: isLocked ? 0.65 : 1,
                 }}
               >

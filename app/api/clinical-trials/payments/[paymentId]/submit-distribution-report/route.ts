@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  getClinicalTrials,
   updateClinicalTrial,
   getUsers,
   createNotification,
 } from "@/lib/mongodb/firestore";
+import { authorizePaymentAction, getTrialByPaymentId } from "@/lib/mongodb/clinicalTrialPayments";
 
 const APPROVER_ROLES = ["director", "teamLead", "financeSupervisor"];
 
@@ -14,17 +14,15 @@ export async function POST(
 ) {
   try {
     const { paymentId } = params;
-    const body = await request.json();
-    const { submittedBy, submittedByUserId } = body;
 
-    const trials = await getClinicalTrials();
-    const trial = trials.find((t) =>
-      t.payments?.some((p) => p.id === paymentId)
-    );
-
+    const trial = await getTrialByPaymentId(paymentId);
     if (!trial) {
       return NextResponse.json({ error: "Payment not found" }, { status: 404 });
     }
+
+    const auth = await authorizePaymentAction(request, trial, {});
+    if (!auth.ok) return auth.response;
+    const submittedBy = auth.me.name;
 
     const payment = trial.payments?.find((p) => p.id === paymentId);
     if (!payment) {

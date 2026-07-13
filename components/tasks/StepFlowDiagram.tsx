@@ -21,15 +21,13 @@ import { UserAvatar } from "@/components/common/UserAvatar";
 import { computeInputState } from "@/lib/workflow-engine";
 import type { Task, TaskStep, User } from "@/types";
 
-export type PanelSection = "progress" | "helpers" | "advance" | "transaction" | "email" | "proof" | "subworkflow";
+export type PanelSection = "progress" | "helpers" | "advance" | "email" | "subworkflow";
 
 const SECTION_BTNS: { s: PanelSection; label: string }[] = [
   { s: "progress",    label: "%" },
   { s: "helpers",     label: "Hỗ trợ" },
   { s: "advance",     label: "Tạm ứng" },
-  { s: "transaction", label: "Thu/Chi" },
   { s: "email",       label: "Email" },
-  { s: "proof",       label: "Minh chứng" },
 ];
 
 // ── Color helpers ──────────────────────────────────────────────

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getClinicalTrials, updateClinicalTrial } from "@/lib/mongodb/firestore";
+import { updateClinicalTrial } from "@/lib/mongodb/firestore";
+import { authorizePaymentAction, getTrialByPaymentId } from "@/lib/mongodb/clinicalTrialPayments";
 import { deriveHandoverDistributions } from "@/lib/utils/costCalculator";
 
 export async function POST(
@@ -9,7 +10,7 @@ export async function POST(
   try {
     const { paymentId } = params;
     const body = await request.json();
-    const { costItemId, documentUrl, documentName, handedOverBy } = body;
+    const { costItemId, documentUrl, documentName } = body;
 
     if (!costItemId || !documentUrl) {
       return NextResponse.json(
@@ -18,14 +19,14 @@ export async function POST(
       );
     }
 
-    const trials = await getClinicalTrials();
-    const trial = trials.find((t) =>
-      t.payments?.some((p) => p.id === paymentId)
-    );
-
+    const trial = await getTrialByPaymentId(paymentId);
     if (!trial) {
       return NextResponse.json({ error: "Payment not found" }, { status: 404 });
     }
+
+    const auth = await authorizePaymentAction(request, trial, {});
+    if (!auth.ok) return auth.response;
+    const { me } = auth;
 
     const updatedPayments = trial.payments?.map((p) => {
       if (p.id !== paymentId) return p;
@@ -43,7 +44,7 @@ export async function POST(
               documentName,
               status: "handed_over" as const,
               handedOverAt: new Date().toISOString(),
-              handedOverBy,
+              handedOverBy: me.name,
             }
           : d
       );

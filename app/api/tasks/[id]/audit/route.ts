@@ -35,12 +35,14 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   if (!u) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   try {
-    const { action, userId, userName, before, after, note } = await req.json();
-    const actor = await getUser(userId || u.userId);
+    // Luôn dùng danh tính người gọi API thật (từ token) làm actor — trước đây tin thẳng
+    // userId/userName do client gửi lên, cho phép giả mạo người thực hiện trong nhật ký.
+    const { action, before, after, note } = await req.json();
+    const actor = await getUser(u.userId);
     const task = await getTask(params.id);
     await logAudit({
-      actorId: userId || u.userId,
-      actorName: userName || actor?.name,
+      actorId: u.userId,
+      actorName: actor?.name,
       actorRole: actor?.role,
       action,
       entityType: "Task",

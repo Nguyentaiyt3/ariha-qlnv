@@ -12,14 +12,20 @@ import { NextRequest, NextResponse } from "next/server";
 import { checkAllTrialAlerts, getTrialNotificationRecipients, formatAlertMessage, formatMilestoneMessage } from "@/lib/jobs/clinicalTrialAlerts";
 import { getClinicalTrial, sendEnrollmentAlertNotification, createEnrollmentMilestoneTask } from "@/lib/mongodb/firestore";
 import { connectDB } from "@/lib/mongodb/config";
+import { verifyToken, getUser } from "@/lib/mongodb/auth";
+import { hasPermission } from "@/lib/rbac/permissions";
+import { ensurePermissionOverridesLoaded } from "@/lib/rbac/ensurePermissions";
 
 export async function POST(req: NextRequest) {
   try {
-    // In a production system, verify user has permission to trigger alerts
-    // For now, allow any authenticated user
-    const authHeader = req.headers.get("authorization");
-    if (!authHeader) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const token = req.cookies.get("auth-token")?.value;
+    const authUser = token ? verifyToken(token) : null;
+    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+    await ensurePermissionOverridesLoaded();
+    const me = await getUser(authUser.userId);
+    if (!me || !hasPermission(me.role, "trial:manage")) {
+      return NextResponse.json({ error: "Không có quyền kiểm tra cảnh báo thử nghiệm lâm sàng" }, { status: 403 });
     }
 
     await connectDB();

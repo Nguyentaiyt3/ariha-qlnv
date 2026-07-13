@@ -5,6 +5,7 @@ import { UserModel } from "./models/User";
 import type { User, UserRole } from "@/types";
 import { generateId } from "@/lib/utils";
 import { JWT_SECRET, JWT_EXPIRE } from "./config";
+import { encryptField, decryptField } from "./fieldCrypto";
 
 // ─── JWT Token ────────────────────────────────────────────
 export function createToken(userId: string): string {
@@ -135,12 +136,18 @@ export async function getUser(userId: string): Promise<User | null> {
   const user = await UserModel.findById(userId);
   if (!user) return null;
   const { password: _, ...userWithoutPassword } = user.toObject();
+  if (typeof userWithoutPassword.idNumber === "string" && userWithoutPassword.idNumber) {
+    userWithoutPassword.idNumber = decryptField(userWithoutPassword.idNumber);
+  }
   return { id: String(user._id), ...userWithoutPassword } as User;
 }
 
 export async function saveUser(user: Partial<User> & { id: string; password?: string }): Promise<void> {
   await connectDB();
   const { id, password, ...updateData } = user;
+  if (typeof updateData.idNumber === "string" && updateData.idNumber) {
+    updateData.idNumber = encryptField(updateData.idNumber);
+  }
   await UserModel.findByIdAndUpdate(id, { ...updateData, updatedAt: new Date().toISOString() });
 }
 

@@ -15,7 +15,7 @@ import { TopicDetailModal, FilePreviewOverlay } from "@/components/research/Topi
 import { IntakeReviewModal } from "@/components/research/IntakeReviewModal";
 import { AssignReviewersModal } from "@/components/research/AssignReviewersModal";
 import { cn, generateId } from "@/lib/utils";
-import { findDuplicatePairs, isTopicAuthor } from "@/lib/researchUtils";
+import { findDuplicatePairs, isTopicAuthor, isNckhManager } from "@/lib/researchUtils";
 import { researchFileUrl } from "@/lib/researchFileUrl";
 import type { DupPair } from "@/lib/researchUtils";
 import { useAuthStore } from "@/stores/useAuthStore";
@@ -2239,11 +2239,15 @@ function MonitorTab({
         intakeLogs,
         updatedAt: new Date().toISOString(),
       };
-      await fetch(`/api/research/${topic.id}`, {
+      const res = await fetch(`/api/research/${topic.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updates),
       });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || "Tiếp nhận thất bại");
+      }
       await Promise.allSettled([
         sendIntakeEmail(topic, "accepted"),
         sendIntakeNotification(topic, "accepted"),
@@ -2251,7 +2255,7 @@ function MonitorTab({
       onTopicUpdate(topic.id, updates);
       setIntakeReviewTopic(null);
       toast.success(`Đã tiếp nhận: ${topic.title}`);
-    } catch { toast.error("Tiếp nhận thất bại"); }
+    } catch (err) { toast.error(err instanceof Error ? err.message : "Tiếp nhận thất bại"); }
     finally { setActioning(null); }
   }
 
@@ -2297,11 +2301,15 @@ function MonitorTab({
         resubmitTokenExpiry: expiry,
         updatedAt: new Date().toISOString(),
       };
-      await fetch(`/api/research/${topic.id}`, {
+      const res = await fetch(`/api/research/${topic.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updates),
       });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || "Gửi yêu cầu thất bại");
+      }
       await Promise.allSettled([
         sendIntakeEmail(topic, "revision", reason, resubmitLink),
         sendIntakeNotification(topic, "revision", reason, resubmitLink),
@@ -2322,7 +2330,7 @@ function MonitorTab({
         </div>,
         { duration: 12000 }
       );
-    } catch { toast.error("Gửi yêu cầu thất bại"); }
+    } catch (err) { toast.error(err instanceof Error ? err.message : "Gửi yêu cầu thất bại"); }
     finally { setActioning(null); }
   }
 
@@ -2339,15 +2347,19 @@ function MonitorTab({
         intakeLogs,
         updatedAt: new Date().toISOString(),
       };
-      await fetch(`/api/research/${topic.id}`, {
+      const res = await fetch(`/api/research/${topic.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updates),
       });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || "Từ chối thất bại");
+      }
       onTopicUpdate(topic.id, updates);
       setIntakeReviewTopic(null);
       toast.success("Đã từ chối đề cương");
-    } catch { toast.error("Từ chối thất bại"); }
+    } catch (err) { toast.error(err instanceof Error ? err.message : "Từ chối thất bại"); }
     finally { setActioning(null); }
   }
 
@@ -2358,15 +2370,19 @@ function MonitorTab({
         taskId: newTaskId || undefined,
         updatedAt: new Date().toISOString(),
       };
-      await fetch(`/api/research/${topic.id}`, {
+      const res = await fetch(`/api/research/${topic.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updates),
       });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || "Lưu thất bại");
+      }
       onTopicUpdate(topic.id, updates);
       toast.success(newTaskId ? "Đã liên kết nhiệm vụ" : "Đã bỏ liên kết nhiệm vụ");
       setAssigningId(null);
-    } catch { toast.error("Lưu thất bại"); }
+    } catch (err) { toast.error(err instanceof Error ? err.message : "Lưu thất bại"); }
     finally { setAssignSaving(null); }
   }
 
@@ -2989,6 +3005,7 @@ export default function ResearchPage() {
   const [editTopic, setEditTopic] = useState<ResearchTopic | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ResearchTopic | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [deleteReason, setDeleteReason] = useState("");
   const [showImport, setShowImport] = useState(false);
   const [showImportTopics, setShowImportTopics] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -2997,26 +3014,31 @@ export default function ResearchPage() {
   const canManage         = !!currentUser && hasPermission(currentUser.role, "research:manage");
   const canAssignReviewer = !!currentUser && (canManage || hasPermission(currentUser.role, "research:assignReviewer"));
   const roleCanMonitor = !!currentUser && (canManage || hasPermission(currentUser.role, "research:monitor"));
-  // researchManager designation also grants monitor access (without full canManage)
+  // researchManager designation also grants monitor access (without full canManage) — used for
+  // the Hội đồng KH&CN tab's existing broader admin-action visibility (unchanged behavior).
   const hasResearchManagerDesig = !!(currentUser?.researchDesignations ?? []).includes("researchManager");
   const [taskAccessMonitor, setTaskAccessMonitor] = useState(false);
   const canMonitor = roleCanMonitor || hasResearchManagerDesig || taskAccessMonitor;
 
-  // Default tab: monitors/managers start on monitor, others on my-topics
+  // Chỉ hrAdmin (quyền "*" toàn hệ thống) hoặc người có chỉ định "Quản lý NCKH" mới được theo
+  // dõi/quản lý quy trình THẨM ĐỊNH đề cương (tab "Giám sát tiến độ" — hàng chờ tiếp nhận, kiểm
+  // tra trùng lặp, upload file mẫu). Tách riêng khỏi `canMonitor` ở trên (dùng cho Hội đồng
+  // KH&CN) vì đây là 2 quyền khác nhau — vai trò hệ thống khác (kể cả director/teamLead) KHÔNG
+  // tự động có quyền này nếu chưa được gán chỉ định.
+  const canMonitorIntake = isNckhManager(currentUser);
+
+  // Default tab: research managers start on monitor, others on my-topics
   const [activeTab, setActiveTab] = useState<"mine" | "review" | "council" | "monitor">(
-    () => (roleCanMonitor || hasResearchManagerDesig) ? "monitor" : "mine"
+    () => canMonitorIntake ? "monitor" : "mine"
   );
 
-  // Check task-based monitor access for non-role users
+  // Check task-based monitor access for non-role users (Hội đồng KH&CN tab only)
   useEffect(() => {
     if (roleCanMonitor || !currentUser) return;
     fetch("/api/research/monitor-access")
       .then(r => r.json())
       .then((d: { canMonitor: boolean }) => {
-        if (d.canMonitor) {
-          setTaskAccessMonitor(true);
-          setActiveTab("monitor");
-        }
+        if (d.canMonitor) setTaskAccessMonitor(true);
       })
       .catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3120,11 +3142,16 @@ export default function ResearchPage() {
     if (!deleteTarget) return;
     setDeleting(true);
     try {
-      await deleteResearchTopic(deleteTarget.id);
-      setTopics(prev => prev.filter(t => t.id !== deleteTarget.id));
-      toast.success("Đã xoá đề tài");
+      const res = await deleteResearchTopic(deleteTarget.id, deleteReason.trim() || undefined);
+      if (res?.pending) {
+        toast.success("Đã gửi yêu cầu xoá — chờ trưởng nhóm cùng đơn vị duyệt");
+      } else {
+        setTopics(prev => prev.filter(t => t.id !== deleteTarget.id));
+        toast.success("Đã xoá đề tài");
+      }
       setDeleteTarget(null);
-    } catch { toast.error("Xoá thất bại"); }
+      setDeleteReason("");
+    } catch (err) { toast.error(err instanceof Error ? err.message : "Xoá thất bại"); }
     finally { setDeleting(false); }
   }
 
@@ -3143,7 +3170,7 @@ export default function ResearchPage() {
     { id: "mine"    as const, label: "Đề tài của tôi",    icon: Microscope,    count: myCount },
     { id: "review"  as const, label: "Phản biện của tôi", icon: ClipboardList, count: reviewCount },
     { id: "council" as const, label: "Hội đồng KH&CN",   icon: Vote,          count: councilCount },
-    ...(canMonitor ? [{ id: "monitor" as const, label: "Giám sát tiến độ", icon: BarChart2, count: topics.length, badge: awaitingCount }] : []),
+    ...(canMonitorIntake ? [{ id: "monitor" as const, label: "Giám sát tiến độ", icon: BarChart2, count: topics.length, badge: awaitingCount }] : []),
   ];
 
   return (
@@ -3281,11 +3308,11 @@ export default function ResearchPage() {
               onTopicUpdate={handleTopicUpdate}
             />
           )}
-          {activeTab === "monitor" && canMonitor && (
+          {activeTab === "monitor" && canMonitorIntake && (
             <MonitorTab
-              topics={canManage ? visibleTopics : visibleTopics.filter(t => t.reviewAssignment?.delegatedTo === currentUser?.id)}
+              topics={visibleTopics}
               users={users}
-              canManage={canManage}
+              canManage={canMonitorIntake}
               canAssignReviewer={canAssignReviewer}
               currentUser={currentUser}
               onEdit={setEditTopic}
@@ -3368,15 +3395,28 @@ export default function ResearchPage() {
                 <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5 line-clamp-2">{deleteTarget.title}</p>
               </div>
             </div>
-            <p className="text-sm text-slate-500">Hành động này không thể hoàn tác. Toàn bộ dữ liệu phản biện, hội đồng và chứng nhận sẽ bị xoá vĩnh viễn.</p>
+            <p className="text-sm text-slate-500">
+              {canManage
+                ? "Hành động này không thể hoàn tác. Toàn bộ dữ liệu phản biện, hội đồng và chứng nhận sẽ bị xoá vĩnh viễn."
+                : "Bạn không có quyền xoá trực tiếp — yêu cầu sẽ được gửi cho trưởng nhóm cùng đơn vị duyệt."}
+            </p>
+            {!canManage && (
+              <textarea
+                value={deleteReason}
+                onChange={(e) => setDeleteReason(e.target.value)}
+                placeholder="Lý do xin xoá (bắt buộc)..."
+                rows={2}
+                className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-red-500 resize-none"
+              />
+            )}
             <div className="flex gap-3 pt-1">
-              <button onClick={() => setDeleteTarget(null)}
+              <button onClick={() => { setDeleteTarget(null); setDeleteReason(""); }}
                 className="flex-1 py-2 rounded-lg border border-slate-200 dark:border-slate-700 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition">
                 Huỷ
               </button>
-              <button onClick={handleDelete} disabled={deleting}
+              <button onClick={handleDelete} disabled={deleting || (!canManage && !deleteReason.trim())}
                 className="flex-1 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-sm font-medium transition disabled:opacity-60 flex items-center justify-center gap-2">
-                {deleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />} Xoá
+                {deleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />} {canManage ? "Xoá" : "Gửi yêu cầu"}
               </button>
             </div>
           </div>

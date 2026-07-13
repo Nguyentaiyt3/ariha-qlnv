@@ -6,7 +6,8 @@
       "PowerShell(git -C \"D:\\\\ARiHA WorkHub\" diff .claude/settings.local.json)",
       "Bash(npx tsc *)",
       "Bash(sed -n '/export interface Stakeholder/,/^}/p' types/index.ts)",
-      "Bash(sed -n '/export type TaskPhase/p;/export type TaskStatus/p;/export type TaskPriority/p' types/index.ts)"
+      "Bash(sed -n '/export type TaskPhase/p;/export type TaskStatus/p;/export type TaskPriority/p' types/index.ts)",
+      "Bash(docker --version)"
     ]
   }
 }

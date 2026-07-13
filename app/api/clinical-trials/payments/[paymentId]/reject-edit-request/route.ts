@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getClinicalTrials, updateClinicalTrial } from "@/lib/mongodb/firestore";
+import { updateClinicalTrial } from "@/lib/mongodb/firestore";
+import { authorizePaymentAction, getTrialByPaymentId } from "@/lib/mongodb/clinicalTrialPayments";
 
 export async function POST(
   request: NextRequest,
@@ -8,19 +9,19 @@ export async function POST(
   try {
     const { paymentId } = params;
     const body = await request.json();
-    const { requestIndex, rejectionReason, rejectedBy, rejectedByUserId } = body;
+    const { requestIndex, rejectionReason } = body;
 
-    const trials = await getClinicalTrials();
-    const trial = trials.find((t) =>
-      t.payments?.some((p) => p.id === paymentId)
-    );
-
+    const trial = await getTrialByPaymentId(paymentId);
     if (!trial) {
       return NextResponse.json(
         { error: "Payment not found" },
         { status: 404 }
       );
     }
+
+    const auth = await authorizePaymentAction(request, trial, { requireApprove: true });
+    if (!auth.ok) return auth.response;
+    const { me } = auth;
 
     const updatedPayments = trial.payments?.map((p) => {
       if (p.id === paymentId && p.editDeleteRequests) {
@@ -31,8 +32,8 @@ export async function POST(
               status: "rejected" as const,
               rejectionReason,
               approvedAt: new Date().toISOString(),
-              approvedBy: rejectedBy,
-              approvedByUserId: rejectedByUserId,
+              approvedBy: me.name,
+              approvedByUserId: me.id,
             };
           }
           return req;

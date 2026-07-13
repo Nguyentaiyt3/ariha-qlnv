@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getClinicalTrials, updateClinicalTrial } from "@/lib/mongodb/firestore";
+import { updateClinicalTrial } from "@/lib/mongodb/firestore";
+import { authorizePaymentAction, getTrialByPaymentId } from "@/lib/mongodb/clinicalTrialPayments";
 
 export async function POST(
   request: NextRequest,
@@ -18,17 +19,16 @@ export async function POST(
     }
 
     // Find the trial containing this payment
-    const trials = await getClinicalTrials();
-    const trial = trials.find((t) =>
-      t.payments?.some((p) => p.id === paymentId)
-    );
-
+    const trial = await getTrialByPaymentId(paymentId);
     if (!trial) {
       return NextResponse.json(
         { error: "Payment not found" },
         { status: 404 }
       );
     }
+
+    const auth = await authorizePaymentAction(request, trial, {});
+    if (!auth.ok) return auth.response;
 
     // Update the payment with handover selection
     const updatedPayments = trial.payments?.map((p) =>

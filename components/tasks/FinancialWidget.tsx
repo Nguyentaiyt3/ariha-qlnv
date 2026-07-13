@@ -17,23 +17,24 @@ import { useEffect, useRef, useState } from "react";
 import {
   DollarSign, TrendingUp, TrendingDown, Wallet, Plus, Upload,
   FileText, CheckCircle2, XCircle, Clock, AlertTriangle,
-  ChevronDown, ChevronUp, RefreshCw, Loader2, Receipt,
-  ArrowUpCircle, ArrowDownCircle, X, Check, CreditCard, Camera, Link2,
+  ChevronDown, ChevronUp, Loader2, Receipt,
+  ArrowUpCircle, ArrowDownCircle, X, Check, CreditCard, Camera, Link2, QrCode,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn, generateId } from "@/lib/utils";
 import { uploadFile } from "@/lib/firebase/storage";
+import { VIETNAM_BANKS } from "@/lib/vietnamBanks";
 import {
   subscribeTransactions, subscribeFinancialSummary,
-  subscribeAdvanceRequests, subscribeReimbursementRequests,
+  subscribeAdvanceRequests,
   createTransaction, createAdvanceRequest,
   addProofToTransaction, recomputeFinancialSummary,
-  submitAdvanceSettlement, reconcileAdvance,
+  submitAdvanceSettlement,
   EXPENSE_CATEGORIES,
 } from "@/lib/firebase/finance";
 import type {
-  FinancialTransaction, AdvanceRequest, ReimbursementRequest,
-  TaskFinancialSummary, FinancialProof, Task,
+  FinancialTransaction, AdvanceRequest,
+  TaskFinancialSummary, FinancialProof, BankAccount, Task,
 } from "@/types";
 
 // ── Hằng & Helpers ────────────────────────────────────────────────────────────
@@ -167,10 +168,6 @@ function AddTransactionModal({
     if (fundSource === "ADVANCE" && !advanceRequestId) {
       toast.error("Chọn đơn tạm ứng để chi."); return;
     }
-    // OUT_OF_POCKET khuyến nghị có chứng từ (warning, không block)
-    if (fundSource === "OUT_OF_POCKET" && proofFiles.length === 0) {
-      toast.warning("Nên bổ sung chứng từ để đơn hoàn ứng được duyệt nhanh hơn.");
-    }
 
     setSubmitting(true);
     try {
@@ -187,11 +184,7 @@ function AddTransactionModal({
         advanceRequestId: fundSource === "ADVANCE" ? advanceRequestId : undefined,
         proofs: proofFiles,
       });
-      toast.success(
-        fundSource === "ADVANCE" ? "Đã ghi nhận chi từ tạm ứng!" :
-        fundSource === "OUT_OF_POCKET" ? "Đã ghi nhận tự ứng, tạo đơn hoàn ứng tự động." :
-        "Đã ghi nhận khoản thu."
-      );
+      toast.success(fundSource === "ADVANCE" ? "Đã ghi nhận chi từ tạm ứng!" : "Đã ghi nhận khoản thu.");
       onSuccess();
       onClose();
     } catch (err) {
@@ -221,8 +214,8 @@ function AddTransactionModal({
             <label className="text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5 block">
               Loại giao dịch
             </label>
-            <div className="grid grid-cols-3 gap-2">
-              {(["ADVANCE", "OUT_OF_POCKET", "REVENUE"] as const).map((src) => (
+            <div className="grid grid-cols-2 gap-2">
+              {(["ADVANCE", "REVENUE"] as const).map((src) => (
                 <button
                   key={src}
                   type="button"
@@ -242,8 +235,10 @@ function AddTransactionModal({
             {/* Mô tả nghiệp vụ */}
             <p className="text-[10px] text-slate-400 mt-1.5">
               {fundSource === "ADVANCE" && "Chi từ khoản tạm ứng đã được công ty cấp."}
-              {fundSource === "OUT_OF_POCKET" && "Tự bỏ tiền túi → hệ thống tạo đơn hoàn ứng tự động."}
               {fundSource === "REVENUE" && "Ghi nhận khoản thu về cho nhiệm vụ/dự án."}
+            </p>
+            <p className="text-[10px] text-slate-400 mt-1">
+              Tự ứng tiền túi? Dùng nút "Đề nghị chi tiêu" ở bước để xin duyệt trước khi chi.
             </p>
           </div>
 
@@ -330,9 +325,6 @@ function AddTransactionModal({
           <div>
             <label className="text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5 block">
               Chứng từ / Hóa đơn
-              {fundSource === "OUT_OF_POCKET" && (
-                <span className="ml-1 text-amber-500">(Bắt buộc để hoàn ứng)</span>
-              )}
             </label>
 
             {/* Link input */}
@@ -506,15 +498,17 @@ function AdvanceRequestModal({
   );
 }
 
-// ── Modal: Nộp thanh toán tạm ứng ─────────────────────────────────────────────
-function AdvanceSettlementModal({
+// ── Modal: Nộp thanh toán tạm ứng / đề nghị hoàn ứng ─────────────────────────
+export function AdvanceSettlementModal({
   advance, currentUser, onSuccess, onClose,
 }: {
   advance: AdvanceRequest;
-  currentUser: { id: string; name: string };
+  currentUser: { id: string; name: string; bankAccount?: BankAccount };
   onSuccess: () => void;
   onClose: () => void;
 }) {
+  const isSelfPaid = (advance.mode ?? "ADVANCE") === "SELF_PAID";
+
   const [amountUsed, setAmountUsed] = useState(advance.settlementAmountUsed?.toString() ?? "");
   const [notes, setNotes] = useState(advance.settlementNotes ?? "");
   const [proofUrl, setProofUrl] = useState("");
@@ -524,8 +518,21 @@ function AdvanceSettlementModal({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
 
+  // Tài khoản nhận hoàn ứng — chỉ thu thập cho tự ứng (tạm ứng đã có tài khoản từ lúc duyệt chi).
+  const savedBank = advance.settlementBankAccount ?? currentUser.bankAccount;
+  const [bankId, setBankId]     = useState(savedBank?.bankId ?? "");
+  const [bankName, setBankName] = useState(savedBank?.bankName ?? "");
+  const [accNum, setAccNum]     = useState(savedBank?.accountNumber ?? "");
+  const [accName, setAccName]   = useState(savedBank?.accountName ?? currentUser.name);
+
   const amountUsedNum = parseFloat(amountUsed.replace(/[^\d]/g, "")) || 0;
   const diff = advance.amount - amountUsedNum;
+
+  const qrReady = isSelfPaid && amountUsedNum > 0 && !!bankId && !!accNum.trim();
+  const qrUrl   = qrReady
+    ? `https://img.vietqr.io/image/${bankId}-${accNum.trim()}-compact2.png` +
+      `?amount=${amountUsedNum}&addInfo=${encodeURIComponent(`Hoàn ứng: ${advance.purpose}`)}&accountName=${encodeURIComponent(accName)}`
+    : "";
 
   async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? []);
@@ -563,11 +570,17 @@ function AdvanceSettlementModal({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (amountUsedNum <= 0) { toast.error("Nhập số tiền đã sử dụng."); return; }
-    if (proofs.length === 0) { toast.error("Cần ít nhất 1 chứng từ để nộp thanh toán."); return; }
+    if (proofs.length === 0) { toast.error("Cần ít nhất 1 chứng từ."); return; }
+    if (isSelfPaid && !accNum.trim()) { toast.error("Nhập số tài khoản nhận hoàn ứng."); return; }
     setSubmitting(true);
     try {
-      await submitAdvanceSettlement(advance.id, { amountUsed: amountUsedNum, proofs, notes: notes || undefined });
-      toast.success("Đã nộp thanh toán, chờ quản lý duyệt.");
+      await submitAdvanceSettlement(advance.id, {
+        amountUsed: amountUsedNum, proofs, notes: notes || undefined,
+        ...(isSelfPaid && bankId
+          ? { bankAccount: { bankId, bankName, accountNumber: accNum.trim(), accountName: accName.trim() } }
+          : {}),
+      });
+      toast.success(isSelfPaid ? "Đã nộp đề nghị hoàn ứng, chờ quản lý duyệt." : "Đã nộp thanh toán, chờ quản lý duyệt.");
       onSuccess();
       onClose();
     } catch (err) { toast.error((err as Error).message); }
@@ -579,8 +592,12 @@ function AdvanceSettlementModal({
       <div className="w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl shadow-2xl overflow-hidden">
         <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
           <div>
-            <h3 className="text-base font-semibold text-slate-800 dark:text-white">Nộp thanh toán tạm ứng</h3>
-            <p className="text-[11px] text-slate-400 mt-0.5">Tạm ứng: <strong>{vnd(advance.amount)}</strong></p>
+            <h3 className="text-base font-semibold text-slate-800 dark:text-white">
+              {isSelfPaid ? "Nộp đề nghị hoàn ứng" : "Nộp thanh toán tạm ứng"}
+            </h3>
+            <p className="text-[11px] text-slate-400 mt-0.5">
+              {isSelfPaid ? "Tự ứng" : "Tạm ứng"}: <strong>{vnd(advance.amount)}</strong>
+            </p>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"><X className="w-4 h-4 text-slate-500" /></button>
         </div>
@@ -596,8 +613,8 @@ function AdvanceSettlementModal({
               className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-400"
             />
           </div>
-          {/* Tính chênh lệch */}
-          {amountUsedNum > 0 && (
+          {/* Tính chênh lệch — chỉ áp dụng cho tạm ứng (tự ứng chưa nhận tiền nên không có "trả lại") */}
+          {!isSelfPaid && amountUsedNum > 0 && (
             <div className={cn(
               "rounded-xl px-3 py-2.5 text-sm font-medium",
               diff > 0 ? "bg-orange-50 dark:bg-orange-900/20 text-orange-700 dark:text-orange-400" :
@@ -607,6 +624,11 @@ function AdvanceSettlementModal({
               {diff > 0 && `Bạn cần trả lại công ty: ${vnd(diff)}`}
               {diff < 0 && `Công ty cần thanh toán thêm cho bạn: ${vnd(Math.abs(diff))}`}
               {diff === 0 && "Cân bằng hoàn toàn."}
+            </div>
+          )}
+          {isSelfPaid && amountUsedNum > 0 && (
+            <div className="rounded-xl px-3 py-2.5 text-sm font-medium bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-400">
+              Công ty sẽ hoàn ứng cho bạn: {vnd(amountUsedNum)}
             </div>
           )}
           {/* Chứng từ */}
@@ -659,6 +681,49 @@ function AdvanceSettlementModal({
               </div>
             )}
           </div>
+
+          {/* Tài khoản nhận hoàn ứng — chỉ cần cho tự ứng */}
+          {isSelfPaid && (
+            <div className="space-y-2">
+              <label className="block text-xs font-medium text-slate-600 dark:text-slate-300">Tài khoản nhận hoàn ứng *</label>
+              <select value={bankId} onChange={(e) => {
+                setBankId(e.target.value);
+                setBankName(VIETNAM_BANKS.find((b) => b.id === e.target.value)?.name ?? "");
+              }} className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-400">
+                <option value="">— Chọn ngân hàng —</option>
+                {VIETNAM_BANKS.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+              <input value={accNum} onChange={(e) => setAccNum(e.target.value)}
+                placeholder="Số tài khoản nhận"
+                className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-400" />
+              <input value={accName} onChange={(e) => setAccName(e.target.value)}
+                placeholder="Tên chủ tài khoản"
+                className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-400" />
+
+              {/* QR Code — hiện tự động khi đủ thông tin, giúp kế toán chuyển khoản hoàn ứng nhanh */}
+              {qrReady && (
+                <div className="flex flex-col items-center gap-2 p-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700">
+                  <div className="flex items-center gap-1.5 text-[11px] font-medium text-slate-500 dark:text-slate-400 self-start">
+                    <QrCode className="w-3.5 h-3.5" />
+                    QR nhận hoàn ứng
+                  </div>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={qrUrl}
+                    alt="QR nhận hoàn ứng"
+                    className="w-44 h-44 object-contain"
+                    onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                  />
+                  <p className="text-[10px] text-slate-400 text-center leading-relaxed">
+                    {bankName} · {accNum}<br />
+                    {accName}<br />
+                    <span className="font-semibold text-purple-600">{vnd(amountUsedNum)}</span>
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Ghi chú */}
           <div>
             <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">Ghi chú</label>
@@ -673,140 +738,10 @@ function AdvanceSettlementModal({
           <div className="flex gap-2 pt-1">
             <button type="button" onClick={onClose} className="flex-1 px-4 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition">Hủy</button>
             <button type="submit" disabled={submitting} className="flex-1 px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl font-medium transition flex items-center justify-center gap-2">
-              {submitting && <Loader2 className="w-4 h-4 animate-spin" />} Nộp thanh toán
+              {submitting && <Loader2 className="w-4 h-4 animate-spin" />} {isSelfPaid ? "Nộp hoàn ứng" : "Nộp thanh toán"}
             </button>
           </div>
         </form>
-      </div>
-    </div>
-  );
-}
-
-// ── Modal: Quyết toán ────────────────────────────────────────────────────────
-function ReconcileModal({
-  taskId, currentUser,
-  onSuccess, onClose,
-}: {
-  taskId: string;
-  currentUser: { id: string; name: string };
-  onSuccess: () => void;
-  onClose: () => void;
-}) {
-  const [submitting, setSubmitting] = useState(false);
-  const [result, setResult] = useState<Record<string, unknown> | null>(null);
-
-  async function handleReconcile() {
-    setSubmitting(true);
-    try {
-      const res = await reconcileAdvance(taskId, currentUser.id);
-      const vnd = (n: number) => n.toLocaleString("vi-VN") + " đ";
-      const { difference, settlementType, totalAdvanced, totalActualSpent, settledRequests } = res;
-      const absDiff = Math.abs(difference);
-      let message = "";
-      let action = "";
-      switch (settlementType) {
-        case "RETURN_TO_COMPANY":
-          message = `Quyết toán hoàn tất. Nhân viên còn dư ${vnd(absDiff)} từ tạm ứng.`;
-          action  = `Nhân viên cần nộp lại ${vnd(absDiff)} cho công ty.`;
-          break;
-        case "PAY_EMPLOYEE_ADDITIONAL":
-          message = `Quyết toán hoàn tất. Nhân viên chi vượt ${vnd(absDiff)} so với tạm ứng.`;
-          action  = `Công ty cần thanh toán thêm ${vnd(absDiff)} cho nhân viên.`;
-          break;
-        case "BALANCED":
-          message = "Quyết toán hoàn tất. Số tiền tạm ứng và thực chi khớp hoàn toàn.";
-          action  = "Không cần thu hồi hay thanh toán thêm.";
-          break;
-      }
-      setResult({
-        message, action,
-        details: {
-          totalAdvanced:    vnd(totalAdvanced),
-          totalActualSpent: vnd(totalActualSpent),
-          difference:       vnd(absDiff),
-          settlementType,
-          settledRequests,
-        },
-      });
-      toast.success("Quyết toán hoàn tất!");
-    } catch (err) {
-      toast.error((err as Error).message ?? "Quyết toán thất bại.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  if (result) {
-    const d = result.details as Record<string, string>;
-    const type = d?.settlementType;
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
-        <div className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-2xl shadow-2xl p-6 space-y-4">
-          <div className="text-center">
-            <CheckCircle2 className="w-12 h-12 text-green-500 mx-auto mb-3" />
-            <h3 className="font-bold text-lg text-slate-800 dark:text-white">Quyết toán hoàn tất</h3>
-            <p className="text-sm text-slate-500 mt-1">{result.message as string}</p>
-          </div>
-          <div className="bg-slate-50 dark:bg-slate-800 rounded-xl p-4 space-y-2 text-sm">
-            <div className="flex justify-between"><span className="text-slate-500">Tổng tạm ứng:</span><span className="font-semibold">{d?.totalAdvanced}</span></div>
-            <div className="flex justify-between"><span className="text-slate-500">Thực chi:</span><span className="font-semibold">{d?.totalActualSpent}</span></div>
-            <div className={cn("flex justify-between pt-2 border-t border-slate-200 dark:border-slate-700",
-              type === "RETURN_TO_COMPANY" ? "text-orange-600" :
-              type === "PAY_EMPLOYEE_ADDITIONAL" ? "text-blue-600" : "text-green-600"
-            )}>
-              <span className="font-semibold">Chênh lệch:</span>
-              <span className="font-bold">{d?.difference}</span>
-            </div>
-          </div>
-          {typeof result.action === "string" && (
-            <div className={cn("px-3 py-2 rounded-lg text-xs font-medium",
-              type === "RETURN_TO_COMPANY" ? "bg-orange-50 text-orange-700 dark:bg-orange-900/20" :
-              type === "PAY_EMPLOYEE_ADDITIONAL" ? "bg-blue-50 text-blue-700 dark:bg-blue-900/20" :
-              "bg-green-50 text-green-700 dark:bg-green-900/20"
-            )}>
-              {result.action}
-            </div>
-          )}
-          <button
-            onClick={() => { onSuccess(); onClose(); }}
-            className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-semibold transition"
-          >
-            Đóng
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
-      <div className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-2xl shadow-2xl p-6 space-y-4">
-        <div className="text-center">
-          <RefreshCw className="w-10 h-10 text-blue-600 mx-auto mb-3" />
-          <h3 className="font-bold text-lg text-slate-800 dark:text-white">Quyết toán hoàn ứng</h3>
-          <p className="text-sm text-slate-500 mt-1">
-            Hệ thống sẽ đối chiếu toàn bộ tạm ứng đã cấp với thực chi có chứng từ
-            và tính ra số tiền cần trả lại hoặc thanh toán thêm.
-          </p>
-        </div>
-        <div className="bg-amber-50 dark:bg-amber-900/20 rounded-xl p-3 flex gap-2">
-          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-          <p className="text-xs text-amber-700 dark:text-amber-400">
-            Đảm bảo tất cả giao dịch đã có chứng từ hợp lệ trước khi quyết toán.
-            Thao tác này không thể hoàn tác.
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <button onClick={onClose}
-            className="flex-1 py-2.5 border border-slate-200 dark:border-slate-700 rounded-xl text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition">
-            Huỷ
-          </button>
-          <button onClick={handleReconcile} disabled={submitting}
-            className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl text-sm font-semibold transition flex items-center justify-center gap-2">
-            {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-            Quyết toán
-          </button>
-        </div>
       </div>
     </div>
   );
@@ -825,9 +760,8 @@ export function FinancialWidget({
   const [summary, setSummary] = useState<TaskFinancialSummary | null>(null);
   const [transactions, setTransactions] = useState<FinancialTransaction[]>([]);
   const [advances, setAdvances] = useState<AdvanceRequest[]>([]);
-  const [reimbursements, setReimbursements] = useState<ReimbursementRequest[]>([]);
 
-  // Tabs trong widget: "overview" | "transactions" | "advances" | "reimbursements"
+  // Tabs trong widget: "overview" | "transactions" | "advances"
   const [activeTab, setActiveTab] = useState<"overview" | "transactions" | "advances">("overview");
   const [txFilter, setTxFilter] = useState<FinancialTransaction["fundSource"] | "ALL">("ALL");
   const [expandedTx, setExpandedTx] = useState<string | null>(null);
@@ -835,20 +769,17 @@ export function FinancialWidget({
   // Modals
   const [showAddTx, setShowAddTx] = useState(false);
   const [showAdvReq, setShowAdvReq] = useState(false);
-  const [showReconcile, setShowReconcile] = useState(false);
   const [settlementAdvId, setSettlementAdvId] = useState<string | null>(null);
   const [uploadingTxId, setUploadingTxId] = useState<string | null>(null);
 
   const fileUploadRef = useRef<HTMLInputElement>(null);
-  const canManageFinance = ["director", "hrAdmin", "teamLead"].includes(currentUser.role);
 
   // ── Subscriptions realtime (tất cả) ───────────────────────────────────────
   useEffect(() => {
     const u1 = subscribeFinancialSummary(task.id, setSummary);
     const u2 = subscribeTransactions(task.id, setTransactions);
     const u3 = subscribeAdvanceRequests(task.id, setAdvances);
-    const u4 = subscribeReimbursementRequests(task.id, setReimbursements);
-    return () => { u1(); u2(); u3(); u4(); };
+    return () => { u1(); u2(); u3(); };
   }, [task.id]);
 
   function refreshAll() {
@@ -890,23 +821,36 @@ export function FinancialWidget({
   const budget = task.totalAmount ?? summary?.budget ?? 0;
 
   // ── KPI tính trực tiếp từ dữ liệu realtime ──────────────────────────────
-  // Tạm ứng "đang lưu hành" = APPROVED + PENDING_SETTLEMENT (chưa quyết toán xong)
-  const advApproved  = advances.filter((a) => ["APPROVED", "PENDING_SETTLEMENT"].includes(a.status));
-  const advPending   = advances.filter((a) => a.status === "PENDING");
-  const advSettled   = advances.filter((a) => a.status === "SETTLED");
+  // Tạm ứng "đang lưu hành" = mode ADVANCE, APPROVED + PENDING_SETTLEMENT (chưa quyết toán xong).
+  // Lọc theo mode để không cộng nhầm các đơn Tự ứng (công ty chưa chi tiền cho các đơn đó).
+  const isAdvanceMode = (a: AdvanceRequest) => (a.mode ?? "ADVANCE") === "ADVANCE";
+  const advApproved  = advances.filter((a) => isAdvanceMode(a) && ["APPROVED", "PENDING_SETTLEMENT"].includes(a.status));
+  const advPending   = advances.filter((a) => isAdvanceMode(a) && a.status === "PENDING");
+  const advSettled   = advances.filter((a) => isAdvanceMode(a) && a.status === "SETTLED");
   const totalAdvApproved = advApproved.reduce((s, a) => s + a.amount, 0);
   const totalAdvPending  = advPending.reduce((s, a) => s + a.amount, 0);
   // Số đã thực chi từ advance (dùng summary nếu có, không thì tính từ transactions)
   const totalAdvUsed = summary?.totalAdvanceUsed
-    ?? transactions.filter((t) => t.fundSource === "ADVANCE" && t.status === "VALID").reduce((s, t) => s + t.amount, 0);
+    ?? transactions.filter((t) => t.fundSource === "ADVANCE" && t.status === "VALID" && !t.isDisbursement).reduce((s, t) => s + t.amount, 0);
   const totalAdvRemaining = Math.max(0, totalAdvApproved - totalAdvUsed);
+
+  // Tự ứng — tách riêng theo mode SELF_PAID, không dùng chung field với tạm ứng.
+  const selfPaid          = advances.filter((a) => a.mode === "SELF_PAID");
+  const selfPaidApproved  = selfPaid.filter((a) => ["APPROVED", "PENDING_SETTLEMENT"].includes(a.status));
+  const selfPaidPending   = selfPaid.filter((a) => a.status === "PENDING");
+  const selfPaidSettled   = selfPaid.filter((a) => a.status === "SETTLED");
+  const totalSelfPaidApproved = selfPaidApproved.reduce((s, a) => s + a.amount, 0);
+  const totalSelfPaidPending  = selfPaidPending.reduce((s, a) => s + a.amount, 0);
+  const totalSelfPaidAwaitingReimb = selfPaid
+    .filter((a) => a.status === "PENDING_SETTLEMENT")
+    .reduce((s, a) => s + (a.settlementAmountUsed ?? 0), 0);
 
   const totalOutOfPocket = summary?.totalOutOfPocket
     ?? transactions.filter((t) => t.fundSource === "OUT_OF_POCKET" && t.status === "VALID").reduce((s, t) => s + t.amount, 0);
   const totalRevenue = summary?.totalRevenue
     ?? transactions.filter((t) => t.fundSource === "REVENUE" && t.status === "VALID").reduce((s, t) => s + t.amount, 0);
   const totalExpense = summary?.totalExpense
-    ?? transactions.filter((t) => t.direction === "DEBIT" && t.status === "VALID").reduce((s, t) => s + t.amount, 0);
+    ?? transactions.filter((t) => t.direction === "DEBIT" && t.status === "VALID" && t.isDisbursement).reduce((s, t) => s + t.amount, 0);
   const netCashFlow = totalRevenue - totalExpense;
 
   const utilizationPct = budget > 0
@@ -923,14 +867,6 @@ export function FinancialWidget({
           Tài chính nhiệm vụ
         </h3>
         <div className="flex items-center gap-2">
-          {canManageFinance && summary?.financialStatus === "ACTIVE" && (
-            <button
-              onClick={() => setShowReconcile(true)}
-              className="text-xs px-3 py-1.5 border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400 rounded-lg hover:bg-amber-50 dark:hover:bg-amber-900/20 transition flex items-center gap-1.5"
-            >
-              <RefreshCw className="w-3 h-3" /> Quyết toán
-            </button>
-          )}
           <button
             onClick={() => setShowAdvReq(true)}
             className="text-xs px-3 py-1.5 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition flex items-center gap-1.5"
@@ -972,11 +908,17 @@ export function FinancialWidget({
         />
         <SummaryCard
           label="Tự ứng"
-          value={vnd(totalOutOfPocket)}
+          value={vnd(totalSelfPaidApproved)}
           sub={
-            reimbursements.filter((r) => ["SUBMITTED","APPROVED"].includes(r.status)).length > 0
-              ? `Chờ hoàn: ${vnd(reimbursements.filter((r) => ["SUBMITTED","APPROVED"].includes(r.status)).reduce((s,r) => s+r.amount,0))}`
-              : totalOutOfPocket > 0 ? "Đã thanh toán đủ" : undefined
+            selfPaidPending.length > 0
+              ? `${selfPaidPending.length} đơn chờ duyệt (${vnd(totalSelfPaidPending)})`
+              : totalSelfPaidAwaitingReimb > 0
+                ? `Chờ hoàn ứng: ${vnd(totalSelfPaidAwaitingReimb)}`
+                : totalSelfPaidApproved > 0
+                  ? "Đang chi tiêu"
+                  : selfPaidSettled.length > 0
+                    ? `${selfPaidSettled.length} đơn đã hoàn ứng`
+                    : "Chưa có đơn"
           }
           color="bg-purple-50 dark:bg-purple-900/30"
           icon={<Wallet className="w-3.5 h-3.5 text-purple-600" />}
@@ -1059,20 +1001,6 @@ export function FinancialWidget({
       {/* ── Tổng quan ── */}
       {activeTab === "overview" && (
         <div className="space-y-3">
-          {reimbursements.filter((r) => r.status === "DRAFT").length > 0 && (
-            <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl px-3 py-2.5 flex items-start gap-2">
-              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-              <div>
-                <p className="text-xs font-semibold text-amber-700 dark:text-amber-400">
-                  {reimbursements.filter((r) => r.status === "DRAFT").length} đơn hoàn ứng chờ chứng từ
-                </p>
-                <p className="text-[10px] text-amber-600 dark:text-amber-500 mt-0.5">
-                  Bổ sung chứng từ để nộp đơn hoàn ứng chính thức.
-                </p>
-              </div>
-            </div>
-          )}
-
           {transactions.filter((t) => t.status === "PENDING_PROOF").length > 0 && (
             <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl px-3 py-2.5 flex items-start gap-2">
               <Receipt className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
@@ -1251,7 +1179,13 @@ export function FinancialWidget({
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-semibold text-slate-700 dark:text-slate-200 truncate">{adv.purpose}</p>
+                      <div className="flex items-center gap-1.5">
+                        <span className={cn("text-[9px] px-1.5 py-0.5 rounded-full font-bold shrink-0",
+                          (adv.mode ?? "ADVANCE") === "ADVANCE" ? "bg-blue-100 text-blue-700" : "bg-purple-100 text-purple-700")}>
+                          {(adv.mode ?? "ADVANCE") === "ADVANCE" ? "Tạm ứng" : "Tự ứng"}
+                        </span>
+                        <p className="text-sm font-semibold text-slate-700 dark:text-slate-200 truncate">{adv.purpose}</p>
+                      </div>
                       <p className="text-[11px] text-slate-400">{adv.requestedByName} · {new Date(adv.createdAt).toLocaleDateString("vi-VN")}</p>
                     </div>
                     <div className={cn("flex items-center gap-1 text-[11px] font-medium shrink-0", s.cls)}>
@@ -1346,14 +1280,6 @@ export function FinancialWidget({
           currentUser={currentUser}
           onSuccess={refreshAll}
           onClose={() => setShowAdvReq(false)}
-        />
-      )}
-      {showReconcile && (
-        <ReconcileModal
-          taskId={task.id}
-          currentUser={currentUser}
-          onSuccess={refreshAll}
-          onClose={() => setShowReconcile(false)}
         />
       )}
       {settlementAdvId && (() => {

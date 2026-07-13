@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getClinicalTrials, updateClinicalTrial } from "@/lib/mongodb/firestore";
+import { updateClinicalTrial } from "@/lib/mongodb/firestore";
+import { authorizePaymentAction, getTrialByPaymentId } from "@/lib/mongodb/clinicalTrialPayments";
 
 export async function POST(
   request: NextRequest,
@@ -15,39 +16,38 @@ export async function POST(
       );
     }
 
-    const trials = await getClinicalTrials();
-    let updated = false;
-
-    for (const trial of trials) {
-      if (!trial.payments) continue;
-
-      const paymentIndex = trial.payments.findIndex((p: any) => p.id === params.paymentId);
-      if (paymentIndex === -1) continue;
-
-      const payment = trial.payments[paymentIndex];
-
-      // Update settlement with actual received amount
-      payment.settlement = {
-        confirmationType: payment.settlement?.confirmationType ?? "app",
-        ...payment.settlement,
-        actualReceivedAmount,
-        status: "confirmed",
-      };
-
-      await updateClinicalTrial(trial.id, {
-        payments: trial.payments,
-      });
-
-      updated = true;
-      break;
-    }
-
-    if (!updated) {
+    const trial = await getTrialByPaymentId(params.paymentId);
+    if (!trial || !trial.payments) {
       return NextResponse.json(
         { error: "Không tìm thấy thanh toán" },
         { status: 404 }
       );
     }
+
+    const auth = await authorizePaymentAction(request, trial, {});
+    if (!auth.ok) return auth.response;
+
+    const paymentIndex = trial.payments.findIndex((p: any) => p.id === params.paymentId);
+    if (paymentIndex === -1) {
+      return NextResponse.json(
+        { error: "Không tìm thấy thanh toán" },
+        { status: 404 }
+      );
+    }
+
+    const payment = trial.payments[paymentIndex];
+
+    // Update settlement with actual received amount
+    payment.settlement = {
+      confirmationType: payment.settlement?.confirmationType ?? "app",
+      ...payment.settlement,
+      actualReceivedAmount,
+      status: "confirmed",
+    };
+
+    await updateClinicalTrial(trial.id, {
+      payments: trial.payments,
+    });
 
     return NextResponse.json(
       {

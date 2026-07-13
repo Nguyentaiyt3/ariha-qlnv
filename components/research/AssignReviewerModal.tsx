@@ -125,25 +125,25 @@ export function AssignReviewerModal({ users, existingReviews, slotsLeft, stage =
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 dark:bg-black/70 p-4">
-      <div className="w-full max-w-lg bg-[var(--card)] border border-[var(--border)] rounded-2xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
+      <div className="w-full max-w-lg bg-card border border-border rounded-2xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
 
         {/* Header */}
-        <div className="px-5 py-4 border-b border-[var(--border)] flex items-center justify-between shrink-0">
+        <div className="px-5 py-4 border-b border-border flex items-center justify-between shrink-0">
           <div>
-            <h2 className="text-base font-bold text-[var(--foreground)]">Chỉ định phản biện viên</h2>
+            <h2 className="text-base font-bold text-foreground">Chỉ định phản biện viên</h2>
             <p className="text-xs text-slate-400 mt-0.5">
               {slotsLeft > 0
                 ? `Còn ${slotsLeft} vị trí phản biện · Phản biện kín ${stage === "recognition" ? "GĐ2 Nghiệm thu" : "GĐ1 Đề cương"}`
                 : "Đã đủ 2 phản biện viên"}
             </p>
           </div>
-          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-[var(--muted)] text-slate-400 hover:text-slate-600 transition">
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-muted text-slate-400 hover:text-slate-600 transition">
             <X className="w-5 h-5" />
           </button>
         </div>
 
         {/* Tab switcher */}
-        <div className="flex border-b border-[var(--border)] shrink-0">
+        <div className="flex border-b border-border shrink-0">
           {([["internal", "Nội bộ"], ["external", "Bên ngoài"]] as const).map(([t, label]) => (
             <button
               key={t}
@@ -152,7 +152,7 @@ export function AssignReviewerModal({ users, existingReviews, slotsLeft, stage =
                 "flex-1 py-2.5 text-sm font-medium transition border-b-2",
                 tab === t
                   ? "border-violet-500 text-violet-600 dark:text-violet-400"
-                  : "border-transparent text-slate-500 hover:text-[var(--foreground)]",
+                  : "border-transparent text-slate-500 hover:text-foreground",
               )}
             >
               {label}
@@ -171,7 +171,7 @@ export function AssignReviewerModal({ users, existingReviews, slotsLeft, stage =
                   value={search}
                   onChange={e => setSearch(e.target.value)}
                   placeholder="Tìm theo tên, phòng ban, chức vụ..."
-                  className="w-full pl-9 pr-4 py-2 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                  className="w-full pl-9 pr-4 py-2 text-sm border border-border rounded-xl bg-background text-foreground placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500"
                 />
               </div>
 
@@ -208,12 +208,12 @@ export function AssignReviewerModal({ users, existingReviews, slotsLeft, stage =
                         "w-full flex items-center gap-3 p-3 rounded-xl border text-left transition",
                         isSelected
                           ? "border-violet-400 dark:border-violet-600 bg-violet-50 dark:bg-violet-900/20"
-                          : "border-[var(--border)] hover:border-slate-300 dark:hover:border-slate-600 hover:bg-[var(--muted)]",
+                          : "border-border hover:border-slate-300 dark:hover:border-slate-600 hover:bg-muted",
                       )}
                     >
                       <MiniAvatar user={u} />
                       <div className="flex-1 min-w-0">
-                        <p className={cn("text-sm font-semibold truncate", isSelected ? "text-violet-700 dark:text-violet-300" : "text-[var(--foreground)]")}>
+                        <p className={cn("text-sm font-semibold truncate", isSelected ? "text-violet-700 dark:text-violet-300" : "text-foreground")}>
                           {u.name}
                         </p>
                         <div className="flex items-center gap-2 flex-wrap mt-0.5">
@@ -258,7 +258,7 @@ export function AssignReviewerModal({ users, existingReviews, slotsLeft, stage =
                       value={extName}
                       onChange={e => setExtName(e.target.value)}
                       placeholder="PGS.TS Nguyễn Văn A"
-                      className="w-full pl-9 pr-4 py-2.5 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                      className="w-full pl-9 pr-4 py-2.5 text-sm border border-border rounded-xl bg-background text-foreground placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500"
                     />
                   </div>
                 </div>
@@ -269,7 +269,7 @@ export function AssignReviewerModal({ users, existingReviews, slotsLeft, stage =
                       value={extTitle}
                       onChange={e => setExtTitle(e.target.value)}
                       placeholder="PGS.TS, ThS..."
-                      className="w-full px-3 py-2.5 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                      className="w-full px-3 py-2.5 text-sm border border-border rounded-xl bg-background text-foreground placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500"
                     />
                   </div>
                   <div>
@@ -279,7 +279,7 @@ export function AssignReviewerModal({ users, existingReviews, slotsLeft, stage =
                       value={extEmail}
                       onChange={e => setExtEmail(e.target.value)}
                       placeholder="expert@university.edu.vn"
-                      className="w-full px-3 py-2.5 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                      className="w-full px-3 py-2.5 text-sm border border-border rounded-xl bg-background text-foreground placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500"
                     />
                   </div>
                 </div>
@@ -291,7 +291,7 @@ export function AssignReviewerModal({ users, existingReviews, slotsLeft, stage =
                       value={extOrg}
                       onChange={e => setExtOrg(e.target.value)}
                       placeholder="Trường Đại học Y Hà Nội..."
-                      className="w-full pl-9 pr-4 py-2.5 text-sm border border-[var(--border)] rounded-xl bg-[var(--background)] text-[var(--foreground)] placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500"
+                      className="w-full pl-9 pr-4 py-2.5 text-sm border border-border rounded-xl bg-background text-foreground placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500"
                     />
                   </div>
                 </div>
@@ -301,7 +301,7 @@ export function AssignReviewerModal({ users, existingReviews, slotsLeft, stage =
         </div>
 
         {/* Footer — shared */}
-        <div className="px-5 py-4 border-t border-[var(--border)] bg-[var(--card)] shrink-0 space-y-3">
+        <div className="px-5 py-4 border-t border-border bg-card shrink-0 space-y-3">
           {/* Due date */}
           <div className="flex items-center gap-3">
             <label className="text-xs font-medium text-slate-500 shrink-0">Hạn nộp phiếu</label>
@@ -310,7 +310,7 @@ export function AssignReviewerModal({ users, existingReviews, slotsLeft, stage =
               value={dueDate}
               min={new Date().toISOString().slice(0, 10)}
               onChange={e => setDueDate(e.target.value)}
-              className="flex-1 px-3 py-1.5 text-sm border border-[var(--border)] rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-violet-500"
+              className="flex-1 px-3 py-1.5 text-sm border border-border rounded-lg bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-violet-500"
             />
           </div>
 
@@ -324,7 +324,7 @@ export function AssignReviewerModal({ users, existingReviews, slotsLeft, stage =
           )}
 
           <div className="flex gap-2 justify-end">
-            <button onClick={onClose} className="px-4 py-2 text-sm border border-[var(--border)] rounded-xl text-slate-600 dark:text-slate-300 hover:bg-[var(--muted)] transition">
+            <button onClick={onClose} className="px-4 py-2 text-sm border border-border rounded-xl text-slate-600 dark:text-slate-300 hover:bg-muted transition">
               Huỷ
             </button>
             <button

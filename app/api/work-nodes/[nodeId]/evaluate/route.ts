@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyToken } from "@/lib/mongodb/auth";
+import { verifyToken, getUser } from "@/lib/mongodb/auth";
 import { getWorkNode, saveWorkNode, getWorkNodesByTask } from "@/lib/mongodb/firestore";
+import { hasPermission } from "@/lib/rbac/permissions";
+import { ensurePermissionOverridesLoaded } from "@/lib/rbac/ensurePermissions";
 
 async function auth(req: NextRequest) {
   const token = req.cookies.get("auth-token")?.value;
@@ -10,12 +12,13 @@ async function auth(req: NextRequest) {
 type Params = { params: { nodeId: string } };
 
 export async function POST(req: NextRequest, { params }: Params) {
-  if (!await auth(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const authUser = await auth(req);
+  if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const body = await req.json();
-  const { verdict, rating, evaluatorId, evaluatorName, note } = body;
+  const { verdict, rating, note } = body;
 
-  if (!verdict || !rating || !evaluatorId || !evaluatorName) {
-    return NextResponse.json({ error: "Thiếu verdict, rating, evaluatorId hoặc evaluatorName." }, { status: 400 });
+  if (!verdict || !rating) {
+    return NextResponse.json({ error: "Thiếu verdict hoặc rating." }, { status: 400 });
   }
 
   const node = await getWorkNode(params.nodeId);
@@ -23,6 +26,18 @@ export async function POST(req: NextRequest, { params }: Params) {
   if (node.status !== "review") {
     return NextResponse.json({ error: "Node phải ở trạng thái 'review' để đánh giá." }, { status: 409 });
   }
+
+  // Chỉ người trong danh sách "người duyệt nghiệm thu" của node, hoặc có quyền task:approve, mới
+  // được đánh giá — tránh ai đó đã đăng nhập tự duyệt/từ chối node của người khác và giả mạo tên
+  // người đánh giá trong nhật ký 3T.
+  await ensurePermissionOverridesLoaded();
+  const me = await getUser(authUser.userId);
+  const isApprover = (node.approverIds ?? []).includes(authUser.userId);
+  if (!me || !(isApprover || hasPermission(me.role, "task:approve"))) {
+    return NextResponse.json({ error: "Bạn không có quyền đánh giá node này." }, { status: 403 });
+  }
+  const evaluatorId = me.id;
+  const evaluatorName = me.name;
 
   const now = new Date().toISOString();
   const pass = verdict === "pass";

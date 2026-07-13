@@ -18,17 +18,26 @@ import type {
   WorkNode, UnitPlan, ResearchTopic, ResearchGroup, ClinicalTrial,
 } from "@/types";
 import { generateId } from "@/lib/utils";
+import { sameUnit } from "@/lib/rbac/scope";
+import { encryptField, decryptField } from "./fieldCrypto";
 
 const now = () => new Date().toISOString();
 
 // ─── USERS ──────────────────────────────────────────────────────
+
+function decryptIdNumber<T extends { idNumber?: unknown }>(u: T): T {
+  if (typeof u.idNumber === "string" && u.idNumber) {
+    (u as any).idNumber = decryptField(u.idNumber);
+  }
+  return u;
+}
 
 export async function getUser(userId: string): Promise<User | null> {
   await connectDB();
   const user = await UserModel.findById(userId).lean();
   if (!user) return null;
   const { password: _, ...rest } = user as any;
-  return { id: String(user._id), ...rest } as User;
+  return decryptIdNumber({ id: String(user._id), ...rest } as User);
 }
 
 export async function getUsers(): Promise<User[]> {
@@ -36,13 +45,23 @@ export async function getUsers(): Promise<User[]> {
   const users = await UserModel.find({ isActive: true }).lean();
   return users.map((u: any) => {
     const { password: _, ...rest } = u;
-    return { id: u._id as string, ...rest } as User;
+    return decryptIdNumber({ id: u._id as string, ...rest } as User);
   });
+}
+
+/** Trưởng nhóm (teamLead) cùng đơn vị — dùng để tìm người duyệt yêu cầu sửa/xoá của designation-holder. */
+export async function getDepartmentTeamLeads(department?: string | null): Promise<User[]> {
+  if (!department) return [];
+  const users = await getUsers();
+  return users.filter((u) => u.role === "teamLead" && sameUnit(u.department, department));
 }
 
 export async function saveUser(user: Partial<User> & { id: string }): Promise<void> {
   await connectDB();
   const { id, _id: _drop, ...updateData } = user as any;
+  if (typeof updateData.idNumber === "string" && updateData.idNumber) {
+    updateData.idNumber = encryptField(updateData.idNumber);
+  }
   await UserModel.findByIdAndUpdate(id, { $set: { ...updateData, updatedAt: now() } }, { upsert: false });
 }
 
@@ -554,6 +573,15 @@ export async function getClinicalTrials(userId?: string): Promise<ClinicalTrial[
     const { _id, ...rest } = t;
     return { id: _id as string, ...rest } as ClinicalTrial;
   });
+}
+
+/** Tra cứu 1 trial theo Task tổng theo dõi (executionTaskId) — dùng index, tránh quét cả bảng. */
+export async function getClinicalTrialByExecutionTaskId(taskId: string): Promise<ClinicalTrial | null> {
+  await connectDB();
+  const t = await ClinicalTrialModel.findOne({ executionTaskId: taskId }).lean();
+  if (!t) return null;
+  const { _id, ...rest } = t as any;
+  return { id: _id as string, ...rest } as ClinicalTrial;
 }
 
 export async function getClinicalTrial(id: string): Promise<ClinicalTrial | null> {
@@ -1147,7 +1175,7 @@ export async function createFinancialTransaction(txn: Omit<FinancialTransaction,
 export async function getAllAdvanceRequests(): Promise<AdvanceRequest[]> {
   await connectDB();
   const requests = await AdvanceRequestModel.find().sort({ createdAt: -1 }).lean();
-  return requests.map((r: any) => ({ id: r._id as string, ...r }) as AdvanceRequest);
+  return requests.map((r: any) => ({ id: r._id as string, ...r, mode: r.mode ?? "ADVANCE" }) as AdvanceRequest);
 }
 
 export async function createAdvanceRequest(data: Omit<AdvanceRequest, "id">): Promise<AdvanceRequest> {
@@ -1237,6 +1265,7 @@ export async function submitAdvanceSettlement(advId: string, data: {
   amountUsed: number;
   proofs?: unknown[];
   notes?: string;
+  bankAccount?: unknown;
 }): Promise<void> {
   await connectDB();
   const adv = await AdvanceRequestModel.findById(advId).lean() as any;
@@ -1246,6 +1275,7 @@ export async function submitAdvanceSettlement(advId: string, data: {
     settlementAmountUsed: data.amountUsed,
     settlementProofs: data.proofs ?? [],
     settlementNotes: data.notes,
+    ...(data.bankAccount ? { settlementBankAccount: data.bankAccount } : {}),
     settlementSubmittedAt: now(),
     remainingAmount: adv.amount - data.amountUsed,
     updatedAt: now(),
@@ -1258,9 +1288,10 @@ export async function recomputeFinancialSummary(taskId: string): Promise<TaskFin
   const advances = await AdvanceRequestModel.find({ taskId }).lean();
 
   const totalAdvanced = (advances as any[])
-    .filter((a) => ["APPROVED", "PENDING_SETTLEMENT", "SETTLED"].includes(a.status))
+    .filter((a) => (a.mode ?? "ADVANCE") === "ADVANCE" && ["APPROVED", "PENDING_SETTLEMENT", "SETTLED"].includes(a.status))
     .reduce((s: number, a: any) => s + (a.amount ?? 0), 0);
 
+  // Thông tin theo dõi (không phải dòng tiền công ty): tổng đã chi TỪ khoản tạm ứng, theo danh mục.
   const totalAdvanceUsed = (txns as any[])
     .filter((t) => t.direction === "DEBIT" && t.fundSource === "ADVANCE")
     .reduce((s: number, t: any) => s + (t.amount ?? 0), 0);
@@ -1273,12 +1304,21 @@ export async function recomputeFinancialSummary(taskId: string): Promise<TaskFin
     .filter((t) => t.direction === "CREDIT" && t.fundSource === "REVENUE")
     .reduce((s: number, t: any) => s + (t.amount ?? 0), 0);
 
+  // Chi THỰC của công ty — lấy trực tiếp từ sổ quỹ (giao dịch đánh dấu isDisbursement), vì đây là
+  // nơi DUY NHẤT ghi nhận đúng mọi thời điểm tiền thực sự rời công ty: giải ngân tạm ứng lúc duyệt,
+  // hoàn ứng tự chi lúc duyệt quyết toán, VÀ cả phần chênh lệch quyết toán (chi bổ sung) nếu có.
+  // Không dùng advance.amount trực tiếp vì con số đó không phản ánh chênh lệch phát sinh sau quyết toán.
   const totalExpense = (txns as any[])
-    .filter((t) => t.direction === "DEBIT")
+    .filter((t) => t.direction === "DEBIT" && t.isDisbursement)
     .reduce((s: number, t: any) => s + (t.amount ?? 0), 0);
 
+  // Chờ hoàn ứng: đơn tự ứng đã nộp quyết toán, chờ duyệt chi + đơn hoàn ứng cũ (model trước khi hợp nhất).
+  const totalSelfPaidPending = (advances as any[])
+    .filter((a) => a.mode === "SELF_PAID" && a.status === "PENDING_SETTLEMENT")
+    .reduce((s: number, a: any) => s + (a.settlementAmountUsed ?? 0), 0);
   const pendingReimb = await ReimbursementRequestModel.find({ taskId, status: { $in: ["SUBMITTED", "APPROVED"] } }).lean();
-  const totalPendingReimbursement = (pendingReimb as any[]).reduce((s: number, r: any) => s + (r.amount ?? 0), 0);
+  const totalPendingReimbursement = totalSelfPaidPending
+    + (pendingReimb as any[]).reduce((s: number, r: any) => s + (r.amount ?? 0), 0);
 
   const taskDoc = await TaskModel.findById(taskId).lean() as any;
   const budget = taskDoc?.budget ?? 0;
@@ -1306,47 +1346,6 @@ export async function recomputeFinancialSummary(taskId: string): Promise<TaskFin
   return summary;
 }
 
-export async function reconcileAdvance(taskId: string, settledBy: string): Promise<{
-  difference: number;
-  settlementType: "RETURN_TO_COMPANY" | "PAY_EMPLOYEE_ADDITIONAL" | "BALANCED";
-  totalAdvanced: number;
-  totalActualSpent: number;
-  settledRequests: string[];
-}> {
-  await connectDB();
-
-  const pendingProof = await FinancialTransactionModel.countDocuments({ taskId, status: "PENDING_PROOF" });
-  if (pendingProof > 0) throw new Error("Còn giao dịch thiếu chứng từ. Vui lòng bổ sung trước khi quyết toán.");
-
-  const approvedAdvances = await AdvanceRequestModel.find({
-    taskId,
-    status: { $in: ["APPROVED", "PENDING_SETTLEMENT"] },
-  }).lean() as any[];
-
-  if (!approvedAdvances.length) throw new Error("Không có đơn tạm ứng nào đã được duyệt.");
-
-  const totalAdvanced = approvedAdvances.reduce((s: number, a: any) => s + (a.amount ?? 0), 0);
-
-  const advanceTxns = await FinancialTransactionModel.find({
-    taskId, status: "VALID", direction: "DEBIT", fundSource: "ADVANCE",
-  }).lean() as any[];
-  const totalActualSpent = advanceTxns.reduce((s: number, t: any) => s + (t.amount ?? 0), 0);
-
-  const difference = totalAdvanced - totalActualSpent;
-  const settlementType = difference > 0
-    ? "RETURN_TO_COMPANY"
-    : difference < 0 ? "PAY_EMPLOYEE_ADDITIONAL" : "BALANCED";
-
-  const settledRequests = approvedAdvances.map((a: any) => a._id as string);
-  await AdvanceRequestModel.updateMany(
-    { _id: { $in: settledRequests } },
-    { status: "SETTLED", settledAt: now(), settlementApprovedBy: settledBy, settlementDifference: difference, settlementType, updatedAt: now() }
-  );
-
-  await recomputeFinancialSummary(taskId);
-
-  return { difference, settlementType, totalAdvanced, totalActualSpent, settledRequests };
-}
 
 // ─── RESEARCH GROUPS ──────────────────────────────────────────
 

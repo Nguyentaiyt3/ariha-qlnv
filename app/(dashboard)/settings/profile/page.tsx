@@ -5,7 +5,7 @@ import { User, Camera, Loader2, Pencil, Clock, ExternalLink } from "lucide-react
 import { useAuthStore } from "@/stores/useAuthStore";
 import { saveUser, getRequests } from "@/lib/firebase/firestore";
 import { getInitials, avatarColor, roleLabel, formatDate } from "@/lib/utils";
-import { PROFILE_FIELD_LABEL } from "@/types";
+import { PROFILE_FIELD_LABEL, RESEARCH_DESIGNATION_LABEL } from "@/types";
 import type { WorkRequest } from "@/types";
 import { ProfileChangeRequestModal } from "@/components/employees/ProfileChangeRequestModal";
 import { toast } from "sonner";
@@ -135,9 +135,16 @@ export default function ProfilePage() {
         <div>
           <p className="font-semibold text-[var(--foreground)] text-lg">{currentUser.name}</p>
           <p className="text-sm text-[var(--muted-foreground)]">{currentUser.email}</p>
-          <span className="inline-block mt-1 text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full font-medium">
-            {roleLabel(currentUser.role)}
-          </span>
+          <div className="flex flex-wrap items-center gap-1.5 mt-1">
+            <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full font-medium">
+              {roleLabel(currentUser.role)}
+            </span>
+            {(currentUser.researchDesignations ?? []).map((d) => (
+              <span key={d} className="text-xs px-2 py-0.5 bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300 rounded-full font-medium">
+                {RESEARCH_DESIGNATION_LABEL[d] ?? d}
+              </span>
+            ))}
+          </div>
           <p className="text-xs text-[var(--muted-foreground)] mt-1.5">
             Nhấn vào icon 📷 để thay ảnh đại diện (tối đa 2MB)
           </p>

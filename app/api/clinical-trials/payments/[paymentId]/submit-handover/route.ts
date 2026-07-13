@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getClinicalTrials, updateClinicalTrial } from "@/lib/mongodb/firestore";
+import { updateClinicalTrial } from "@/lib/mongodb/firestore";
+import { authorizePaymentAction, getTrialByPaymentId } from "@/lib/mongodb/clinicalTrialPayments";
 import type { SettlementConfirmation } from "@/types";
 
 export async function POST(
@@ -9,13 +10,9 @@ export async function POST(
   try {
     const { paymentId } = params;
     const body = await request.json();
-    const { submittedBy, submittedByUserId, handoverDocumentUrl } = body;
+    const { handoverDocumentUrl } = body;
 
-    const trials = await getClinicalTrials();
-    const trial = trials.find((t) =>
-      t.payments?.some((p) => p.id === paymentId)
-    );
-
+    const trial = await getTrialByPaymentId(paymentId);
     if (!trial) {
       return NextResponse.json(
         { error: "Payment not found" },
@@ -23,11 +20,15 @@ export async function POST(
       );
     }
 
+    const auth = await authorizePaymentAction(request, trial, {});
+    if (!auth.ok) return auth.response;
+    const { me } = auth;
+
     const confirmation: SettlementConfirmation = {
       confirmationType: "document",
       status: "confirmed",
-      confirmedBy: submittedBy,
-      confirmedByUserId: submittedByUserId,
+      confirmedBy: me.name,
+      confirmedByUserId: me.id,
       confirmedAt: new Date().toISOString(),
       handoverDocumentUrl,
     };

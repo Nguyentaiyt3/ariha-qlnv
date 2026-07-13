@@ -67,6 +67,9 @@ interface UserBasic {
 // ── Node data ─────────────────────────────────────────────────
 interface WFNodeData {
   label: string;
+  /** Số thứ tự hiển thị — chỉ ảnh hưởng cách sắp xếp ở chế độ "Theo vùng", không ảnh hưởng thứ
+   * tự thực thi thật (vẫn hoàn toàn theo mũi tên phụ thuộc khi tạo nhiệm vụ). */
+  order?: number;
   department: string;
   status: NodeStatus;
   description: string;
@@ -261,7 +264,14 @@ function WFNodeCard({ data, id, selected }: NodeProps) {
       {/* Header */}
       <div style={{ padding: "8px 12px 5px", display: "flex", alignItems: "flex-start", gap: 6 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <p style={{ fontWeight: 700, fontSize: 12.5, color: "#0f172a", lineHeight: 1.35, wordBreak: "break-word", margin: 0 }}>{d.label}</p>
+          <p style={{ fontWeight: 700, fontSize: 12.5, color: "#0f172a", lineHeight: 1.35, wordBreak: "break-word", margin: 0 }}>
+            {d.order != null && (
+              <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 16, height: 16, borderRadius: 4, background: cfg.color + "22", color: cfg.color, fontSize: 9.5, fontWeight: 800, marginRight: 5 }}>
+                {d.order}
+              </span>
+            )}
+            {d.label}
+          </p>
           {d.department && <p style={{ fontSize: 10, color: "#64748b", margin: "1px 0 0" }}>{d.department}</p>}
           {/* Assignee */}
           {d.assigneeName && (
@@ -349,7 +359,8 @@ function toRFNodes(wf: Workflow, showStatus: boolean): Node[] {
     return {
       id: n.id, type: "wfNode", position: n.position, draggable: !locked,
       data: {
-        label: n.name, department: n.department ?? "",
+        label: n.name, order: (n as any).order,
+        department: n.department ?? "",
         status: n.status ?? "todo", description: n.description ?? "",
         showStatus, locked,
         assigneeId:   (n as any).assigneeId ?? "",
@@ -416,7 +427,7 @@ function fromRF(rfNodes: Node[], rfEdges: Edge[], extEdges: WorkflowEdge[]) {
   const nodes: WorkflowNode[] = rfNodes.map((n) => {
     const d = n.data as WFNodeData;
     return {
-      id: n.id, name: d.label,
+      id: n.id, name: d.label, order: d.order,
       description: d.description || undefined, department: d.department || undefined,
       status: d.status, position: n.position, locked: d.locked,
       assigneeId:   d.assigneeId    || undefined,
@@ -449,25 +460,42 @@ function fromRF(rfNodes: Node[], rfEdges: Edge[], extEdges: WorkflowEdge[]) {
 
 function snapNodesToZones(nodes: Node[]): Node[] {
   const counts: Record<string, number> = { todo: 0, in_progress: 0, done: 0 };
-  return nodes.map((n) => {
+  // Sắp xếp theo số thứ tự (order) tăng dần trước khi gán vị trí lưới trong mỗi vùng — node
+  // chưa có order giữ nguyên thứ tự tạo (xếp sau, ổn định theo index gốc). Chỉ ảnh hưởng cách
+  // sắp xếp hiển thị, KHÔNG ảnh hưởng thứ tự thực thi (vẫn theo mũi tên phụ thuộc như cũ).
+  const sorted = nodes
+    .map((n, i) => ({ n, i }))
+    .sort((a, b) => {
+      const oa = a.n.data.order;
+      const ob = b.n.data.order;
+      if (oa != null && ob != null) return oa - ob;
+      if (oa != null) return -1;
+      if (ob != null) return 1;
+      return a.i - b.i;
+    });
+
+  const positioned = new Map<string, { x: number; y: number }>();
+  for (const { n } of sorted) {
     const zoneIdx = ZONES.findIndex((z) => z.status === n.data.status);
-    if (zoneIdx === -1) return n;
+    if (zoneIdx === -1) continue;
     const col = counts[n.data.status] ?? 0;
     counts[n.data.status] = col + 1;
-    return { ...n, position: { x: zoneIdx * ZONE_W + 40 + (col % 2) * 240, y: 80 + Math.floor(col / 2) * 160 } };
-  });
+    positioned.set(n.id, { x: zoneIdx * ZONE_W + 40 + (col % 2) * 240, y: 80 + Math.floor(col / 2) * 160 });
+  }
+  return nodes.map((n) => (positioned.has(n.id) ? { ...n, position: positioned.get(n.id)! } : n));
 }
 
 // ── Node Editor ───────────────────────────────────────────────
 type EditorTab = "chung" | "dau_vao" | "dau_ra" | "danh_gia";
 
 function NodeEditor({
-  node, allWorkflows, extEdges, viewMode, users,
+  node, allWorkflows, extEdges, viewMode, users, units,
   onUpdate, onDelete, onClose, onAddExtEdge, onRemoveExtEdge, predecessors,
   onEditSubWorkflow,
 }: {
   node: Node; allWorkflows: Workflow[]; extEdges: WorkflowEdge[];
   viewMode: "zones" | "classic"; users: UserBasic[];
+  units: { id: string; name: string; abbr?: string }[];
   onUpdate: (id: string, p: Partial<WFNodeData>) => void;
   onDelete: (id: string) => void; onClose: () => void;
   onAddExtEdge: (e: WorkflowEdge) => void; onRemoveExtEdge: (id: string) => void;
@@ -479,6 +507,7 @@ function NodeEditor({
   const [showExtForm, setShowExt] = useState(false);
   const [extWfId, setExtWfId]     = useState("");
   const [extNodeId, setExtNodeId] = useState("");
+  const [editingDept, setEditingDept] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const camRef  = useRef<HTMLInputElement>(null);
 
@@ -617,9 +646,54 @@ function NodeEditor({
           <input value={d.label} onChange={(e) => onUpdate(node.id, { label: e.target.value })}
             style={{ ...inp, marginBottom: 12 }} placeholder="Tên bước..." disabled={d.locked} />
 
+          <label style={lbl}>Số thứ tự hiển thị (chế độ "Theo vùng")</label>
+          <input
+            type="number"
+            value={d.order ?? ""}
+            onChange={(e) => onUpdate(node.id, { order: e.target.value === "" ? undefined : Number(e.target.value) })}
+            style={{ ...inp, marginBottom: 4 }} placeholder="VD: 1, 2, 3..." disabled={d.locked}
+          />
+          <p style={{ fontSize: 11, color: "#94A3B8", margin: "0 0 12px" }}>
+            Chỉ ảnh hưởng cách sắp xếp trên sơ đồ — không ảnh hưởng thứ tự thực thi thật (vẫn theo mũi tên phụ thuộc).
+          </p>
+
           <label style={lbl}>Đơn vị / Phòng ban</label>
-          <input value={d.department} onChange={(e) => onUpdate(node.id, { department: e.target.value })}
-            style={{ ...inp, marginBottom: 12 }} placeholder="VD: Phòng Kinh doanh" disabled={d.locked} />
+          <div style={{ position: "relative", marginBottom: 12 }}>
+            <input
+              value={d.department}
+              onChange={(e) => { onUpdate(node.id, { department: e.target.value }); setEditingDept(true); }}
+              onFocus={() => setEditingDept(true)}
+              onBlur={() => setTimeout(() => setEditingDept(false), 200)}
+              style={inp} placeholder="Chọn hoặc gõ tên đơn vị..." disabled={d.locked}
+            />
+            {editingDept && !d.locked && (
+              <div style={{
+                position: "absolute", top: "100%", left: 0, right: 0, marginTop: 4, zIndex: 20,
+                background: "#fff", border: "1px solid #e2e8f0", borderRadius: 8,
+                boxShadow: "0 4px 16px rgba(0,0,0,.12)", maxHeight: 180, overflowY: "auto",
+              }}>
+                {units
+                  .filter((u) => u.name.toLowerCase().includes((d.department || "").toLowerCase()))
+                  .slice(0, 20)
+                  .map((u) => (
+                    <button
+                      key={u.id} type="button"
+                      onClick={() => { onUpdate(node.id, { department: u.name }); setEditingDept(false); }}
+                      style={{
+                        display: "block", width: "100%", textAlign: "left", padding: "6px 10px",
+                        fontSize: 12, color: "#334155", background: "transparent", border: "none", cursor: "pointer",
+                      }}
+                      onMouseDown={(e) => e.preventDefault()}
+                    >
+                      {u.name}{u.abbr ? ` (${u.abbr})` : ""}
+                    </button>
+                  ))}
+                {units.filter((u) => u.name.toLowerCase().includes((d.department || "").toLowerCase())).length === 0 && (
+                  <div style={{ padding: "6px 10px", fontSize: 12, color: "#94a3b8" }}>Không tìm thấy đơn vị — có thể gõ tự do</div>
+                )}
+              </div>
+            )}
+          </div>
 
           <label style={lbl}>Vai trò yêu cầu (template)</label>
           <select
@@ -1152,6 +1226,11 @@ export default function WorkflowBuilder({ workflow, allWorkflows, canEdit, canAp
   const [saving, setSaving]       = useState(false);
   const [dirty,  setDirty]        = useState(false);
   const [showAddMenu, setShowAdd] = useState(false);
+  const [units, setUnits] = useState<{ id: string; name: string; abbr?: string }[]>([]);
+
+  useEffect(() => {
+    fetch("/api/units").then((r) => r.json()).then((d) => setUnits(d.catalog ?? [])).catch(() => {});
+  }, []);
 
   // ── Sub-workflow state ─────────────────────────────────────────
   /** null = top-level; nodeId = đang sửa quy trình con của node đó */
@@ -1556,7 +1635,7 @@ export default function WorkflowBuilder({ workflow, allWorkflows, canEdit, canAp
           {selectedNode && (
             <NodeEditor
               node={selectedNode} allWorkflows={otherWorkflows} extEdges={extEdges}
-              viewMode={viewMode} users={users}
+              viewMode={viewMode} users={users} units={units}
               onUpdate={updateNodeData} onDelete={deleteNode}
               onClose={() => setSelectedNodeId(null)}
               onAddExtEdge={addExtEdge} onRemoveExtEdge={removeExtEdge}

@@ -1,17 +1,18 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
   Microscope, ArrowLeft, Loader2, CheckCircle2, Circle, XCircle, Clock,
   Users, FileText, Gavel, Award, ShieldCheck, UserCheck, Plus, X,
-  BookOpen, FlaskConical, Eye, EyeOff, AlertTriangle, RotateCcw, ListChecks,
+  BookOpen, FlaskConical, Eye, EyeOff, AlertTriangle, RotateCcw, ListChecks, Pencil, Upload, Lock,
 } from "lucide-react";
 import Link from "next/link";
 import { cn, generateId } from "@/lib/utils";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { hasPermission, canDoResearchAction, canUserAssignReviewer } from "@/lib/rbac/permissions";
+import { sameUnit } from "@/lib/rbac/scope";
 import {
   getResearchTopic, updateResearchTopic, addNotification,
   getResearchGroups, createResearchGroup, updateResearchGroup,
@@ -19,11 +20,16 @@ import {
 } from "@/lib/firebase/firestore";
 import { ReviewFormPanel } from "@/components/research/ReviewFormPanel";
 import { AssignReviewerModal } from "@/components/research/AssignReviewerModal";
-import { RESEARCH_STEPS, STAGE_LABEL, researchProgress, stepMeta, researchTaskSync } from "@/lib/research";
+import { DocxAnnotator } from "@/components/research/DocxAnnotator";
+import { PendingChangeRequestPanel } from "@/components/shared/PendingChangeRequestPanel";
+import {
+  RESEARCH_STEPS, STAGE_LABEL, researchProgress, stepMeta, researchTaskSync,
+  isProposalFileLocked, isFinalReportFileLocked,
+} from "@/lib/research";
 import type {
   ResearchTopic, ResearchStage, ResearchStepStatus, ResearchGroup,
   ResearchReview, ResearchCouncilSession, ResearchCouncilMember, CouncilMemberRole,
-  ResearchContributor,
+  ResearchContributor, TaskResource,
 } from "@/types";
 import { toast } from "sonner";
 
@@ -87,6 +93,7 @@ export default function ResearchDetailPage() {
   const [loading, setLoading] = useState(true);
   const [approving, setApproving] = useState(false);
   const [showRejectModal, setShowRejectModal] = useState(false);
+  const [activeTab, setActiveTab] = useState<"process" | "proposal" | "topic">("process");
 
   // Quyền quản lý toàn bộ quy trình (tiếp nhận, chuyển bước, từ chối...)
   // director/hrAdmin: luôn true; teamLead: chỉ true nếu đề tài thuộc đơn vị mình
@@ -117,7 +124,12 @@ export default function ResearchDetailPage() {
   async function handleUpdate(updates: Partial<ResearchTopic>, successMsg: string) {
     if (!topic) return;
     try {
-      await updateResearchTopic(topic.id, updates);
+      const res = await updateResearchTopic(topic.id, updates);
+      if (res?.pending) {
+        toast.success("Đã gửi yêu cầu sửa — chờ trưởng nhóm cùng đơn vị duyệt");
+        reload();
+        return;
+      }
       const merged = { ...topic, ...updates };
       setTopic(merged);
       toast.success(successMsg);
@@ -125,7 +137,7 @@ export default function ResearchDetailPage() {
       if (merged.executionTaskId && (updates.steps || updates.stage)) {
         updateTask(merged.executionTaskId, researchTaskSync(merged)).catch(() => {});
       }
-    } catch { toast.error("Thao tác thất bại"); }
+    } catch (err) { toast.error(err instanceof Error ? err.message : "Thao tác thất bại"); }
   }
 
   // Yêu cầu sửa đổi — GĐ1 reset về p_compile; GĐ2 reset về r_intake. Giữ lịch sử reviews.
@@ -234,11 +246,25 @@ export default function ResearchDetailPage() {
   const pct = researchProgress(topic);
   const stepStatus = (key: string) => topic.steps.find(s => s.key === key)?.status ?? "pending";
 
+  const canReviewChangeRequest =
+    canManage || (currentUser?.role === "teamLead" && sameUnit(topic.department, currentUser.department));
+  const isChangeRequester = topic.pendingChangeRequest?.requestedByUserId === currentUser?.id;
+
   return (
     <div className="max-w-4xl mx-auto px-4 py-6 space-y-5">
       <button onClick={() => router.push("/research")} className="text-sm text-slate-500 hover:text-slate-700 flex items-center gap-1">
         <ArrowLeft className="w-4 h-4" /> Danh sách đề tài
       </button>
+
+      <PendingChangeRequestPanel
+        currentRecord={topic as unknown as Record<string, unknown>}
+        pendingChangeRequest={topic.pendingChangeRequest}
+        canReview={canReviewChangeRequest}
+        isRequester={isChangeRequester}
+        approveUrl={`/api/research/${topic.id}/approve-change-request`}
+        rejectUrl={`/api/research/${topic.id}/reject-change-request`}
+        onChanged={reload}
+      />
 
       {/* Header */}
       <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5">
@@ -292,6 +318,46 @@ export default function ResearchDetailPage() {
         </div>
       </div>
 
+      {/* Tabs */}
+      <div className="flex gap-1 border-b border-[var(--border)]">
+        {([
+          { key: "process",  label: "Quy trình" },
+          { key: "proposal", label: "Đề cương" },
+          { key: "topic",    label: "Đề tài" },
+        ] as const).map(t => (
+          <button
+            key={t.key}
+            onClick={() => setActiveTab(t.key)}
+            className={cn(
+              "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition",
+              activeTab === t.key
+                ? "border-violet-600 text-violet-600 dark:text-violet-400"
+                : "border-transparent text-slate-500 dark:text-slate-400 hover:text-[var(--foreground)]"
+            )}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === "proposal" && (
+        <ProposalTab
+          topic={topic}
+          canEdit={canManage || isPI || isPerformer}
+          onUpdate={handleUpdate}
+        />
+      )}
+
+      {activeTab === "topic" && (
+        <FinalTopicTab
+          topic={topic}
+          canEdit={canManage || isPI || isPerformer}
+          onUpdate={handleUpdate}
+        />
+      )}
+
+      {activeTab === "process" && (
+      <>
       {/* GĐ0 action panel */}
       {topic.stage === "init" && (
         <div className="bg-amber-50 dark:bg-amber-900/15 border border-amber-200 dark:border-amber-700 rounded-2xl p-5">
@@ -444,6 +510,8 @@ export default function ResearchDetailPage() {
           </div>
         ))}
       </div>
+      </>
+      )}
     </div>
   );
 }
@@ -901,6 +969,11 @@ function PReviewPanel({ topic, currentUser, canManage, canAssignReviewer, users,
         )}
         {proposalReviews.map((r, i) => {
           const isMyReview = r.reviewerType === "internal" && r.reviewerId === currentUser?.id;
+          // Server (GET /api/research/[id]) đã ẩn danh theo đúng nguyên tắc phản biện kín 2
+          // chiều (tác giả không biết phản biện, 2 phản biện cùng giai đoạn không biết nhau) —
+          // client chỉ cần tin vào dữ liệu đã nhận, không tự suy luận lại bằng canManage/isMyReview
+          // (dễ sai lệch, vd. hiển thị tên dù server đã xoá vì viewer đồng thời có quyền quản lý).
+          const identityVisible = !!r.reviewerName;
           const showForm = submitReviewId === r.id;
           return (
             <div key={r.id} className="border border-slate-200 dark:border-slate-700 rounded-xl p-3 space-y-2">
@@ -910,8 +983,7 @@ function PReviewPanel({ topic, currentUser, canManage, canAssignReviewer, users,
                   r.reviewerType === "internal" ? "bg-blue-100 text-blue-600" : "bg-purple-100 text-purple-600")}>
                   {r.reviewerType === "internal" ? "Nội bộ" : "Bên ngoài"}
                 </span>
-                {/* Blind: only show name to canManage or reviewer themselves */}
-                {(canManage || isMyReview) ? (
+                {identityVisible ? (
                   <span className="text-sm font-medium text-[var(--foreground)]">{r.reviewerName}</span>
                 ) : (
                   <span className="text-sm text-slate-400 flex items-center gap-1"><EyeOff className="w-3 h-3" />Ẩn danh</span>
@@ -922,7 +994,7 @@ function PReviewPanel({ topic, currentUser, canManage, canAssignReviewer, users,
                 </span>
               </div>
               {/* Submitted summary */}
-              {r.status === "submitted" && (canManage || isMyReview) && (
+              {r.status === "submitted" && identityVisible && (
                 <div className="text-xs text-slate-500 pl-1 space-y-0.5">
                   <div className="flex flex-wrap gap-3">
                     {r.score !== undefined && (
@@ -1641,6 +1713,544 @@ function RRecognizePanel({ topic, currentUser, canManage, onUpdate }: GD1Props) 
         </div>
       </div>
     </PanelWrap>
+  );
+}
+
+// ─── File preview/edit field (dùng chung cho tab Đề cương & Đề tài) ──────────
+
+const UPLOAD_ACCEPT = ".pdf,.doc,.docx";
+
+function FileUrlField({ label, url, canEdit, folder, lockedMessage, onSave }: {
+  label: string;
+  url?: string;
+  canEdit: boolean;
+  folder: string;
+  /** Hiển thị khi có file nhưng canEdit=false do đã khoá (vd. đã nộp thẩm định) — phân biệt với
+   * trường hợp người xem đơn giản là không có quyền sửa. */
+  lockedMessage?: string;
+  onSave: (url: string) => Promise<void>;
+}) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [showUrlInput, setShowUrlInput] = useState(false);
+  const [urlDraft, setUrlDraft] = useState(url ?? "");
+
+  async function handleFile(file: File) {
+    setUploading(true);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("folder", folder);
+      const res = await fetch("/api/upload", { method: "POST", body: form });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || "Upload thất bại");
+      await onSave(data.url);
+      toast.success("Đã upload file");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Upload thất bại");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function handleSaveUrl() {
+    await onSave(urlDraft.trim());
+    setShowUrlInput(false);
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">{label}</p>
+        {canEdit && url && (
+          <div className="flex items-center gap-3">
+            <button onClick={() => fileInputRef.current?.click()} disabled={uploading}
+              className="text-xs text-violet-600 dark:text-violet-400 hover:underline flex items-center gap-1 disabled:opacity-50">
+              {uploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />} Thay file khác
+            </button>
+            <button onClick={() => setShowUrlInput(v => !v)} className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 flex items-center gap-1">
+              <Pencil className="w-3 h-3" /> Dán link khác
+            </button>
+          </div>
+        )}
+        {!canEdit && url && lockedMessage && (
+          <span className="text-xs text-slate-400 flex items-center gap-1">
+            <Lock className="w-3 h-3" /> {lockedMessage}
+          </span>
+        )}
+      </div>
+
+      {canEdit && showUrlInput && (
+        <div className="flex items-center gap-2 mb-3">
+          <input
+            value={urlDraft}
+            onChange={e => setUrlDraft(e.target.value)}
+            placeholder="Dán link Google Drive / URL file..."
+            className="flex-1 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-violet-500"
+          />
+          <button onClick={handleSaveUrl}
+            className="px-3 py-2 bg-violet-600 hover:bg-violet-700 text-white text-xs font-medium rounded-lg transition">
+            Lưu
+          </button>
+          <button onClick={() => { setShowUrlInput(false); setUrlDraft(url ?? ""); }}
+            className="px-3 py-2 border border-slate-200 dark:border-slate-700 text-slate-500 text-xs rounded-lg">
+            Huỷ
+          </button>
+        </div>
+      )}
+
+      {url ? (
+        <div className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden" style={{ height: 560 }}>
+          <DocxAnnotator fileUrl={url} annotations={[]} canAnnotate={false} />
+        </div>
+      ) : canEdit ? (
+        <div className="space-y-2">
+          <div
+            onClick={() => fileInputRef.current?.click()}
+            className="flex flex-col items-center justify-center gap-2 py-10 border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-xl cursor-pointer hover:border-violet-400 hover:bg-violet-50/40 dark:hover:bg-violet-900/10 transition"
+          >
+            {uploading ? (
+              <Loader2 className="w-6 h-6 animate-spin text-violet-500" />
+            ) : (
+              <Upload className="w-6 h-6 text-slate-400" />
+            )}
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              {uploading ? "Đang tải lên..." : "Nhấn để chọn file (PDF / Word) — tối đa 20MB"}
+            </p>
+          </div>
+          <button onClick={() => setShowUrlInput(v => !v)} className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 underline">
+            {showUrlInput ? "Ẩn" : "Hoặc dán link Google Drive"}
+          </button>
+          {showUrlInput && (
+            <div className="flex items-center gap-2">
+              <input
+                value={urlDraft}
+                onChange={e => setUrlDraft(e.target.value)}
+                placeholder="https://drive.google.com/..."
+                className="flex-1 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-violet-500"
+              />
+              <button onClick={handleSaveUrl}
+                className="px-3 py-2 bg-violet-600 hover:bg-violet-700 text-white text-xs font-medium rounded-lg transition">
+                Lưu
+              </button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <p className="text-sm text-slate-400 italic">Chưa có file</p>
+      )}
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept={UPLOAD_ACCEPT}
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) handleFile(f);
+          e.target.value = "";
+        }}
+      />
+    </div>
+  );
+}
+
+// ─── Tóm tắt phản biện theo giai đoạn (dùng chung cho 2 tab) ─────────────────
+
+const REVIEW_VERDICT_LABEL: Record<string, string> = {
+  pass: "ĐẠT", pass_if_revised: "ĐẠT (nếu chỉnh sửa)", fail: "KHÔNG ĐẠT",
+};
+const REVIEW_GRADE_LABEL: Record<string, string> = {
+  excellent: "Giỏi", good: "Khá", average: "Trung bình", fail: "Không đạt",
+};
+
+function ReviewStageSummary({ reviews, stage }: {
+  reviews: ResearchReview[];
+  stage: "proposal" | "recognition";
+}) {
+  const stageReviews = reviews.filter(r => r.stage === stage);
+  const submitted = stageReviews.filter(r => r.status === "submitted");
+  const scores = submitted.map(r => r.score).filter((s): s is number => typeof s === "number");
+  const avg35 = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+  const avg10 = avg35 != null ? Math.round((avg35 / 35) * 100) / 10 : null;
+
+  if (stageReviews.length === 0) {
+    return <p className="text-sm text-slate-400 italic">Chưa có phản biện nào ở giai đoạn này.</p>;
+  }
+
+  return (
+    <div className="space-y-3">
+      {avg10 != null && (
+        <div className="flex flex-wrap items-center gap-3 p-3 bg-violet-50 dark:bg-violet-900/10 border border-violet-200 dark:border-violet-800 rounded-xl">
+          <p className="text-sm text-violet-700 dark:text-violet-300">
+            Điểm trung bình: <strong>{avg35?.toFixed(1)}/35</strong> (~{avg10}/10)
+          </p>
+          <span className="text-xs px-2 py-0.5 rounded-full bg-violet-100 dark:bg-violet-800/40 text-violet-700 dark:text-violet-300 font-medium">
+            {{ xuatSac: "Xuất sắc", hoanThanhTot: "Hoàn thành tốt", hoanThanh: "Hoàn thành", khongHoanThanh: "Không hoàn thành" }[grade3TFromAvg(avg10)]}
+          </span>
+        </div>
+      )}
+      <div className="space-y-2">
+        {stageReviews.map((r, i) => {
+          // Server đã ẩn danh theo nguyên tắc phản biện kín 2 chiều — chỉ tin dữ liệu nhận được,
+          // không tự suy luận lại bằng canManage (dễ lộ danh tính khi viewer đồng thời là tác giả
+          // hoặc là phản biện còn lại cùng giai đoạn nhưng cũng có quyền quản lý khác).
+          const identityVisible = !!r.reviewerName;
+          return (
+            <div key={r.id} className="border border-slate-200 dark:border-slate-700 rounded-xl p-3">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-500">PB {i + 1}</span>
+                {identityVisible ? (
+                  <span className="text-sm font-medium text-[var(--foreground)]">{r.reviewerName}</span>
+                ) : (
+                  <span className="text-sm text-slate-400 flex items-center gap-1"><EyeOff className="w-3 h-3" />Ẩn danh</span>
+                )}
+                <span className={cn("ml-auto text-[10px] font-semibold px-1.5 py-0.5 rounded",
+                  r.status === "submitted" ? "bg-green-100 text-green-600" : "bg-amber-100 text-amber-600")}>
+                  {r.status === "submitted" ? "Đã nộp" : "Chờ phản biện"}
+                </span>
+              </div>
+              {r.status === "submitted" && (
+                <div className="flex flex-wrap gap-3 mt-1.5 text-xs text-slate-500">
+                  {r.score !== undefined && <span>Điểm: <strong className="text-[var(--foreground)]">{r.score}/35</strong></span>}
+                  {r.verdict && (
+                    <span>Kết luận: <strong className={
+                      r.verdict === "pass" ? "text-green-600" :
+                      r.verdict === "pass_if_revised" ? "text-amber-600" : "text-red-600"
+                    }>{REVIEW_VERDICT_LABEL[r.verdict]}</strong></span>
+                  )}
+                  {r.grade && (
+                    <span>Xếp loại: <strong className="text-[var(--foreground)]">{REVIEW_GRADE_LABEL[r.grade]}</strong></span>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── Tab: Đề cương ────────────────────────────────────────────────────────────
+
+interface TabProps {
+  topic: ResearchTopic;
+  canEdit: boolean;
+  onUpdate: (updates: Partial<ResearchTopic>, msg: string) => Promise<void>;
+}
+
+function ProposalTab({ topic, canEdit, onUpdate }: TabProps) {
+  const { currentUser } = useAuthStore();
+  const { users } = useTaskStore();
+  const [note, setNote] = useState(topic.compileNote ?? "");
+  const [submitting, setSubmitting] = useState(false);
+
+  const fileEditable = canEdit && !isProposalFileLocked(topic);
+
+  // Chỉ xuất hiện sau khi đề cương đã thẩm định đạt và đi tiếp các bước sau p_review (dữ liệu
+  // của các bước này chỉ tồn tại khi topic đã tiến qua p_review thành công).
+  const councilSession = topic.councilSessions.find(s => s.stage === "proposal");
+  const ethicsCert = topic.certificates.find(c => c.type === "ethics");
+  const agreeStep = topic.steps.find(s => s.key === "p_agree");
+  const agreePassed = agreeStep?.status === "passed";
+
+  // Chỉ ở đúng bước "Tổng hợp đề cương" (p_compile) mới cần nộp thẩm định — sau khi nộp,
+  // currentStep chuyển sang p_assign nên nút này tự ẩn.
+  const needsSubmission = canEdit && topic.currentStep === "p_compile" && !!topic.proposalFileUrl;
+
+  async function handleSubmitForReview() {
+    if (!note.trim()) { toast.error("Nhập tóm tắt đề cương trước khi nộp thẩm định"); return; }
+    setSubmitting(true);
+    const managers = users.filter(u =>
+      ["teamLead", "director", "hrAdmin"].includes(u.role ?? "") && u.id !== currentUser?.id
+    );
+    try {
+      await onUpdate(
+        { compileNote: note.trim(), ...advanceStep(topic, "p_compile", "p_assign") },
+        "Đã nộp đề cương — chờ phê duyệt thực hiện"
+      );
+      await Promise.all(managers.map(u =>
+        addNotification({
+          userId: u.id, type: "approval_request", title: "Đề cương chờ phê duyệt",
+          body: `Đề tài "${topic.title}" đã nộp đề cương — cần phê duyệt thực hiện & gán người.`,
+          link: `/research/${topic.id}`, read: false, priority: "normal",
+          createdAt: new Date().toISOString(),
+        }).catch(() => {})
+      ));
+    } finally { setSubmitting(false); }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+        <FileUrlField
+          label="File đề cương"
+          url={topic.proposalFileUrl}
+          canEdit={fileEditable}
+          folder="proposals"
+          lockedMessage="Đã nộp thẩm định — không thể sửa/xoá/thay thế file"
+          onSave={(url) => onUpdate({ proposalFileUrl: url || undefined }, "Đã cập nhật file đề cương")}
+        />
+        {(needsSubmission || topic.compileNote) && (
+          <div>
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Nội dung tổng hợp</p>
+            {needsSubmission ? (
+              <div className="space-y-2">
+                <textarea
+                  value={note} onChange={e => setNote(e.target.value)} rows={4}
+                  placeholder="Tóm tắt nội dung đề cương, mục tiêu, phương pháp, kế hoạch thực hiện..."
+                  className="w-full border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-violet-500 resize-none"
+                />
+                <div className="flex justify-end">
+                  <button onClick={handleSubmitForReview} disabled={submitting || !note.trim()}
+                    className="px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium rounded-lg transition disabled:opacity-60 flex items-center gap-2">
+                    {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                    Nộp thẩm định
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap bg-slate-50 dark:bg-slate-800/50 rounded-xl p-4 border border-slate-100 dark:border-slate-700">
+                {topic.compileNote}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+      <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5">
+        <h2 className="text-sm font-semibold text-[var(--foreground)] mb-3">Điểm đạt Giai đoạn 1 (thẩm định đề cương)</h2>
+        <ReviewStageSummary reviews={topic.reviews} stage="proposal" />
+      </div>
+
+      {(councilSession || ethicsCert || agreePassed) && (
+        <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+          <h2 className="text-sm font-semibold text-[var(--foreground)]">Kết quả Giai đoạn 1</h2>
+
+          {councilSession && (
+            <div>
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Kết quả Hội đồng KHCN</p>
+              <div className="rounded-xl border border-slate-200 dark:border-slate-700 p-4 space-y-1.5">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className={cn("text-[10px] font-semibold px-1.5 py-0.5 rounded",
+                    councilSession.mode === "in_person" ? "bg-blue-100 text-blue-600" : "bg-purple-100 text-purple-600")}>
+                    {councilSession.mode === "in_person" ? "Họp trực tiếp" : "Bỏ phiếu online"}
+                  </span>
+                  {councilSession.scheduledAt && <span className="text-xs text-slate-400">{councilSession.scheduledAt.slice(0, 10)}</span>}
+                  {councilSession.decision && (
+                    <span className={cn("text-[10px] font-bold px-1.5 py-0.5 rounded ml-auto",
+                      councilSession.decision === "passed" ? "bg-green-100 text-green-600"
+                      : councilSession.decision === "failed" ? "bg-red-100 text-red-600"
+                      : "bg-amber-100 text-amber-600")}>
+                      {councilSession.decision === "passed" ? "Thông qua" : councilSession.decision === "failed" ? "Không thông qua" : "Yêu cầu sửa đổi"}
+                    </span>
+                  )}
+                </div>
+                {councilSession.conclusion && <p className="text-xs text-slate-500 italic">"{councilSession.conclusion}"</p>}
+                {councilSession.members && councilSession.members.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {councilSession.members.map(m => (
+                      <span key={m.userId} className={cn("text-[10px] px-1.5 py-0.5 rounded-full font-medium", COUNCIL_ROLE_COLOR[m.role])}>
+                        {COUNCIL_ROLE_LABEL[m.role]}: {m.name}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {ethicsCert && (
+            <div>
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Chứng nhận Y đức</p>
+              <div className="text-sm text-slate-700 dark:text-slate-300 bg-green-50 dark:bg-green-900/10 border border-green-200 dark:border-green-800 rounded-xl p-4 space-y-1">
+                {ethicsCert.number && <p>Số chứng nhận: <strong>{ethicsCert.number}</strong></p>}
+                {ethicsCert.issuedAt && <p>Ngày cấp: <strong>{ethicsCert.issuedAt}</strong></p>}
+                {ethicsCert.issuedBy && <p>Đơn vị cấp: <strong>{ethicsCert.issuedBy}</strong></p>}
+              </div>
+            </div>
+          )}
+
+          {agreePassed && (
+            <div>
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Quyết định cho thực hiện</p>
+              <div className="flex items-center gap-2 text-sm text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-900/10 border border-green-200 dark:border-green-800 rounded-xl p-3">
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                Đã đồng ý cho thực hiện đề tài
+                {agreeStep?.completedAt && ` — ${new Date(agreeStep.completedAt).toLocaleDateString("vi-VN")}`}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Minh chứng sản phẩm đề tài (nhiều file) — kèm theo khi nộp thẩm định GĐ2 ────
+
+function EvidenceDocsField({ documents, canEdit, onChange }: {
+  documents: TaskResource[];
+  canEdit: boolean;
+  onChange: (docs: TaskResource[]) => Promise<void>;
+}) {
+  const { currentUser } = useAuthStore();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+
+  async function handleFiles(files: FileList) {
+    setUploading(true);
+    try {
+      const uploaded: TaskResource[] = [];
+      for (const file of Array.from(files)) {
+        const form = new FormData();
+        form.append("file", file);
+        form.append("folder", "research-evidence");
+        const res = await fetch("/api/upload", { method: "POST", body: form });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { toast.error(data?.error || `Upload thất bại: ${file.name}`); continue; }
+        uploaded.push({
+          id: generateId("doc"),
+          type: "file",
+          name: file.name,
+          url: data.url,
+          mimeType: file.type,
+          size: file.size,
+          addedBy: currentUser?.id ?? "",
+          addedByName: currentUser?.name ?? "",
+          addedAt: new Date().toISOString(),
+        });
+      }
+      if (uploaded.length > 0) {
+        await onChange([...documents, ...uploaded]);
+        toast.success(`Đã thêm ${uploaded.length} minh chứng`);
+      }
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function handleRemove(id: string) {
+    await onChange(documents.filter(d => d.id !== id));
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Minh chứng sản phẩm đề tài</p>
+        {canEdit && (
+          <button onClick={() => fileInputRef.current?.click()} disabled={uploading}
+            className="text-xs text-violet-600 dark:text-violet-400 hover:underline flex items-center gap-1 disabled:opacity-50">
+            {uploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />} Thêm minh chứng
+          </button>
+        )}
+      </div>
+      {documents.length === 0 ? (
+        <p className="text-sm text-slate-400 italic">Chưa có minh chứng nào</p>
+      ) : (
+        <div className="space-y-1.5">
+          {documents.map(doc => (
+            <div key={doc.id} className="flex items-center justify-between gap-2 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2">
+              <a href={doc.url} target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-2 text-sm text-blue-600 dark:text-blue-400 hover:underline truncate min-w-0">
+                <FileText className="w-3.5 h-3.5 shrink-0" /> <span className="truncate">{doc.name}</span>
+              </a>
+              {canEdit && (
+                <button onClick={() => handleRemove(doc.id)} className="text-slate-400 hover:text-red-500 shrink-0">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept={`${UPLOAD_ACCEPT},.jpg,.jpeg,.png`}
+        className="hidden"
+        onChange={(e) => {
+          if (e.target.files && e.target.files.length > 0) handleFiles(e.target.files);
+          e.target.value = "";
+        }}
+      />
+    </div>
+  );
+}
+
+// ─── Tab: Đề tài ──────────────────────────────────────────────────────────────
+
+function FinalTopicTab({ topic, canEdit, onUpdate }: TabProps) {
+  const recognitionCert = topic.certificates.find(c => c.type === "recognition");
+  const [submitting, setSubmitting] = useState(false);
+
+  const fileEditable = canEdit && !isFinalReportFileLocked(topic);
+  // Đã có file và chưa bước vào GĐ2 (Nghiệm thu) — cho phép đề nghị thẩm định để bắt đầu GĐ2
+  // ngay từ tab này, không bắt buộc phải quay lại tab Quy trình bấm "Bắt đầu triển khai"/
+  // "Nộp báo cáo kết quả" tuần tự trước.
+  const needsSubmission = canEdit && !!topic.finalReportFileUrl && !isFinalReportFileLocked(topic);
+
+  async function handleSubmitForReview() {
+    setSubmitting(true);
+    const stamp = new Date().toISOString();
+    // Đánh dấu luôn "Bắt đầu triển khai" (nếu chưa) để tiến trình ở tab Quy trình không bị
+    // thiếu bước — rồi mới nộp kết quả & chuyển sang GĐ2 Nghiệm thu.
+    const steps = topic.steps.map(s =>
+      s.key === "exec_start" && s.status !== "passed" ? { ...s, status: "passed" as const, completedAt: stamp }
+      : s.key === "exec_submit" ? { ...s, status: "passed" as const, completedAt: stamp }
+      : s.key === "r_intake" ? { ...s, status: "in_progress" as const }
+      : s
+    );
+    await onUpdate(
+      { steps, currentStep: "r_intake", stage: "recognition" },
+      "Đã nộp báo cáo kết quả — chuyển sang GĐ2 Nghiệm thu"
+    );
+    setSubmitting(false);
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
+        <FileUrlField
+          label="File đề tài / báo cáo tổng kết"
+          url={topic.finalReportFileUrl}
+          canEdit={fileEditable}
+          folder="final-reports"
+          lockedMessage="Đã nộp thẩm định — không thể sửa/xoá/thay thế file"
+          onSave={(url) => onUpdate({ finalReportFileUrl: url || undefined }, "Đã cập nhật file đề tài")}
+        />
+        <EvidenceDocsField
+          documents={topic.documents}
+          canEdit={fileEditable}
+          onChange={(docs) => onUpdate({ documents: docs }, "Đã cập nhật minh chứng")}
+        />
+        {needsSubmission && (
+          <div className="flex justify-end">
+            <button onClick={handleSubmitForReview} disabled={submitting}
+              className="px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium rounded-lg transition disabled:opacity-60 flex items-center gap-2">
+              {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+              Nộp thẩm định
+            </button>
+          </div>
+        )}
+        {recognitionCert && (
+          <div>
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Chứng nhận công nhận</p>
+            <div className="text-sm text-slate-700 dark:text-slate-300 bg-green-50 dark:bg-green-900/10 border border-green-200 dark:border-green-800 rounded-xl p-4 space-y-1">
+              {recognitionCert.number && <p>Số chứng nhận: <strong>{recognitionCert.number}</strong></p>}
+              {recognitionCert.issuedAt && <p>Ngày cấp: <strong>{recognitionCert.issuedAt}</strong></p>}
+              {recognitionCert.issuedBy && <p>Đơn vị cấp: <strong>{recognitionCert.issuedBy}</strong></p>}
+              {recognitionCert.scope && <p>Phạm vi ảnh hưởng: {recognitionCert.scope}</p>}
+            </div>
+          </div>
+        )}
+      </div>
+      <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5">
+        <h2 className="text-sm font-semibold text-[var(--foreground)] mb-3">Điểm Giai đoạn 2 (nghiệm thu & công nhận)</h2>
+        <ReviewStageSummary reviews={topic.reviews} stage="recognition" />
+      </div>
+    </div>
   );
 }
 

@@ -1,5 +1,5 @@
 import {
-  getTask, createTask, updateTask, getClinicalTrial, getClinicalTrials, updateClinicalTrial,
+  getTask, createTask, updateTask, getClinicalTrial, getClinicalTrialByExecutionTaskId, updateClinicalTrial,
   getUnitPlans, getWorkflows, saveWorkflow,
 } from "@/lib/mongodb/firestore";
 import { getUser } from "@/lib/mongodb/auth";
@@ -117,7 +117,10 @@ async function resolveTrialWorkflow(
 export async function ensureTrialExecutionTask(
   trial: ClinicalTrial,
   actorUserId: string,
-  workflowId?: string
+  workflowId?: string,
+  assigneeId?: string,
+  supervisorId?: string,
+  planId?: string
 ): Promise<string> {
   if (trial.executionTaskId) {
     const existing = await getTask(trial.executionTaskId);
@@ -128,12 +131,15 @@ export async function ensureTrialExecutionTask(
   const base = (endDate || new Date(new Date().getFullYear() + 1, 11, 31)).toISOString();
   const phases = calcPhaseDeadlines(base, DEFAULT_MILESTONE_CONFIG);
 
-  // Người thực hiện chính dự kiến = người đang thao tác (đăng nhập lúc đăng ký/sinh nhiệm vụ) —
-  // không còn suy ra từ coordinator/PI của trial như trước.
-  const mainPerformerId = actorUserId;
+  // Người thực hiện chính dự kiến = người được chỉ định theo dõi (assigneeId, dùng cho phân công
+  // hàng loạt từ danh sách bảng), mặc định là người đang thao tác nếu không chỉ định.
+  const mainPerformerId = assigneeId || actorUserId;
   const stakeholders: Stakeholder[] = [{ userId: mainPerformerId, role: "assignee" }];
   if (trial.principalInvestigatorId && trial.principalInvestigatorId !== mainPerformerId) {
     stakeholders.push({ userId: trial.principalInvestigatorId, role: "collaborator" });
+  }
+  if (supervisorId && supervisorId !== mainPerformerId && supervisorId !== trial.principalInvestigatorId) {
+    stakeholders.push({ userId: supervisorId, role: "supervisor" });
   }
 
   await ensurePermissionOverridesLoaded();
@@ -161,9 +167,10 @@ export async function ensureTrialExecutionTask(
 
   const now = new Date().toISOString();
   const taskId = generateId("t");
+  const namePrefix = trial.abbreviation ? `${trial.abbreviation} (${trial.code})` : trial.code;
   const newTask: Omit<Task, "id"> & { id: string } = {
     id: taskId,
-    name: `[TNLS] ${trial.abbreviation || trial.code} — ${trial.title}`,
+    name: `[TNLS] ${namePrefix} - ${trial.title}`,
     description: `Nhiệm vụ theo dõi thử nghiệm lâm sàng ${trial.code}.`,
     status: mapTrialStatusToTaskStatus(trial.status),
     phase: "execute",
@@ -188,6 +195,7 @@ export async function ensureTrialExecutionTask(
     ...(canAutoApprove ? { approvedBy: actorUserId, approvedAt: now } : {}),
     department: trial.department,
     tags: ["TNLS"],
+    planId: planId || undefined,
     createdAt: now,
     updatedAt: now,
   };
@@ -387,13 +395,15 @@ export async function syncTrialStatusFromCompletedSteps(
 ): Promise<void> {
   if (!newSteps || newSteps.length === 0) return;
 
-  const trials = await getClinicalTrials();
-  const trial = trials.find((t) => t.executionTaskId === taskId);
-  if (!trial) return;
-
+  // Tính trước (thuần trong bộ nhớ, không cần DB) — phần lớn lượt lưu tiến độ (0%→25%→50%...)
+  // không hoàn thành bước nào cả, nên thoát sớm ở đây tránh phải tra cứu ClinicalTrial mỗi lần
+  // lưu tiến độ (trước đây luôn quét toàn bộ bảng trial dù task không liên quan gì đến trial).
   const prevCompletedIds = new Set((prevSteps ?? []).filter((s) => s.status === "completed").map((s) => s.id));
   const newlyCompleted = newSteps.filter((s) => s.status === "completed" && !prevCompletedIds.has(s.id));
   if (newlyCompleted.length === 0) return;
+
+  const trial = await getClinicalTrialByExecutionTaskId(taskId);
+  if (!trial) return;
 
   // Nếu nhiều bước hoàn thành cùng lúc (hoặc không theo thứ tự), nhảy tới trạng thái xa nhất
   // trong pipeline — tránh lùi trạng thái nếu người dùng tick bỏ bước ở giữa.

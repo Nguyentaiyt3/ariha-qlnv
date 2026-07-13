@@ -1,4 +1,17 @@
-import type { ResearchTopic } from "@/types";
+import type { ResearchTopic, User } from "@/types";
+
+/**
+ * Chỉ hrAdmin (quyền "*" toàn hệ thống) hoặc người có chỉ định "Quản lý NCKH"
+ * (researchDesignations includes "researchManager") mới được theo dõi/quản lý quy trình
+ * thẩm định đề tài NCKH (tab Giám sát tiến độ, hàng chờ tiếp nhận, kiểm tra trùng lặp, upload
+ * file mẫu). Vai trò hệ thống khác (kể cả director/teamLead) KHÔNG tự động có quyền này nếu
+ * chưa được gán chỉ định.
+ */
+export function isNckhManager(user: Pick<User, "role" | "researchDesignations"> | null | undefined): boolean {
+  if (!user) return false;
+  if (user.role === "hrAdmin") return true;
+  return (user.researchDesignations ?? []).includes("researchManager");
+}
 
 export function normText(s?: string | null): string {
   return (s ?? "").toLowerCase().normalize("NFC").replace(/\s+/g, " ").trim();

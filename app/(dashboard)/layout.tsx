@@ -68,7 +68,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         seen.add(t.id);
         return true;
       });
-      const visible = deduped.filter((t) => isTaskVisible(t, currentUser.id, currentUser.role));
+      const visible = deduped.filter((t) => isTaskVisible(t, currentUser.id, currentUser.role, currentUser.department));
       setTasks(visible);
     }
 

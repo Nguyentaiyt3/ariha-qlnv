@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { writeFile, mkdir } from "fs/promises";
 import path from "path";
-import { verifyToken } from "@/lib/mongodb/auth";
+import { verifyToken, getUser } from "@/lib/mongodb/auth";
+import { isNckhManager } from "@/lib/researchUtils";
 
 const TEMPLATE_FILENAME = "mau-de-cuong-nckh";
 const ALLOWED_TYPES = [
@@ -17,11 +18,14 @@ const ALLOWED_EXT: Record<string, string> = {
 
 export async function POST(req: NextRequest) {
   const token = req.cookies.get("auth-token")?.value;
-  const user  = token ? verifyToken(token) : null;
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const auth  = token ? verifyToken(token) : null;
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  // Only Director / HRAdmin may update the template
-  if (!["Director", "HRAdmin"].includes((user as { role?: string }).role ?? "")) {
+  // Trước đây so sánh sai (verifyToken không trả về role, và literal "Director"/"HRAdmin" không
+  // khớp giá trị enum thật) nên luôn 403 với mọi người. Chỉ hrAdmin hoặc người có chỉ định
+  // "Quản lý NCKH" mới được cập nhật file mẫu.
+  const me = await getUser(auth.userId);
+  if (!isNckhManager(me)) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 

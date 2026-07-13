@@ -17,6 +17,7 @@ import KPIFrameworkEditor from "@/components/performance/KPIFramework";
 import CompletedTasksTab from "@/components/performance/CompletedTasksTab";
 import { getInitials, avatarColor, formatDate } from "@/lib/utils";
 import { hasPermission } from "@/lib/rbac/permissions";
+import { isFullAccessRole, sameUnit } from "@/lib/rbac/scope";
 import { useUnitAbbr } from "@/hooks/useUnitAbbr";
 import { cn } from "@/lib/utils";
 
@@ -307,17 +308,23 @@ export default function PerformancePage() {
     return src.filter((e) => e.createdAt >= pStart && e.createdAt <= pEnd);
   }, [evaluations, allEvaluations, pStart, pEnd, canManageKPI]);
 
+  // Trưởng nhóm: chỉ thấy/thao tác trên nhân viên cùng đơn vị (director/hrAdmin thấy toàn bộ).
+  const scopedUsers = useMemo(() => {
+    const active = users.filter((u) => u.isActive && u.role !== "guest");
+    if (!currentUser || isFullAccessRole(currentUser.role)) return active;
+    return active.filter((u) => u.id === currentUser.id || sameUnit(u.department, currentUser.department));
+  }, [users, currentUser]);
+
   const scores = useMemo(() => {
     const src = canManageKPI ? allEvaluations : evaluations;
-    return users
-      .filter((u) => u.isActive && u.role !== "guest")
+    return scopedUsers
       .map((u) => calcPerformanceScore({
         tasks, evaluations: src,
         userId: u.id, periodStart: pStart, periodEnd: pEnd,
         role: u.role, department: u.department, allUsers: users,
       }))
       .sort((a, b) => b.totalScore - a.totalScore);
-  }, [tasks, evaluations, allEvaluations, users, pStart, pEnd, canManageKPI]);
+  }, [tasks, evaluations, allEvaluations, scopedUsers, users, pStart, pEnd, canManageKPI]);
 
   // Trend periods adapt to filter mode
   const trendPeriods = useMemo<string[]>(() => {
@@ -468,7 +475,7 @@ export default function PerformancePage() {
       {activeTab === "completed" && currentUser && (
         <CompletedTasksTab
           currentUser={currentUser}
-          users={users}
+          users={scopedUsers}
           tasks={tasks}
           evaluations={evaluations}
           canManageKPI={canManageKPI}
@@ -624,7 +631,7 @@ export default function PerformancePage() {
               className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-lg bg-[var(--card)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               <option value="">-- Chọn nhân viên --</option>
-              {users.filter((u) => u.isActive && u.role !== "guest").map((u) => (
+              {scopedUsers.map((u) => (
                 <option key={u.id} value={u.id}>{u.name} — {abbr(u.department)}</option>
               ))}
             </select>
@@ -669,7 +676,7 @@ export default function PerformancePage() {
                 className="w-full px-3 py-2 text-sm border border-[var(--border)] rounded-lg bg-[var(--card)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value="">-- Tự đánh giá --</option>
-                {users.filter((u) => u.isActive && u.id !== currentUser?.id).map((u) => (
+                {scopedUsers.filter((u) => u.id !== currentUser?.id).map((u) => (
                   <option key={u.id} value={u.id}>{u.name} — {abbr(u.department)}</option>
                 ))}
               </select>

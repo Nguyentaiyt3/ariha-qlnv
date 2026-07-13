@@ -130,16 +130,16 @@ export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
 
   return (
     <div className="fixed inset-0 z-50 flex bg-black/40 dark:bg-black/60 overflow-hidden">
-      <div className="relative flex flex-col lg:flex-row w-full max-w-7xl mx-auto my-4 mx-4 bg-[var(--background)] rounded-2xl shadow-2xl overflow-hidden">
+      <div className="relative flex flex-col lg:flex-row w-full max-w-7xl mx-auto my-4 mx-4 bg-background rounded-2xl shadow-2xl overflow-hidden">
 
         {/* ── LEFT: Proposal content ─────────────────────────────── */}
-        <div className="lg:w-[45%] flex flex-col border-r border-[var(--border)] overflow-y-auto max-h-[90vh]">
-          <div className="px-5 py-4 border-b border-[var(--border)] bg-violet-50 dark:bg-violet-900/10 shrink-0">
+        <div className="lg:w-[45%] flex flex-col border-r border-border overflow-y-auto max-h-[90vh]">
+          <div className="px-5 py-4 border-b border-border bg-violet-50 dark:bg-violet-900/10 shrink-0">
             <div className="flex items-center gap-2 mb-1">
               <FileText className="w-4 h-4 text-violet-600" />
               <span className="text-xs font-semibold text-violet-600 uppercase tracking-wide">Đề cương nghiên cứu</span>
             </div>
-            <h2 className="text-base font-bold text-[var(--foreground)] leading-tight">{topic.title}</h2>
+            <h2 className="text-base font-bold text-foreground leading-tight">{topic.title}</h2>
             <p className="text-xs text-slate-500 mt-1">
               Chủ nhiệm: <strong>{topic.principalInvestigatorId}</strong>
               {topic.department && ` · ${topic.department}`} · Năm {topic.year}
@@ -225,10 +225,10 @@ export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
         {/* ── RIGHT: Review form ─────────────────────────────────── */}
         <div className="lg:w-[55%] flex flex-col overflow-y-auto max-h-[90vh]">
           {/* Header */}
-          <div className="px-5 py-4 border-b border-[var(--border)] bg-[var(--card)] shrink-0 flex items-center justify-between">
+          <div className="px-5 py-4 border-b border-border bg-card shrink-0 flex items-center justify-between">
             <div>
               <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Phiếu nhận xét kín</p>
-              <h3 className="text-sm font-bold text-[var(--foreground)]">Thẩm định đề cương — GĐ1</h3>
+              <h3 className="text-sm font-bold text-foreground">Thẩm định đề cương — GĐ1</h3>
             </div>
             <button onClick={onCancel} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 text-xl leading-none">✕</button>
           </div>
@@ -238,7 +238,7 @@ export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
             {/* ── Tiêu chí chấm điểm ── */}
             <section>
               <div className="flex items-center justify-between mb-3">
-                <h4 className="text-sm font-semibold text-[var(--foreground)]">Tiêu chí chấm điểm</h4>
+                <h4 className="text-sm font-semibold text-foreground">Tiêu chí chấm điểm</h4>
                 <span className="text-xs text-slate-400">Mỗi tiêu chí: 1–5 điểm · Tổng tối đa: {maxScore}</span>
               </div>
               <div className="space-y-3">
@@ -246,7 +246,7 @@ export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
                   <div key={c.key} className="p-3 rounded-xl border border-slate-100 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/30">
                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                       <div className="min-w-0">
-                        <p className="text-sm font-medium text-[var(--foreground)]">{c.label}</p>
+                        <p className="text-sm font-medium text-foreground">{c.label}</p>
                         <p className="text-xs text-slate-400 mt-0.5">{c.desc}</p>
                       </div>
                       <div className="shrink-0">
@@ -278,7 +278,7 @@ export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
 
             {/* ── Đánh giá định tính ── */}
             <section>
-              <h4 className="text-sm font-semibold text-[var(--foreground)] mb-3">Đánh giá định tính</h4>
+              <h4 className="text-sm font-semibold text-foreground mb-3">Đánh giá định tính</h4>
               <div className="space-y-3">
                 {QUALITATIVE.map(q => (
                   <div key={q.key}>
@@ -299,7 +299,7 @@ export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
                         else if (q.key === "novelty")    setNovelty(v);
                         else                             setSignificance(v);
                       }}
-                      className="w-full text-sm border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 bg-white dark:bg-slate-800 text-[var(--foreground)] placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500 resize-none"
+                      className="w-full text-sm border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 bg-white dark:bg-slate-800 text-foreground placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500 resize-none"
                     />
                   </div>
                 ))}
@@ -308,7 +308,7 @@ export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
 
             {/* ── Ý kiến & điểm cần chỉnh sửa ── */}
             <section>
-              <h4 className="text-sm font-semibold text-[var(--foreground)] mb-3">Nhận xét & ý kiến bổ sung</h4>
+              <h4 className="text-sm font-semibold text-foreground mb-3">Nhận xét & ý kiến bổ sung</h4>
               <div className="space-y-3">
                 <div>
                   <label className="block text-xs font-medium text-slate-500 mb-1">Các điểm cần chỉnh sửa / bổ sung</label>
@@ -317,7 +317,7 @@ export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
                     placeholder="Liệt kê cụ thể các điểm cần điều chỉnh, bổ sung hoặc làm rõ..."
                     value={revisionPts}
                     onChange={e => setRevisionPts(e.target.value)}
-                    className="w-full text-sm border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 bg-white dark:bg-slate-800 text-[var(--foreground)] placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500 resize-none"
+                    className="w-full text-sm border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 bg-white dark:bg-slate-800 text-foreground placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500 resize-none"
                   />
                 </div>
                 <div>
@@ -327,7 +327,7 @@ export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
                     placeholder="Các nhận xét khác, góp ý về hướng phát triển..."
                     value={addComments}
                     onChange={e => setAddComments(e.target.value)}
-                    className="w-full text-sm border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 bg-white dark:bg-slate-800 text-[var(--foreground)] placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500 resize-none"
+                    className="w-full text-sm border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 bg-white dark:bg-slate-800 text-foreground placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500 resize-none"
                   />
                 </div>
               </div>
@@ -335,7 +335,7 @@ export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
 
             {/* ── Kết luận & xếp loại ── */}
             <section className="border-t border-slate-100 dark:border-slate-700 pt-5">
-              <h4 className="text-sm font-semibold text-[var(--foreground)] mb-3">Kết luận & Quyết định</h4>
+              <h4 className="text-sm font-semibold text-foreground mb-3">Kết luận & Quyết định</h4>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {/* Verdict */}
                 <div>
@@ -369,7 +369,7 @@ export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
                     <select
                       value={grade}
                       onChange={e => setGrade(e.target.value as ReviewGrade)}
-                      className="w-full text-sm border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 bg-white dark:bg-slate-800 text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-violet-500"
+                      className="w-full text-sm border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 bg-white dark:bg-slate-800 text-foreground focus:outline-none focus:ring-2 focus:ring-violet-500"
                     >
                       <option value="">— Chọn xếp loại —</option>
                       {GRADE_OPTS.map(g => (
@@ -385,7 +385,7 @@ export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
                       onChange={e => setNeedResubmit(e.target.checked)}
                       className="mt-0.5 accent-amber-500"
                     />
-                    <span className="text-sm text-[var(--foreground)]">
+                    <span className="text-sm text-foreground">
                       Yêu cầu nộp lại đề cương sau chỉnh sửa
                     </span>
                   </label>
@@ -395,7 +395,7 @@ export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
           </div>
 
           {/* Footer */}
-          <div className="px-5 py-4 border-t border-[var(--border)] bg-[var(--card)] shrink-0 flex items-center justify-between gap-3">
+          <div className="px-5 py-4 border-t border-border bg-card shrink-0 flex items-center justify-between gap-3">
             <p className="text-xs text-slate-400">
               {filledCriteria < CRITERIA.length
                 ? <span className="text-amber-600">⚠ Còn {CRITERIA.length - filledCriteria} tiêu chí chưa chấm điểm</span>

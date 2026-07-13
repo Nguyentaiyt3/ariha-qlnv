@@ -2,7 +2,23 @@ import { NextRequest, NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb/config";
 import { getClinicalTrial, updateClinicalTrial, createEnrollmentMilestoneTask } from "@/lib/mongodb/firestore";
 import { EnrollmentMilestoneType } from "@/lib/jobs/clinicalTrialAlerts";
-import type { ClinicalTrialEnrollment } from "@/types";
+import { verifyToken, getUser } from "@/lib/mongodb/auth";
+import { hasPermission } from "@/lib/rbac/permissions";
+import { ensurePermissionOverridesLoaded } from "@/lib/rbac/ensurePermissions";
+import { isFullAccessRole, sameUnit } from "@/lib/rbac/scope";
+import type { ClinicalTrial, ClinicalTrialEnrollment, User } from "@/types";
+
+/** director/hrAdmin: không giới hạn. teamLead: PI/điều phối/người tạo, hoặc cùng đơn vị. Vai trò khác: chỉ khi là thành viên. */
+function canAccessTrial(me: User | null, userId: string, trial: ClinicalTrial): boolean {
+  const isMember =
+    trial.principalInvestigatorId === userId ||
+    trial.coordinatorId === userId ||
+    trial.createdBy === userId;
+  if (isMember) return true;
+  if (me && isFullAccessRole(me.role)) return true;
+  if (me && me.role === "teamLead") return sameUnit(trial.department, me.department);
+  return false;
+}
 
 /**
  * Detect newly reached milestones by comparing old vs new enrollment
@@ -53,6 +69,10 @@ export async function POST(
   try {
     const id = params.id;
 
+    const token = req.cookies.get("auth-token")?.value;
+    const authUser = token ? verifyToken(token) : null;
+    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
     // Get request body
     const body = await req.json();
     const enrollmentData: Partial<ClinicalTrialEnrollment> = body;
@@ -68,6 +88,12 @@ export async function POST(
     const trial = await getClinicalTrial(id);
     if (!trial) {
       return NextResponse.json({ error: "Trial not found" }, { status: 404 });
+    }
+
+    await ensurePermissionOverridesLoaded();
+    const me = await getUser(authUser.userId);
+    if (!(canAccessTrial(me, authUser.userId, trial) || (me && hasPermission(me.role, "trial:manage")))) {
+      return NextResponse.json({ error: "Không có quyền cập nhật tuyển bệnh nhân của thử nghiệm này" }, { status: 403 });
     }
 
     // Merge enrollment data

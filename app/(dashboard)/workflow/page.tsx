@@ -313,11 +313,64 @@ export default function WorkflowPage() {
       <div className="flex flex-col" style={{ height: "calc(100vh - 64px)" }}>
         {/* Pending banner */}
         {visualIsPending && (
-          <div className="flex items-center gap-2 px-4 py-2 bg-amber-50 dark:bg-amber-900/15 border-b border-amber-200 dark:border-amber-700 shrink-0">
-            <AlertCircle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-            <p className="text-xs text-amber-700 dark:text-amber-400 font-medium">
-              Sơ đồ đang chờ phê duyệt — quản lý sẽ xét duyệt trước khi công khai.
-            </p>
+          <div className="border-b border-amber-200 dark:border-amber-700 shrink-0">
+            <div className="flex items-center gap-2 px-4 py-2 bg-amber-50 dark:bg-amber-900/15">
+              <AlertCircle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+              <p className="text-xs text-amber-700 dark:text-amber-400 font-medium flex-1">
+                Sơ đồ đang chờ phê duyệt — quản lý sẽ xét duyệt trước khi công khai.
+              </p>
+              {canApprove && (
+                <div className="flex gap-2 shrink-0">
+                  <button
+                    onClick={() => setRejectingWf(rejectingWf?.id === selectedId ? null : { id: selectedId!, reason: "" })}
+                    disabled={approvingId === selectedId}
+                    className="flex items-center gap-1 px-2.5 py-1.5 border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-50 rounded-lg text-xs font-medium transition bg-white dark:bg-slate-900"
+                  >
+                    <XCircle className="w-3.5 h-3.5" /> Từ chối
+                  </button>
+                  <button
+                    onClick={async () => { await handleApproveWorkflow(selectedId!, true); goList(); }}
+                    disabled={approvingId === selectedId}
+                    className="flex items-center gap-1 px-2.5 py-1.5 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg text-xs font-medium transition"
+                  >
+                    {approvingId === selectedId
+                      ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      : <CheckCircle2 className="w-3.5 h-3.5" />}
+                    Duyệt
+                  </button>
+                </div>
+              )}
+            </div>
+            {canApprove && rejectingWf?.id === selectedId && (
+              <div className="px-4 pb-3 pt-0 space-y-2 bg-amber-50 dark:bg-amber-900/15">
+                <p className="text-xs font-medium text-red-600 pt-1">Lý do từ chối <span className="text-red-500">*</span></p>
+                <textarea
+                  autoFocus rows={2}
+                  value={rejectingWf.reason}
+                  onChange={(e) => setRejectingWf({ ...rejectingWf, reason: e.target.value })}
+                  placeholder="Nhập lý do từ chối..."
+                  className="w-full px-3 py-2 text-sm border border-red-200 rounded-lg bg-white dark:bg-slate-900 text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-red-400 resize-none"
+                />
+                <div className="flex gap-2 max-w-xs">
+                  <button onClick={() => setRejectingWf(null)}
+                    className="flex-1 py-1.5 border border-[var(--border)] rounded-lg text-xs text-[var(--foreground)] hover:bg-[var(--muted)] transition bg-white dark:bg-slate-900">
+                    Huỷ
+                  </button>
+                  <button
+                    onClick={async () => {
+                      if (!rejectingWf.reason.trim()) { toast.error("Vui lòng nhập lý do từ chối."); return; }
+                      await handleApproveWorkflow(selectedId!, false, rejectingWf.reason.trim());
+                      goList();
+                    }}
+                    disabled={approvingId === selectedId}
+                    className="flex-1 py-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1"
+                  >
+                    {approvingId === selectedId ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                    Xác nhận từ chối
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
         {/* Mini header */}
@@ -650,6 +703,13 @@ export default function WorkflowPage() {
                     </p>
                   </div>
                   <div className="flex gap-2 shrink-0">
+                    <button
+                      onClick={() => openEdit(wf.id, "visual")}
+                      disabled={approvingId === wf.id}
+                      className="flex items-center gap-1 px-2.5 py-1.5 border border-[var(--border)] text-[var(--foreground)] hover:bg-[var(--muted)] disabled:opacity-50 rounded-lg text-xs font-medium transition"
+                    >
+                      <LayoutGrid className="w-3.5 h-3.5" /> Xem trước
+                    </button>
                     <button
                       onClick={() => setRejectingWf(rejectingWf?.id === wf.id ? null : { id: wf.id, reason: "" })}
                       disabled={approvingId === wf.id}

@@ -52,6 +52,8 @@ export function TrialFormModal({ initialData, creatorId, creatorName, onClose, o
   const [nctCode, setNctCode] = useState(initialData?.nctCode ?? "");
   const [piName, setPiName] = useState(initialData?.principalInvestigatorName ?? "");
   const [piId, setPiId] = useState(initialData?.principalInvestigatorId ?? "");
+  const [coordinatorName, setCoordinatorName] = useState(initialData?.coordinatorName ?? "");
+  const [coordinatorId, setCoordinatorId] = useState(initialData?.coordinatorId ?? "");
   const [department, setDepartment] = useState(initialData?.department ?? "");
   const [sponsor, setSponsor] = useState(initialData?.sponsor ?? "");
 
@@ -60,6 +62,15 @@ export function TrialFormModal({ initialData, creatorId, creatorName, onClose, o
   const [employees, setEmployees] = useState<User[]>([]);
   const [editingDept, setEditingDept] = useState(false);
   const [editingPi, setEditingPi] = useState(false);
+  const [editingCoordinator, setEditingCoordinator] = useState(false);
+
+  // PI cần chỉ định "Nghiên cứu viên chính (PI)"; điều phối viên cần chỉ định "Quản lý NCLS" —
+  // 2 điều kiện tách biệt. Nếu chưa ai được gán chỉ định tương ứng (vd. mới bật tính năng), tạm
+  // thời hiện toàn bộ nhân viên để không chặn hoàn toàn việc chọn.
+  const designatedPis = employees.filter((u) => u.researchDesignations?.includes("principalInvestigator"));
+  const piCandidates = designatedPis.length > 0 ? designatedPis : employees;
+  const clinicalTrialManagers = employees.filter((u) => u.researchDesignations?.includes("clinicalTrialManager"));
+  const coordinatorCandidates = clinicalTrialManagers.length > 0 ? clinicalTrialManagers : employees;
 
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [selectedWorkflowId, setSelectedWorkflowId] = useState("");
@@ -67,7 +78,7 @@ export function TrialFormModal({ initialData, creatorId, creatorName, onClose, o
   useEffect(() => {
     fetch("/api/units").then((r) => r.json()).then((d) => setUnits(d.catalog || [])).catch(() => setUnits([]));
     fetch("/api/users").then((r) => r.json()).then((d) => setEmployees(d.users || [])).catch(() => setEmployees([]));
-    if (!isEdit) getWorkflows().then(setWorkflows).catch(() => {});
+    if (!isEdit) getWorkflows().then((all) => setWorkflows(all.filter((w) => w.status === "published"))).catch(() => {});
   }, [isEdit]);
   const [cro, setCro] = useState(initialData?.cro ?? "");
   const [smo, setSmo] = useState(initialData?.smo ?? "");
@@ -96,18 +107,27 @@ export function TrialFormModal({ initialData, creatorId, creatorName, onClose, o
           code, title, abbreviation, nctCode,
           principalInvestigatorName: piName,
           principalInvestigatorId: piId || undefined,
+          coordinatorName: coordinatorName || undefined,
+          coordinatorId: coordinatorId || undefined,
           department, sponsor, cro, smo, cra: craFiltered, crc: crcFiltered,
           startPeriod, endPeriod, status, statusReason, zaloGroupUrl,
         };
-        await updateClinicalTrial(initialData.id, updates);
-        toast.success("Đã cập nhật thử nghiệm lâm sàng");
-        onSaved({ ...initialData, ...updates });
+        const res = await updateClinicalTrial(initialData.id, updates);
+        if (res?.pending) {
+          toast.success("Đã gửi yêu cầu sửa — chờ trưởng nhóm cùng đơn vị duyệt");
+          onSaved(initialData);
+        } else {
+          toast.success("Đã cập nhật thử nghiệm lâm sàng");
+          onSaved({ ...initialData, ...updates });
+        }
       } else {
         const trial: ClinicalTrial = {
           id: generateId("trial"),
           code, title, abbreviation, nctCode,
           principalInvestigatorName: piName,
           principalInvestigatorId: piId || undefined,
+          coordinatorName: coordinatorName || undefined,
+          coordinatorId: coordinatorId || undefined,
           department, sponsor, cro, smo, cra: craFiltered, crc: crcFiltered,
           startPeriod, endPeriod, status, statusReason, zaloGroupUrl,
           documents: [], payments: [],
@@ -122,8 +142,8 @@ export function TrialFormModal({ initialData, creatorId, creatorName, onClose, o
         onSaved(result?.id ? { ...trial, id: result.id } : trial);
       }
       onClose();
-    } catch {
-      toast.error("Lưu thất bại, vui lòng thử lại");
+    } catch (err) {
+      toast.error(err instanceof Error && err.message ? err.message : "Lưu thất bại, vui lòng thử lại");
     } finally {
       setSaving(false);
     }
@@ -170,7 +190,7 @@ export function TrialFormModal({ initialData, creatorId, creatorName, onClose, o
                 />
                 {editingPi && (
                   <div className="absolute top-full left-0 right-0 mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg z-50 max-h-60 overflow-y-auto">
-                    {employees
+                    {piCandidates
                       .filter((u) => u.name.toLowerCase().includes(piName.toLowerCase()))
                       .slice(0, 20)
                       .map((u) => (
@@ -184,8 +204,42 @@ export function TrialFormModal({ initialData, creatorId, creatorName, onClose, o
                           {u.position && <div className="text-xs text-slate-400">{u.position}</div>}
                         </button>
                       ))}
-                    {employees.filter((u) => u.name.toLowerCase().includes(piName.toLowerCase())).length === 0 && (
-                      <div className="px-3 py-2 text-sm text-slate-500 dark:text-slate-400">Không tìm thấy nhân viên</div>
+                    {piCandidates.filter((u) => u.name.toLowerCase().includes(piName.toLowerCase())).length === 0 && (
+                      <div className="px-3 py-2 text-sm text-slate-500 dark:text-slate-400">Không tìm thấy nhân viên có chỉ định "Nghiên cứu viên chính (PI)"</div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </Field>
+
+            <Field label="Điều phối viên">
+              <div className="relative">
+                <input
+                  className={inputCls}
+                  value={coordinatorName}
+                  onChange={(e) => { setCoordinatorName(e.target.value); setCoordinatorId(""); setEditingCoordinator(true); }}
+                  onFocus={() => setEditingCoordinator(true)}
+                  onBlur={() => setTimeout(() => setEditingCoordinator(false), 200)}
+                  placeholder="Điều phối viên Viện ARiHA"
+                />
+                {editingCoordinator && (
+                  <div className="absolute top-full left-0 right-0 mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg z-50 max-h-60 overflow-y-auto">
+                    {coordinatorCandidates
+                      .filter((u) => u.name.toLowerCase().includes(coordinatorName.toLowerCase()))
+                      .slice(0, 20)
+                      .map((u) => (
+                        <button
+                          key={u.id}
+                          type="button"
+                          onClick={() => { setCoordinatorName(u.name); setCoordinatorId(u.id); setEditingCoordinator(false); }}
+                          className="w-full text-left px-3 py-2 text-sm text-slate-700 dark:text-slate-300 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition"
+                        >
+                          <div className="font-medium">{u.name}</div>
+                          {u.position && <div className="text-xs text-slate-400">{u.position}</div>}
+                        </button>
+                      ))}
+                    {coordinatorCandidates.filter((u) => u.name.toLowerCase().includes(coordinatorName.toLowerCase())).length === 0 && (
+                      <div className="px-3 py-2 text-sm text-slate-500 dark:text-slate-400">Không tìm thấy nhân viên có chỉ định "Quản lý NCLS"</div>
                     )}
                   </div>
                 )}

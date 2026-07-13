@@ -23,6 +23,7 @@ import { calcPhaseDeadlines } from "@/lib/deadline-calc";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { hasPermission } from "@/lib/rbac/permissions";
+import { sameUnit } from "@/lib/rbac/scope";
 import { SearchableSelect } from "@/components/common/SearchableSelect";
 import type { Task, TaskPriority, TaskStatus, StakeholderRole, TaskResource, UnitPlan, PlanItem, Workflow } from "@/types";
 
@@ -69,7 +70,10 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
       .then((r) => r.json())
       .then((data) => setAvailablePlans(data.plans ?? []))
       .catch(console.error);
-    getWorkflows().then(setWorkflows).catch(console.error);
+    // Chỉ cho chọn quy trình đã được phê duyệt (status "published") — quy trình đang chờ duyệt
+    // của chính mình vẫn trả về từ getWorkflows() để theo dõi ở trang Quy trình, nhưng chưa
+    // được dùng để tạo nhiệm vụ.
+    getWorkflows().then((all) => setWorkflows(all.filter((w) => w.status === "published"))).catch(console.error);
   }, []);
 
   const selectedWorkflow = workflows.find((w) => w.id === selectedWorkflowId) ?? null;
@@ -150,6 +154,11 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
   const cameraInputRef = useRef<HTMLInputElement>(null);
 
   const activeUsers = users.filter((u) => u.isActive);
+  // Trưởng nhóm chỉ được thêm người liên quan cùng đơn vị mình (director/hrAdmin và các vai
+  // trò khác không bị giới hạn ở đây).
+  const stakeholderCandidates = currentUser?.role === "teamLead"
+    ? activeUsers.filter((u) => sameUnit(u.department, currentUser.department))
+    : activeUsers;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -646,7 +655,7 @@ export function CreateTaskModal({ onClose, defaultStatus = "todo" }: CreateTaskM
                 <SearchableSelect
                   value={stakeholderUserId}
                   onChange={setStakeholderUserId}
-                  options={activeUsers
+                  options={stakeholderCandidates
                     .filter((u) => u.id !== mainPerformerId && !stakeholders.some((s) => s.userId === u.id))
                     .map((u) => ({ id: u.id, label: u.name, sub: u.department ? abbr(u.department) : undefined }))}
                   placeholder="Chọn người..."

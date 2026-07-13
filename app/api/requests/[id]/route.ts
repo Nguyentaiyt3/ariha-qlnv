@@ -4,6 +4,7 @@ import { getRequest, updateRequest, getUser, saveUser } from "@/lib/mongodb/fire
 import { ensureOffboardingTask } from "@/lib/mongodb/employeeTask";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { ensurePermissionOverridesLoaded } from "@/lib/rbac/ensurePermissions";
+import { sameUnit } from "@/lib/rbac/scope";
 import { logAudit } from "@/lib/mongodb/auditLog";
 import { PROFILE_EDITABLE_FIELDS } from "@/types";
 
@@ -18,9 +19,16 @@ function requiredApprovePermission(type: string | undefined): "request:approve" 
 }
 
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
-  if (!await auth(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const u = await auth(req);
+  if (!u) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const request = await getRequest(params.id);
   if (!request) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  const me = await getUser(u.userId);
+  if (me && me.role === "teamLead" && request.submittedBy !== me.id && !sameUnit(request.department, me.department)) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
   return NextResponse.json({ request });
 }
 
@@ -41,6 +49,10 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       const me = await getUser(u.userId);
       if (!me || !hasPermission(me.role, requiredPerm)) {
         return NextResponse.json({ error: "Bạn không có quyền duyệt loại đơn này" }, { status: 403 });
+      }
+      // Trưởng nhóm chỉ được duyệt đơn của nhân viên cùng đơn vị (director/hrAdmin không giới hạn).
+      if (me.role === "teamLead" && requiredPerm === "request:approve" && !sameUnit(prevRequest.department, me.department)) {
+        return NextResponse.json({ error: "Bạn chỉ được duyệt đơn của đơn vị mình" }, { status: 403 });
       }
     } else if (updates.status === "cancelled" && prevRequest.submittedBy !== u.userId) {
       await ensurePermissionOverridesLoaded();

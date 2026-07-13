@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const { keepId, mergeId } = await req.json();
-    if (!keepId || !mergeId) {
+    if (typeof keepId !== "string" || typeof mergeId !== "string" || !keepId || !mergeId) {
       return NextResponse.json({ error: "Thiếu keepId hoặc mergeId" }, { status: 400 });
     }
     const [keepUser, mergeUser] = await Promise.all([getUser(keepId), getUser(mergeId)]);

@@ -2,14 +2,17 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { FlaskConical, Plus, Loader2, Search, LayoutGrid, GanttChartSquare } from "lucide-react";
+import { FlaskConical, Plus, Loader2, Search, LayoutGrid, GanttChartSquare, Table2, ClipboardList, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { getClinicalTrials } from "@/lib/firebase/firestore";
+import type { BulkGenerateTaskResult } from "@/lib/firebase/firestore";
 import { TrialFormModal } from "@/components/clinical-trials/TrialFormModal";
 import { TrialListItem } from "@/components/clinical-trials/TrialListItem";
 import { TrialGanttView } from "@/components/clinical-trials/TrialGanttView";
+import { TrialTable } from "@/components/clinical-trials/TrialTable";
+import { BulkAssignTaskModal } from "@/components/clinical-trials/BulkAssignTaskModal";
 import { ImportTrialsModal } from "@/components/clinical-trials/ImportTrialsModal";
 import { useDashboardFilter } from "@/stores/useDashboardFilter";
 import { CLINICAL_TRIAL_STATUS_LABEL, CLINICAL_TRIAL_TERMINAL_BRANCHES } from "@/types";
@@ -75,9 +78,12 @@ export default function ClinicalTrialsPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<ClinicalTrialStatus | "all" | "running" | "ended">("all");
+  const [taskFilter, setTaskFilter] = useState<"all" | "has" | "none">("all");
   const [showForm, setShowForm] = useState(false);
   const [showImport, setShowImport] = useState(false);
-  const [viewMode, setViewMode] = useState<"kanban" | "gantt">("kanban");
+  const [viewMode, setViewMode] = useState<"kanban" | "gantt" | "table">("kanban");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [showBulkAssign, setShowBulkAssign] = useState(false);
 
   const canCreate = !!currentUser && hasPermission(currentUser.role, "trial:create");
   // Vai trò quản lý (điều phối/theo dõi toàn bộ TNLS) — tab "Quản lý" chỉ hiện với nhóm này;
@@ -89,6 +95,31 @@ export default function ClinicalTrialsPage() {
   useEffect(() => {
     getClinicalTrials().then((data) => { setTrials(data); setLoading(false); });
   }, []);
+
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [tab]);
+
+  function toggleSelect(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    setSelectedIds((prev) => {
+      const allSelected = filtered.length > 0 && filtered.every((t) => prev.has(t.id));
+      return allSelected ? new Set() : new Set(filtered.map((t) => t.id));
+    });
+  }
+
+  function handleBulkAssignSuccess(results: BulkGenerateTaskResult[]) {
+    const byId = new Map(results.filter((r) => r.taskId).map((r) => [r.trialId, r.taskId!]));
+    setTrials((prev) => prev.map((t) => byId.has(t.id) ? { ...t, executionTaskId: byId.get(t.id) } : t));
+    setSelectedIds(new Set());
+  }
 
   // Nền cho cả stats + danh sách: tab "Của tôi" chỉ xét nghiên cứu mình là PI/điều phối viên.
   const tabTrials = useMemo(() => {
@@ -140,6 +171,12 @@ export default function ClinicalTrialsPage() {
       });
     }
 
+    if (taskFilter === "has") {
+      list = list.filter((t) => !!t.executionTaskId);
+    } else if (taskFilter === "none") {
+      list = list.filter((t) => !t.executionTaskId);
+    }
+
     if (search.trim()) {
       const q = search.trim().toLowerCase();
       list = list.filter((t) =>
@@ -152,7 +189,7 @@ export default function ClinicalTrialsPage() {
       );
     }
     return list;
-  }, [tabTrials, statusFilter, mode, year, month, quarter, search]);
+  }, [tabTrials, statusFilter, taskFilter, mode, year, month, quarter, search]);
 
   if (loading) {
     return (
@@ -231,6 +268,27 @@ export default function ClinicalTrialsPage() {
             className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-400"
           />
         </div>
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value as ClinicalTrialStatus | "all" | "running" | "ended")}
+          className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-400 shrink-0"
+        >
+          <option value="all">Tất cả trạng thái</option>
+          <option value="running">— Đang chạy (gộp) —</option>
+          <option value="ended">— Đã kết thúc (gộp) —</option>
+          {Object.entries(CLINICAL_TRIAL_STATUS_LABEL).map(([key, label]) => (
+            <option key={key} value={key}>{label}</option>
+          ))}
+        </select>
+        <select
+          value={taskFilter}
+          onChange={(e) => setTaskFilter(e.target.value as "all" | "has" | "none")}
+          className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-400 shrink-0"
+        >
+          <option value="all">Tất cả nhiệm vụ</option>
+          <option value="has">Đã có nhiệm vụ</option>
+          <option value="none">Chưa có nhiệm vụ</option>
+        </select>
         <div className="flex text-sm rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden shrink-0">
           <button
             onClick={() => setViewMode("kanban")}
@@ -254,8 +312,40 @@ export default function ClinicalTrialsPage() {
           >
             <GanttChartSquare className="w-4 h-4" /> Gantt
           </button>
+          <button
+            onClick={() => setViewMode("table")}
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-2 font-medium transition",
+              viewMode === "table"
+                ? "bg-blue-600 text-white"
+                : "text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800"
+            )}
+          >
+            <Table2 className="w-4 h-4" /> Danh sách
+          </button>
         </div>
       </div>
+
+      {/* Selection toolbar — chỉ hiện ở chế độ Danh sách khi đã chọn ít nhất 1 nghiên cứu */}
+      {viewMode === "table" && canManageTrials && selectedIds.size > 0 && (
+        <div className="flex items-center gap-3 rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/30 px-4 py-2.5">
+          <p className="text-sm text-blue-700 dark:text-blue-300 flex-1">
+            Đã chọn <strong>{selectedIds.size}</strong> nghiên cứu
+          </p>
+          <button
+            onClick={() => setShowBulkAssign(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold transition"
+          >
+            <ClipboardList className="w-3.5 h-3.5" /> Tạo nhiệm vụ & phân công
+          </button>
+          <button
+            onClick={() => setSelectedIds(new Set())}
+            className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-blue-600 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/40 text-xs font-medium transition"
+          >
+            <X className="w-3.5 h-3.5" /> Bỏ chọn
+          </button>
+        </div>
+      )}
 
       {/* Trial List */}
       {filtered.length === 0 ? (
@@ -264,6 +354,15 @@ export default function ClinicalTrialsPage() {
         <TrialGanttView
           trials={filtered}
           onSelectTrial={(trial) => router.push(`/clinical-trials/${trial.id}`)}
+        />
+      ) : viewMode === "table" ? (
+        <TrialTable
+          trials={filtered}
+          selectable={canManageTrials}
+          selectedIds={selectedIds}
+          onToggleSelect={toggleSelect}
+          onToggleSelectAll={toggleSelectAll}
+          onRowClick={(trial) => router.push(`/clinical-trials/${trial.id}`)}
         />
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -327,6 +426,14 @@ export default function ClinicalTrialsPage() {
               return Array.from(codeMap.values());
             });
           }}
+        />
+      )}
+
+      {showBulkAssign && (
+        <BulkAssignTaskModal
+          trials={filtered.filter((t) => selectedIds.has(t.id))}
+          onClose={() => setShowBulkAssign(false)}
+          onSuccess={handleBulkAssignSuccess}
         />
       )}
     </div>
