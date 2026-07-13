@@ -3,45 +3,36 @@
 /**
  * StepNodePanel — slide-over panel bên phải khi click một node trong sơ đồ quy trình.
  *
- * 6 section: Tiến độ | Người hỗ trợ | Tạm ứng | Thu/Chi | Email | Minh chứng
+ * 4 section: Tiến độ (gồm cả minh chứng) | Người hỗ trợ | Tạm ứng (gồm cả tự ứng) | Email
  */
 
 import { useEffect, useRef, useState } from "react";
 import {
-  X, TrendingUp, Users, CreditCard, DollarSign, Mail, Paperclip,
-  Plus, Trash2, Send, Camera, Link2, Loader2, Check, Upload, ChevronDown,
+  X, TrendingUp, Users, CreditCard, Mail, Paperclip,
+  Plus, Trash2, Send, Camera, Link2, Loader2, Check, Upload, ChevronDown, QrCode, ThumbsUp, ThumbsDown,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn, generateId } from "@/lib/utils";
-import { uploadFile } from "@/lib/firebase/storage";
-import {
-  createAdvanceRequest, subscribeAdvanceRequests, createTransaction, EXPENSE_CATEGORIES,
-} from "@/lib/firebase/finance";
+import { VIETNAM_BANKS } from "@/lib/vietnamBanks";
+import { createAdvanceRequest, subscribeAdvanceRequests } from "@/lib/firebase/finance";
+import { createNotification } from "@/lib/firebase/firestore";
+import { AdvanceSettlementModal } from "@/components/tasks/FinancialWidget";
 import { UserAvatar } from "@/components/common/UserAvatar";
 import { SearchableSelect } from "@/components/common/SearchableSelect";
 import type {
-  Task, TaskStep, User, StepSubTask, Proof, FinancialProof,
-  AdvanceRequest, TaskPriority,
+  Task, TaskStep, User, StepSubTask, Proof,
+  AdvanceRequest, SpendingMode, TaskPriority,
 } from "@/types";
 
-export type PanelSection = "progress" | "helpers" | "advance" | "transaction" | "email" | "proof" | "subworkflow";
+export type PanelSection = "progress" | "helpers" | "advance" | "email" | "subworkflow";
 
 const SECTION_TABS: { id: PanelSection; label: string; Icon: React.ComponentType<{ className?: string }> }[] = [
-  { id: "progress",    label: "Tiến độ",    Icon: TrendingUp },
-  { id: "helpers",     label: "Hỗ trợ",     Icon: Users },
-  { id: "advance",     label: "Tạm ứng",    Icon: CreditCard },
-  { id: "transaction", label: "Thu/Chi",    Icon: DollarSign },
-  { id: "email",       label: "Email",      Icon: Mail },
-  { id: "proof",       label: "Minh chứng", Icon: Paperclip },
+  { id: "progress", label: "Tiến độ",  Icon: TrendingUp },
+  { id: "helpers",  label: "Hỗ trợ",   Icon: Users },
+  { id: "advance",  label: "Tạm ứng",  Icon: CreditCard },
+  { id: "email",    label: "Email",    Icon: Mail },
 ];
 
-const VIETNAM_BANKS = [
-  { id: "970436", name: "Vietcombank" }, { id: "970422", name: "MB Bank" },
-  { id: "970407", name: "Techcombank" }, { id: "970416", name: "ACB" },
-  { id: "970418", name: "BIDV" },        { id: "970405", name: "Agribank" },
-  { id: "970415", name: "VietinBank" },  { id: "970432", name: "VPBank" },
-  { id: "970423", name: "TPBank" },      { id: "970443", name: "SHB" },
-];
 
 // ── helpers ────────────────────────────────────────────────────
 const pBarCls = (p: number) => p <= 33 ? "bg-red-500" : p <= 66 ? "bg-amber-500" : "bg-green-500";
@@ -85,12 +76,14 @@ interface Props {
   onEmailSent?: () => void;
   /** Hiển thị inline (không fixed overlay) — dùng trong timeline view. */
   inline?: boolean;
+  /** Quyền phân công người thực hiện bước (quản lý/người thực hiện chính task) — giống List mode. */
+  canAssignSteps?: boolean;
 }
 
 export function StepNodePanel({
   task, stepId, section, onSectionChange, onClose,
   users, currentUser, taskMemberIds, onSave, onEmailSent,
-  inline = false,
+  inline = false, canAssignSteps = false,
 }: Props) {
   const step = task.steps.find((s) => s.id === stepId);
   if (!step) return null;
@@ -132,12 +125,17 @@ export function StepNodePanel({
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-4">
-        {section === "progress"    && <ProgressSection    step={step} task={task} users={users} taskMemberIds={taskMemberIds} onSave={onSave} />}
-        {section === "helpers"     && <HelpersSection     step={step} task={task} users={users} currentUser={currentUser} taskMemberIds={taskMemberIds} onSave={onSave} />}
-        {section === "advance"     && <AdvanceSection     step={step} task={task} currentUser={currentUser} />}
-        {section === "transaction" && <TransactionSection step={step} task={task} currentUser={currentUser} />}
-        {section === "email"       && <EmailSection       step={step} task={task} users={users} currentUser={currentUser} taskMemberIds={taskMemberIds} onEmailSent={onEmailSent} />}
-        {section === "proof"       && <ProofSection       step={step} task={task} currentUser={currentUser} onSave={onSave} />}
+        {section === "progress" && (
+          <div className="space-y-5">
+            <ProgressSection step={step} task={task} users={users} currentUser={currentUser} taskMemberIds={taskMemberIds} canAssignSteps={canAssignSteps} onSave={onSave} />
+            <div className="border-t border-slate-100 dark:border-slate-700 pt-4">
+              <ProofSection step={step} task={task} currentUser={currentUser} onSave={onSave} />
+            </div>
+          </div>
+        )}
+        {section === "helpers" && <HelpersSection step={step} task={task} users={users} currentUser={currentUser} taskMemberIds={taskMemberIds} canAssignSteps={canAssignSteps} onSave={onSave} />}
+        {section === "advance" && <AdvanceSection  step={step} task={task} currentUser={currentUser} />}
+        {section === "email"   && <EmailSection    step={step} task={task} users={users} currentUser={currentUser} taskMemberIds={taskMemberIds} onEmailSent={onEmailSent} />}
       </div>
     </div>
   );
@@ -147,15 +145,21 @@ export function StepNodePanel({
 // Section: Tiến độ
 // ══════════════════════════════════════════════════════════════
 function ProgressSection({
-  step, task, users, taskMemberIds, onSave,
+  step, task, users, currentUser, taskMemberIds, canAssignSteps, onSave,
 }: {
-  step: TaskStep; task: Task; users: User[]; taskMemberIds: Set<string>;
+  step: TaskStep; task: Task; users: User[]; currentUser: User; taskMemberIds: Set<string>;
+  canAssignSteps: boolean;
   onSave: (u: Partial<Task>) => Promise<void>;
 }) {
   const [val, setVal] = useState(step.progress);
   const [saving, setSaving] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
   const [localAssigneeId, setLocalAssigneeId] = useState(step.assigneeId);
+
+  // Giống List mode: chỉ định người thực hiện bước cần task đã duyệt + có quyền phân công; cập
+  // nhật tiến độ cần task đã duyệt + (là người thực hiện bước đó hoặc có quyền phân công).
+  const canAssign = task.approved && canAssignSteps;
+  const canUpdateProgress = task.approved && (step.assigneeId === currentUser.id || canAssignSteps);
 
   // Sync when parent task updates after save resolves
   useEffect(() => { setLocalAssigneeId(step.assigneeId); }, [step.assigneeId]);
@@ -212,14 +216,19 @@ function ProgressSection({
             ? <UserAvatar user={assignee} size="sm" showName />
             : <span className="text-xs text-slate-400 italic">Chưa phân công</span>
           }
-          <button
-            onClick={() => setShowPicker((v) => !v)}
-            className="ml-auto text-xs px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-600 font-medium transition"
-          >
-            {assignee ? "Đổi người" : "+ Phân công"}
-          </button>
+          {canAssign && (
+            <button
+              onClick={() => setShowPicker((v) => !v)}
+              className="ml-auto text-xs px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-600 font-medium transition"
+            >
+              {assignee ? "Đổi người" : "+ Phân công"}
+            </button>
+          )}
         </div>
-        {showPicker && (
+        {!task.approved && (
+          <p className="text-[10px] text-amber-600 dark:text-amber-400">Nhiệm vụ chưa được phê duyệt — chưa thể phân công.</p>
+        )}
+        {showPicker && canAssign && (
           <div className="flex flex-wrap gap-1.5 pt-1">
             {assignableUsers.map((u) => (
               <button
@@ -249,12 +258,13 @@ function ProgressSection({
       <input
         type="range" min={0} max={100} step={5} value={val}
         onChange={(e) => setVal(Number(e.target.value))}
-        className="w-full accent-blue-500"
+        disabled={!canUpdateProgress}
+        className="w-full accent-blue-500 disabled:opacity-50"
       />
       <div className="flex justify-between text-xs text-slate-400">
         {[0, 25, 50, 75, 100].map((n) => (
-          <button key={n} onClick={() => setVal(n)}
-            className={cn("font-medium hover:text-blue-600 transition", val === n && "text-blue-600")}>
+          <button key={n} onClick={() => setVal(n)} disabled={!canUpdateProgress}
+            className={cn("font-medium hover:text-blue-600 transition disabled:opacity-50 disabled:hover:text-slate-400", val === n && "text-blue-600")}>
             {n}%
           </button>
         ))}
@@ -270,9 +280,16 @@ function ProgressSection({
         </div>
       </div>
 
+      {!canUpdateProgress && (
+        <p className="text-[10px] text-amber-600 dark:text-amber-400 text-center">
+          {!task.approved
+            ? "Nhiệm vụ chưa được phê duyệt — chưa thể cập nhật tiến độ."
+            : "Chỉ người thực hiện bước này hoặc người quản lý mới cập nhật được tiến độ."}
+        </p>
+      )}
       <button
         onClick={handleSave}
-        disabled={saving || val === step.progress}
+        disabled={saving || val === step.progress || !canUpdateProgress}
         className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-semibold transition flex items-center justify-center gap-2"
       >
         {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
@@ -286,17 +303,31 @@ function ProgressSection({
 // Section: Người hỗ trợ
 // ══════════════════════════════════════════════════════════════
 function HelpersSection({
-  step, task, users, currentUser, taskMemberIds, onSave,
+  step, task, users, currentUser, taskMemberIds, canAssignSteps, onSave,
 }: {
   step: TaskStep; task: Task; users: User[]; currentUser: User;
-  taskMemberIds: Set<string>; onSave: (u: Partial<Task>) => Promise<void>;
+  taskMemberIds: Set<string>; canAssignSteps: boolean; onSave: (u: Partial<Task>) => Promise<void>;
 }) {
+  const canAdd = task.approved && canAssignSteps;
   const [showForm, setShowForm] = useState(false);
   const [helperUserId, setHelperUserId] = useState("");
   const [priority, setPriority] = useState<TaskPriority>("medium");
   const [deadline, setDeadline] = useState("");
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
+
+  const [decliningSubId, setDecliningSubId] = useState<string | null>(null);
+  const [declineReason, setDeclineReason] = useState("");
+  const [editingSubId, setEditingSubId] = useState<string | null>(null);
+  const [progressVal, setProgressVal] = useState(0);
+  const [savingProgress, setSavingProgress] = useState(false);
+
+  const [proofSubId, setProofSubId] = useState<string | null>(null);
+  const [proofUrl, setProofUrl] = useState("");
+  const [proofLabel, setProofLabel] = useState("");
+  const [proofSaving, setProofSaving] = useState(false);
+  const proofFileRef = useRef<HTMLInputElement>(null);
+  const proofCamRef  = useRef<HTMLInputElement>(null);
 
   const existingSubIds = new Set((step.subTasks ?? []).map((st) => st.userId));
   const candidates = users.filter(
@@ -312,6 +343,7 @@ function HelpersSection({
       priority,
       amountType: "none", amount: 0, progress: 0, proofs: [],
       status: "pending", createdAt: new Date().toISOString(),
+      assignedBy: currentUser.id, assignedByName: currentUser.name, confirmStatus: "pending",
       ...(deadline && { deadline }),
       ...(note.trim() && { note: note.trim() }),
     };
@@ -324,6 +356,13 @@ function HelpersSection({
     try {
       await onSave({ steps: updatedSteps, stakeholders });
       toast.success("Đã thêm người hỗ trợ");
+      createNotification({
+        userId: helperUserId, type: "task_assigned",
+        title: "Bạn được phân công hỗ trợ một bước",
+        body: `${currentUser.name} đã phân công bạn hỗ trợ bước "${step.name}" trong nhiệm vụ "${task.name}". Vui lòng xác nhận.`,
+        link: `/tasks/${task.id}`, read: false, priority: "normal", taskId: task.id, actionRequired: true,
+        createdAt: new Date().toISOString(),
+      }).catch(() => {});
       setHelperUserId(""); setDeadline(""); setNote("");
       setShowForm(false);
     } catch { toast.error("Lưu thất bại"); }
@@ -337,17 +376,97 @@ function HelpersSection({
     toast.success("Đã xoá người hỗ trợ");
   }
 
+  async function handleConfirm(sub: StepSubTask, accept: boolean) {
+    if (!accept && !declineReason.trim()) { toast.error("Nhập lý do từ chối"); return; }
+    const subTasks = (step.subTasks ?? []).map((st) => st.id !== sub.id ? st : {
+      ...st,
+      confirmStatus: accept ? "accepted" as const : "declined" as const,
+      confirmedAt: new Date().toISOString(),
+      ...(accept ? {} : { declineReason: declineReason.trim() }),
+    });
+    const updatedSteps = task.steps.map((s) => s.id === step.id ? { ...s, subTasks } : s);
+    try {
+      await onSave({ steps: updatedSteps });
+      toast.success(accept ? "Đã đồng ý hỗ trợ" : "Đã từ chối hỗ trợ");
+      setDecliningSubId(null); setDeclineReason("");
+      if (!accept && sub.assignedBy) {
+        createNotification({
+          userId: sub.assignedBy, type: "task_assigned",
+          title: "Người hỗ trợ đã từ chối",
+          body: `${currentUser.name} đã từ chối hỗ trợ bước "${step.name}" — Lý do: ${declineReason.trim()}`,
+          link: `/tasks/${task.id}`, read: false, priority: "normal", taskId: task.id, actionRequired: true,
+          createdAt: new Date().toISOString(),
+        }).catch(() => {});
+      }
+    } catch { toast.error("Lưu thất bại"); }
+  }
+
+  async function handleSaveProgress(subId: string) {
+    setSavingProgress(true);
+    const subTasks = (step.subTasks ?? []).map((st) => st.id !== subId ? st : {
+      ...st, progress: progressVal,
+      status: progressVal >= 100 ? "completed" as const : progressVal > 0 ? "in_progress" as const : "pending" as const,
+      ...(progressVal >= 100 && !st.completedAt ? { completedAt: new Date().toISOString() } : {}),
+    });
+    const updatedSteps = task.steps.map((s) => s.id === step.id ? { ...s, subTasks } : s);
+    try {
+      await onSave({ steps: updatedSteps });
+      toast.success("Đã cập nhật tiến độ");
+      setEditingSubId(null);
+    } catch { toast.error("Lưu thất bại"); }
+    finally { setSavingProgress(false); }
+  }
+
+  async function addHelperProof(subId: string, proof: Proof) {
+    const subTasks = (step.subTasks ?? []).map((st) => st.id !== subId ? st : { ...st, proofs: [...(st.proofs ?? []), proof] });
+    const updatedSteps = task.steps.map((s) => s.id === step.id ? { ...s, subTasks } : s);
+    await onSave({ steps: updatedSteps });
+    toast.success("Đã thêm minh chứng");
+  }
+
+  async function handleHelperProofLink(subId: string) {
+    if (!proofUrl.trim()) { toast.error("Nhập URL"); return; }
+    setProofSaving(true);
+    try {
+      await addHelperProof(subId, {
+        id: generateId("proof"), fileName: proofLabel.trim() || proofUrl, fileType: "link",
+        fileUrl: proofUrl.trim(), uploadedAt: new Date().toISOString(), uploadedBy: currentUser.id,
+      });
+      setProofUrl(""); setProofLabel("");
+    } catch { toast.error("Lưu thất bại"); }
+    finally { setProofSaving(false); }
+  }
+
+  async function handleHelperProofImage(subId: string, file: File) {
+    setProofSaving(true);
+    try {
+      const dataUrl = await resizeImage(file);
+      await addHelperProof(subId, {
+        id: generateId("proof"), fileName: file.name, fileType: "image",
+        fileUrl: dataUrl, uploadedAt: new Date().toISOString(), uploadedBy: currentUser.id,
+      });
+    } catch { toast.error("Lỗi xử lý ảnh"); }
+    finally { setProofSaving(false); }
+  }
+
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">Người hỗ trợ</span>
-        <button
-          onClick={() => setShowForm((v) => !v)}
-          className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 font-medium"
-        >
-          <Plus className="w-3.5 h-3.5" />Thêm
-        </button>
+        {canAdd && (
+          <button
+            onClick={() => setShowForm((v) => !v)}
+            className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 font-medium"
+          >
+            <Plus className="w-3.5 h-3.5" />Thêm
+          </button>
+        )}
       </div>
+      {!canAdd && (
+        <p className="text-[10px] text-amber-600 dark:text-amber-400">
+          {!task.approved ? "Nhiệm vụ chưa được phê duyệt — chưa thể thêm người hỗ trợ." : "Bạn không có quyền thêm người hỗ trợ cho bước này."}
+        </p>
+      )}
 
       {/* Existing helpers */}
       {(step.subTasks ?? []).length === 0 && (
@@ -356,20 +475,166 @@ function HelpersSection({
       {(step.subTasks ?? []).map((st) => {
         const u = users.find((u) => u.id === st.userId);
         if (!u) return null;
+        // Không có confirmStatus = dữ liệu cũ trước khi có bước xác nhận → coi như đã đồng ý.
+        const confirmStatus = st.confirmStatus ?? "accepted";
+        const isMe = st.userId === currentUser.id;
+        const canUpdateThisProgress = confirmStatus === "accepted" && (isMe || canAssignSteps);
+        const isEditingProgress = editingSubId === st.id;
+        const isDeclining = decliningSubId === st.id;
+
         return (
-          <div key={st.id} className="flex items-center gap-2 p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
-            <UserAvatar user={u} size="sm" />
-            <div className="flex-1 min-w-0">
-              <p className="text-xs font-medium text-slate-700 dark:text-slate-200">{u.name}</p>
-              {st.deadline && <p className="text-[10px] text-slate-400">Hạn: {new Date(st.deadline).toLocaleDateString("vi-VN")}</p>}
-              {st.note && <p className="text-[10px] text-slate-500 truncate">{st.note}</p>}
-            </div>
+          <div key={st.id} className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 space-y-2">
             <div className="flex items-center gap-2">
-              <span className={cn("text-[10px] font-semibold", pTxtCls(st.progress))}>{st.progress}%</span>
-              <button onClick={() => handleRemove(st.id)} className="p-1 rounded hover:bg-red-50 hover:text-red-500 transition">
-                <Trash2 className="w-3.5 h-3.5 text-slate-400 hover:text-red-500" />
-              </button>
+              <UserAvatar user={u} size="sm" />
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-medium text-slate-700 dark:text-slate-200">{u.name}</p>
+                {st.deadline && <p className="text-[10px] text-slate-400">Hạn: {new Date(st.deadline).toLocaleDateString("vi-VN")}</p>}
+                {st.note && <p className="text-[10px] text-slate-500 truncate">{st.note}</p>}
+              </div>
+              <div className="flex items-center gap-2">
+                {confirmStatus === "accepted" && (
+                  <span className={cn("text-[10px] font-semibold", pTxtCls(st.progress))}>{st.progress}%</span>
+                )}
+                {confirmStatus === "pending" && (
+                  <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+                    Chờ xác nhận
+                  </span>
+                )}
+                {confirmStatus === "declined" && (
+                  <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400">
+                    Đã từ chối
+                  </span>
+                )}
+                {canAssignSteps && (
+                  <button onClick={() => handleRemove(st.id)} className="p-1 rounded hover:bg-red-50 hover:text-red-500 transition">
+                    <Trash2 className="w-3.5 h-3.5 text-slate-400 hover:text-red-500" />
+                  </button>
+                )}
+              </div>
             </div>
+
+            {/* Xác nhận phân công — chỉ hiện cho chính người được phân công */}
+            {confirmStatus === "pending" && isMe && (
+              <div className="pt-1 border-t border-slate-200 dark:border-slate-700 space-y-1.5">
+                {!isDeclining ? (
+                  <div className="flex gap-2">
+                    <button onClick={() => handleConfirm(st, true)}
+                      className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-xs font-semibold transition">
+                      <ThumbsUp className="w-3.5 h-3.5" /> Đồng ý
+                    </button>
+                    <button onClick={() => { setDecliningSubId(st.id); setDeclineReason(""); }}
+                      className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 text-xs font-semibold transition">
+                      <ThumbsDown className="w-3.5 h-3.5" /> Không đồng ý
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    <textarea value={declineReason} onChange={(e) => setDeclineReason(e.target.value)} rows={2}
+                      placeholder="Lý do từ chối... *"
+                      className="w-full text-xs rounded-lg border border-red-200 dark:border-red-800 bg-white dark:bg-slate-900 px-2.5 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-red-400" />
+                    <div className="flex gap-2">
+                      <button onClick={() => setDecliningSubId(null)}
+                        className="flex-1 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-500 text-xs">Huỷ</button>
+                      <button onClick={() => handleConfirm(st, false)}
+                        className="flex-1 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-semibold transition">
+                        Gửi từ chối
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {confirmStatus === "declined" && st.declineReason && (
+              <p className="text-[10px] text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-lg px-2 py-1">
+                Lý do: {st.declineReason}
+              </p>
+            )}
+
+            {/* Cập nhật tiến độ — sau khi đã đồng ý */}
+            {canUpdateThisProgress && (
+              <div className="pt-1 border-t border-slate-200 dark:border-slate-700">
+                {!isEditingProgress ? (
+                  <button onClick={() => { setEditingSubId(st.id); setProgressVal(st.progress); }}
+                    className="text-[11px] text-blue-600 hover:text-blue-700 font-medium">
+                    Cập nhật tiến độ
+                  </button>
+                ) : (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-2">
+                      <input type="range" min={0} max={100} step={5} value={progressVal}
+                        onChange={(e) => setProgressVal(Number(e.target.value))}
+                        className="flex-1 accent-blue-500" />
+                      <span className={cn("text-xs font-semibold w-9 text-right", pTxtCls(progressVal))}>{progressVal}%</span>
+                    </div>
+                    <div className="flex gap-2">
+                      <button onClick={() => setEditingSubId(null)}
+                        className="flex-1 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-500 text-xs">Huỷ</button>
+                      <button onClick={() => handleSaveProgress(st.id)} disabled={savingProgress}
+                        className="flex-1 flex items-center justify-center gap-1 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-semibold transition">
+                        {savingProgress ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                        Lưu
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Minh chứng — sau khi đã đồng ý */}
+            {canUpdateThisProgress && (
+              <div className="pt-1 border-t border-slate-200 dark:border-slate-700 space-y-1.5">
+                <button onClick={() => setProofSubId(proofSubId === st.id ? null : st.id)}
+                  className="text-[11px] text-blue-600 hover:text-blue-700 font-medium">
+                  Minh chứng{(st.proofs ?? []).length > 0 ? ` (${(st.proofs ?? []).length})` : ""}
+                </button>
+                {(st.proofs ?? []).length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {(st.proofs ?? []).map((p) => (
+                      <a key={p.id} href={p.fileUrl.startsWith("data:") ? undefined : p.fileUrl}
+                        target="_blank" rel="noopener noreferrer"
+                        className="flex items-center gap-1 px-2 py-1 bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 rounded-lg text-[10px] text-slate-600 dark:text-slate-300 transition">
+                        {p.fileType === "image" && p.fileUrl.startsWith("data:") ? (
+                          <img src={p.fileUrl} alt="" className="w-5 h-5 object-cover rounded" />
+                        ) : p.fileType === "image" ? (
+                          <Paperclip className="w-3 h-3 shrink-0" />
+                        ) : (
+                          <Link2 className="w-3 h-3 shrink-0" />
+                        )}
+                        <span className="truncate max-w-[80px]">{p.fileName}</span>
+                      </a>
+                    ))}
+                  </div>
+                )}
+                {proofSubId === st.id && (
+                  <div className="space-y-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 p-2">
+                    <input value={proofLabel} onChange={(e) => setProofLabel(e.target.value)}
+                      placeholder="Tên / mô tả"
+                      className="w-full text-[11px] rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-400" />
+                    <div className="flex gap-1.5">
+                      <input value={proofUrl} onChange={(e) => setProofUrl(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && handleHelperProofLink(st.id)}
+                        placeholder="URL liên kết"
+                        className="flex-1 text-[11px] rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-400" />
+                      <button onClick={() => handleHelperProofLink(st.id)} disabled={proofSaving}
+                        className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 transition">
+                        {proofSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Link2 className="w-3.5 h-3.5 text-slate-600" />}
+                      </button>
+                      <button onClick={() => proofFileRef.current?.click()} className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 transition">
+                        <Upload className="w-3.5 h-3.5 text-slate-600" />
+                      </button>
+                      <button onClick={() => proofCamRef.current?.click()} className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 transition">
+                        <Camera className="w-3.5 h-3.5 text-slate-600" />
+                      </button>
+                    </div>
+                    <input ref={proofFileRef} type="file" accept="image/*" className="hidden"
+                      onChange={(e) => { const f = e.target.files?.[0]; if (f) handleHelperProofImage(st.id, f); if (proofFileRef.current) proofFileRef.current.value = ""; }} />
+                    <input ref={proofCamRef} type="file" accept="image/*" capture="environment" className="hidden"
+                      onChange={(e) => { const f = e.target.files?.[0]; if (f) handleHelperProofImage(st.id, f); if (proofCamRef.current) proofCamRef.current.value = ""; }} />
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         );
       })}
@@ -414,222 +679,216 @@ function HelpersSection({
 }
 
 // ══════════════════════════════════════════════════════════════
-// Section: Tạm ứng
+// Section: Đề nghị chi tiêu (Tạm ứng / Tự ứng) — một luồng chung:
+// Đề nghị (số tiền, lý do, hình thức) → duyệt → chi tạm ứng/ghi nhận tự ứng → nộp thanh toán/hoàn ứng → duyệt quyết toán.
 // ══════════════════════════════════════════════════════════════
+function buildSpendingPurpose(mode: SpendingMode, stepName: string, actorName: string, accNumber: string, bankName: string): string {
+  const today = new Date().toLocaleDateString("vi-VN");
+  const label = mode === "ADVANCE" ? "Tạm ứng" : "Tự ứng";
+  if (mode !== "ADVANCE") return `${label}: ${stepName} - ${today} - ${actorName}`;
+  const accPart  = accNumber ? ` - ${accNumber}` : "";
+  const bankPart = bankName  ? ` - ${bankName}`  : "";
+  return `${label}: ${stepName} - ${today} - ${actorName}${accPart}${bankPart}`;
+}
+
 function AdvanceSection({ step, task, currentUser }: { step: TaskStep; task: Task; currentUser: User }) {
   const [advances, setAdvances] = useState<AdvanceRequest[]>([]);
   useEffect(() => subscribeAdvanceRequests(task.id, setAdvances), [task.id]);
 
+  const [settlingAdvId, setSettlingAdvId] = useState<string | null>(null);
+
+  const stepAdvances = advances.filter((a) => a.stepId === step.id);
+  const settlingAdv  = stepAdvances.find((a) => a.id === settlingAdvId);
+
+  const STATUS_CLS: Record<string, string> = {
+    PENDING: "bg-amber-100 text-amber-700", APPROVED: "bg-green-100 text-green-700",
+    REJECTED: "bg-red-100 text-red-600",   PENDING_SETTLEMENT: "bg-blue-100 text-blue-700",
+    SETTLED: "bg-slate-100 text-slate-500",
+  };
+  const STATUS_LBL: Record<string, string> = {
+    PENDING: "Chờ duyệt", APPROVED: "Đã duyệt", REJECTED: "Từ chối",
+    PENDING_SETTLEMENT: "Chờ duyệt quyết toán", SETTLED: "Đã quyết toán",
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Existing requests */}
+      {stepAdvances.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-semibold text-slate-600 dark:text-slate-400">Đề nghị chi tiêu của bước này</p>
+          {stepAdvances.map((adv) => {
+            const mode = adv.mode ?? "ADVANCE";
+            const settleLabel = mode === "ADVANCE" ? "Thanh toán" : "Hoàn ứng";
+            return (
+              <div key={adv.id} className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className={cn("px-1.5 py-0.5 rounded-full text-[9px] font-bold shrink-0",
+                        mode === "ADVANCE" ? "bg-blue-100 text-blue-700" : "bg-purple-100 text-purple-700")}>
+                        {mode === "ADVANCE" ? "Tạm ứng" : "Tự ứng"}
+                      </span>
+                      <p className="font-semibold text-slate-700 dark:text-slate-200">{adv.amount.toLocaleString("vi-VN")}₫</p>
+                    </div>
+                    <p className="text-slate-400 truncate max-w-[180px]">{adv.purpose}</p>
+                  </div>
+                  <span className={cn("px-2 py-0.5 rounded-full text-[10px] font-semibold shrink-0", STATUS_CLS[adv.status])}>
+                    {STATUS_LBL[adv.status]}
+                  </span>
+                </div>
+                {adv.status === "APPROVED" && adv.requestedBy === currentUser.id && (
+                  <button onClick={() => setSettlingAdvId(adv.id)}
+                    className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-blue-300 dark:border-blue-700 text-blue-700 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition text-[11px] font-semibold">
+                    <Check className="w-3 h-3" /> {settleLabel}
+                  </button>
+                )}
+                {adv.status === "REJECTED" && adv.rejectedReason && (
+                  <p className="text-[10px] text-red-600 bg-red-50 dark:bg-red-900/20 rounded-lg px-2 py-1">Từ chối: {adv.rejectedReason}</p>
+                )}
+                {adv.status === "PENDING_SETTLEMENT" && (
+                  <p className="text-[10px] text-blue-600 bg-blue-50 dark:bg-blue-900/20 rounded-lg px-2 py-1">
+                    Đã nộp {settleLabel.toLowerCase()} {adv.settlementAmountUsed?.toLocaleString("vi-VN")}đ — chờ duyệt
+                  </p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {settlingAdv && (
+        <AdvanceSettlementModal
+          advance={settlingAdv}
+          currentUser={currentUser}
+          onSuccess={() => setSettlingAdvId(null)}
+          onClose={() => setSettlingAdvId(null)}
+        />
+      )}
+
+      <SpendingRequestForm step={step} task={task} currentUser={currentUser} />
+    </div>
+  );
+}
+
+// Đề nghị chi tiêu mới — chọn hình thức TRƯỚC, cần duyệt trước khi chi (cả tạm ứng lẫn tự ứng).
+function SpendingRequestForm({ step, task, currentUser }: { step: TaskStep; task: Task; currentUser: User }) {
+  const [mode, setMode] = useState<SpendingMode>("ADVANCE");
   const [amount, setAmount]     = useState("");
-  const [purpose, setPurpose]   = useState(`Tạm ứng: ${step.name}`);
+  const [purpose, setPurpose]   = useState(buildSpendingPurpose("ADVANCE", step.name, currentUser.name, "", ""));
+  const [purposeTouched, setPurposeTouched] = useState(false);
   const [bankId, setBankId]     = useState((currentUser as any).bankAccount?.bankId ?? "");
   const [bankName, setBankName] = useState((currentUser as any).bankAccount?.bankName ?? "");
   const [accNum, setAccNum]     = useState((currentUser as any).bankAccount?.accountNumber ?? "");
   const [accName, setAccName]   = useState((currentUser as any).bankAccount?.accountName ?? currentUser.name);
   const [saving, setSaving]     = useState(false);
 
-  const stepAdvances = advances.filter((a) => a.stepId === step.id);
+  // Đổi hình thức hoặc ngân hàng/số TK → tự cập nhật lại lý do gợi ý, trừ khi người dùng đã tự sửa tay.
+  useEffect(() => {
+    if (purposeTouched) return;
+    setPurpose(buildSpendingPurpose(mode, step.name, currentUser.name, mode === "ADVANCE" ? accNum : "", mode === "ADVANCE" ? bankName : ""));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, accNum, bankName]);
 
-  const ADV_CLS: Record<string, string> = {
-    PENDING: "bg-amber-100 text-amber-700", APPROVED: "bg-green-100 text-green-700",
-    REJECTED: "bg-red-100 text-red-600",   PENDING_SETTLEMENT: "bg-blue-100 text-blue-700",
-    SETTLED: "bg-slate-100 text-slate-500",
-  };
-  const ADV_LBL: Record<string, string> = {
-    PENDING: "Chờ duyệt", APPROVED: "Đã duyệt", REJECTED: "Từ chối",
-    PENDING_SETTLEMENT: "Chờ TT", SETTLED: "Quyết toán",
-  };
+  const qrAmount = parseFloat(amount) || 0;
+  const qrReady  = mode === "ADVANCE" && qrAmount > 0 && !!bankId && !!accNum.trim();
+  const qrUrl    = qrReady
+    ? `https://img.vietqr.io/image/${bankId}-${accNum.trim()}-compact2.png` +
+      `?amount=${qrAmount}&addInfo=${encodeURIComponent(purpose)}&accountName=${encodeURIComponent(accName)}`
+    : "";
 
   async function handleSubmit() {
     const num = parseFloat(amount);
-    if (!num || num <= 0)        { toast.error("Nhập số tiền hợp lệ");      return; }
-    if (!purpose.trim())         { toast.error("Nhập mục đích tạm ứng");    return; }
-    if (!accNum.trim())          { toast.error("Nhập số tài khoản nhận");   return; }
-    if (!accName.trim())         { toast.error("Nhập tên chủ tài khoản");   return; }
+    if (!num || num <= 0) { toast.error("Nhập số tiền hợp lệ");  return; }
+    if (!purpose.trim())  { toast.error("Nhập lý do chi tiêu"); return; }
+    if (mode === "ADVANCE") {
+      if (!accNum.trim())  { toast.error("Nhập số tài khoản nhận"); return; }
+      if (!accName.trim()) { toast.error("Nhập tên chủ tài khoản"); return; }
+    }
     setSaving(true);
     try {
       await createAdvanceRequest({
         taskId: task.id, stepId: step.id, stepName: step.name,
         requestedBy: currentUser.id, requestedByName: currentUser.name,
-        amount: num, purpose: purpose.trim(),
-        ...(bankId ? { bankAccount: { bankId, bankName, accountNumber: accNum.trim(), accountName: accName.trim() } } : {}),
+        mode, amount: num, purpose: purpose.trim(),
+        ...(mode === "ADVANCE" && bankId
+          ? { bankAccount: { bankId, bankName, accountNumber: accNum.trim(), accountName: accName.trim() } }
+          : {}),
       });
-      toast.success("Đã gửi đơn tạm ứng. Chờ phê duyệt.");
+      toast.success(mode === "ADVANCE" ? "Đã gửi đề nghị tạm ứng — chờ duyệt" : "Đã gửi đề nghị tự ứng — chờ duyệt");
       setAmount("");
     } catch (err) { toast.error((err as Error).message ?? "Gửi thất bại"); }
     finally { setSaving(false); }
   }
 
   return (
-    <div className="space-y-4">
-      {/* Existing advances */}
-      {stepAdvances.length > 0 && (
-        <div className="space-y-2">
-          <p className="text-xs font-semibold text-slate-600 dark:text-slate-400">Đơn tạm ứng của bước này</p>
-          {stepAdvances.map((adv) => (
-            <div key={adv.id} className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs">
-              <div>
-                <p className="font-semibold text-slate-700 dark:text-slate-200">{adv.amount.toLocaleString("vi-VN")}₫</p>
-                <p className="text-slate-400 truncate max-w-[160px]">{adv.purpose}</p>
-              </div>
-              <span className={cn("px-2 py-0.5 rounded-full text-[10px] font-semibold", ADV_CLS[adv.status])}>
-                {ADV_LBL[adv.status]}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
+    <div className="border-t border-slate-100 dark:border-slate-700 pt-3 space-y-2">
+      <p className="text-xs font-semibold text-slate-600 dark:text-slate-400">Đề nghị chi tiêu mới</p>
 
-      <div className="border-t border-slate-100 dark:border-slate-700 pt-3 space-y-2">
-        <p className="text-xs font-semibold text-slate-600 dark:text-slate-400">Yêu cầu tạm ứng mới</p>
-        <input type="number" min={0} value={amount} onChange={(e) => setAmount(e.target.value)}
-          placeholder="Số tiền (VNĐ)"
-          className="w-full text-sm rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400" />
-        <textarea value={purpose} onChange={(e) => setPurpose(e.target.value)} rows={2}
-          placeholder="Mục đích..."
-          className="w-full text-sm rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-blue-400" />
-        <select value={bankId} onChange={(e) => {
-          setBankId(e.target.value);
-          setBankName(VIETNAM_BANKS.find((b) => b.id === e.target.value)?.name ?? "");
-        }} className="w-full text-sm rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400">
-          <option value="">— Chọn ngân hàng —</option>
-          {VIETNAM_BANKS.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-        </select>
-        <input value={accNum} onChange={(e) => setAccNum(e.target.value)}
-          placeholder="Số tài khoản nhận *"
-          className="w-full text-sm rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400" />
-        <input value={accName} onChange={(e) => setAccName(e.target.value)}
-          placeholder="Tên chủ tài khoản *"
-          className="w-full text-sm rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400" />
-        <button onClick={handleSubmit} disabled={saving}
-          className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-semibold flex items-center justify-center gap-2 transition">
-          {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-          Gửi đơn tạm ứng
+      {/* Hình thức */}
+      <div className="grid grid-cols-2 gap-1.5">
+        <button onClick={() => setMode("ADVANCE")}
+          className={cn("py-1.5 rounded-lg text-xs font-semibold border transition",
+            mode === "ADVANCE" ? "bg-blue-600 text-white border-blue-600" : "border-slate-200 text-slate-600 hover:border-blue-300")}>
+          Xin tạm ứng trước
         </button>
-      </div>
-    </div>
-  );
-}
-
-// ══════════════════════════════════════════════════════════════
-// Section: Thu/Chi
-// ══════════════════════════════════════════════════════════════
-function TransactionSection({ step, task, currentUser }: { step: TaskStep; task: Task; currentUser: User }) {
-  const [fundSource, setFundSource] = useState<"ADVANCE" | "OUT_OF_POCKET" | "REVENUE">("OUT_OF_POCKET");
-  const [amount, setAmount]         = useState("");
-  const [category, setCategory]     = useState<string>(EXPENSE_CATEGORIES[0]);
-  const [desc, setDesc]             = useState("");
-  const [proofs, setProofs]         = useState<FinancialProof[]>([]);
-  const [proofUrl, setProofUrl]     = useState("");
-  const [uploading, setUploading]   = useState(false);
-  const [saving, setSaving]         = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
-  const camRef  = useRef<HTMLInputElement>(null);
-
-  async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? []);
-    if (!files.length) return;
-    setUploading(true);
-    try {
-      for (const file of files) {
-        const url = await uploadFile(file, "proofs");
-        setProofs((prev) => [...prev, {
-          id: generateId("proof"), name: file.name, url, type: file.type, size: file.size,
-          uploadedBy: currentUser.id, uploadedAt: new Date().toISOString(),
-        }]);
-      }
-      toast.success(`Đã tải ${files.length} chứng từ`);
-    } catch { toast.error("Tải chứng từ thất bại"); }
-    finally { setUploading(false); if (fileRef.current) fileRef.current.value = ""; }
-  }
-
-  function addProofLink() {
-    const url = proofUrl.trim();
-    if (!url) return;
-    setProofs((prev) => [...prev, { id: generateId("proof"), name: url, url, type: "link", uploadedBy: currentUser.id, uploadedAt: new Date().toISOString() }]);
-    setProofUrl("");
-  }
-
-  async function handleSubmit() {
-    const num = parseFloat(amount);
-    if (!num || num <= 0)                              { toast.error("Nhập số tiền hợp lệ"); return; }
-    if (!desc.trim())                                  { toast.error("Nhập mô tả"); return; }
-    if (fundSource !== "REVENUE" && proofs.length === 0) { toast.error("Cần ít nhất 1 chứng từ"); return; }
-    setSaving(true);
-    try {
-      await createTransaction({
-        taskId: task.id, stepId: step.id,
-        createdBy: currentUser.id, createdByName: currentUser.name,
-        amount: num,
-        direction: fundSource === "REVENUE" ? "CREDIT" : "DEBIT",
-        fundSource, category, description: desc.trim(), proofs,
-      });
-      toast.success("Đã thêm giao dịch");
-      setAmount(""); setDesc(""); setProofs([]);
-    } catch (err) { toast.error((err as Error).message ?? "Thất bại"); }
-    finally { setSaving(false); }
-  }
-
-  return (
-    <div className="space-y-3">
-      {/* Fund source */}
-      <div className="grid grid-cols-3 gap-1.5">
-        {([
-          { v: "OUT_OF_POCKET", label: "Tự ứng" },
-          { v: "ADVANCE",       label: "Tạm ứng" },
-          { v: "REVENUE",       label: "Thu về" },
-        ] as const).map(({ v, label }) => (
-          <button key={v} onClick={() => setFundSource(v)}
-            className={cn("py-1.5 rounded-lg text-xs font-semibold border transition",
-              fundSource === v ? "bg-blue-600 text-white border-blue-600" : "border-slate-200 text-slate-600 hover:border-blue-300")}>
-            {label}
-          </button>
-        ))}
+        <button onClick={() => setMode("SELF_PAID")}
+          className={cn("py-1.5 rounded-lg text-xs font-semibold border transition",
+            mode === "SELF_PAID" ? "bg-blue-600 text-white border-blue-600" : "border-slate-200 text-slate-600 hover:border-blue-300")}>
+          Tự ứng (tự chi trước)
+        </button>
       </div>
 
       <input type="number" min={0} value={amount} onChange={(e) => setAmount(e.target.value)}
-        placeholder="Số tiền (VNĐ)"
+        placeholder="Số tiền đề nghị (VNĐ)"
         className="w-full text-sm rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400" />
-
-      <select value={category} onChange={(e) => setCategory(e.target.value)}
-        className="w-full text-sm rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400">
-        {EXPENSE_CATEGORIES.map((c) => <option key={c}>{c}</option>)}
-      </select>
-
-      <textarea value={desc} onChange={(e) => setDesc(e.target.value)} rows={2}
-        placeholder="Mô tả giao dịch..."
+      <textarea value={purpose} onChange={(e) => { setPurpose(e.target.value); setPurposeTouched(true); }} rows={2}
+        placeholder="Lý do chi tiêu..."
         className="w-full text-sm rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-blue-400" />
 
-      {/* Proofs */}
-      <div className="space-y-2">
-        <div className="flex items-center gap-2">
-          <input value={proofUrl} onChange={(e) => setProofUrl(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && addProofLink()}
-            placeholder="URL chứng từ" className="flex-1 text-xs rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-2.5 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400" />
-          <button onClick={addProofLink} className="p-2 rounded-lg bg-slate-100 hover:bg-slate-200 transition"><Link2 className="w-3.5 h-3.5 text-slate-600" /></button>
-          <button onClick={() => fileRef.current?.click()} disabled={uploading}
-            className="p-2 rounded-lg bg-slate-100 hover:bg-slate-200 transition">
-            {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5 text-slate-600" />}
-          </button>
-          <button onClick={() => camRef.current?.click()} className="p-2 rounded-lg bg-slate-100 hover:bg-slate-200 transition"><Camera className="w-3.5 h-3.5 text-slate-600" /></button>
-        </div>
-        <input ref={fileRef} type="file" multiple accept="image/*,application/pdf" className="hidden" onChange={handleFileUpload} />
-        <input ref={camRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleFileUpload} />
-        {proofs.map((p) => (
-          <div key={p.id} className="flex items-center gap-2 text-xs text-slate-600 bg-slate-50 dark:bg-slate-800 rounded-lg px-2.5 py-1.5">
-            <Paperclip className="w-3 h-3 shrink-0" />
-            <span className="flex-1 truncate">{p.name}</span>
-            <button onClick={() => setProofs((prev) => prev.filter((x) => x.id !== p.id))}>
-              <X className="w-3 h-3 text-slate-400 hover:text-red-500" />
-            </button>
-          </div>
-        ))}
-      </div>
+      {mode === "ADVANCE" && (
+        <>
+          <select value={bankId} onChange={(e) => {
+            setBankId(e.target.value);
+            setBankName(VIETNAM_BANKS.find((b) => b.id === e.target.value)?.name ?? "");
+          }} className="w-full text-sm rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400">
+            <option value="">— Chọn ngân hàng —</option>
+            {VIETNAM_BANKS.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+          <input value={accNum} onChange={(e) => setAccNum(e.target.value)}
+            placeholder="Số tài khoản nhận *"
+            className="w-full text-sm rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400" />
+          <input value={accName} onChange={(e) => setAccName(e.target.value)}
+            placeholder="Tên chủ tài khoản *"
+            className="w-full text-sm rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400" />
+
+          {/* QR Code — hiện tự động khi đủ thông tin */}
+          {qrReady && (
+            <div className="flex flex-col items-center gap-2 p-3 bg-slate-50 dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700">
+              <div className="flex items-center gap-1.5 text-[11px] font-medium text-slate-500 dark:text-slate-400 self-start">
+                <QrCode className="w-3.5 h-3.5" />
+                QR chuyển khoản
+              </div>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={qrUrl}
+                alt="QR chuyển khoản"
+                className="w-44 h-44 object-contain"
+                onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+              />
+              <p className="text-[10px] text-slate-400 text-center leading-relaxed">
+                {bankName} · {accNum}<br />
+                {accName}<br />
+                <span className="font-semibold text-blue-600">{qrAmount.toLocaleString("vi-VN")} đ</span>
+              </p>
+            </div>
+          )}
+        </>
+      )}
 
       <button onClick={handleSubmit} disabled={saving}
-        className="w-full py-2.5 rounded-xl bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-sm font-semibold flex items-center justify-center gap-2 transition">
-        {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <DollarSign className="w-4 h-4" />}
-        Lưu giao dịch
+        className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-semibold flex items-center justify-center gap-2 transition">
+        {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+        Gửi đề nghị
       </button>
     </div>
   );
@@ -648,12 +907,23 @@ function EmailSection({
   if (step.assigneeId) defaultIds.add(step.assigneeId);
   (step.subTasks ?? []).forEach((st) => defaultIds.add(st.userId));
 
-  const [toIds, setToIds]       = useState<Set<string>>(defaultIds);
-  const [subject, setSubject]   = useState(`[${task.name}] ${step.name}`);
-  const [body, setBody]         = useState("");
-  const [sending, setSending]   = useState(false);
+  const [toIds, setToIds]           = useState<Set<string>>(defaultIds);
+  const [manualEmails, setManualEmails] = useState<string[]>([]);
+  const [manualInput, setManualInput]   = useState("");
+  const [addUserId, setAddUserId]       = useState("");
+  const [subject, setSubject]       = useState(`[${task.name}] ${step.name}`);
+  const [body, setBody]             = useState("");
+  const [sending, setSending]       = useState(false);
 
-  const recipients = users.filter((u) => taskMemberIds.has(u.id) && u.id !== currentUser.id);
+  // Gợi ý nhanh: người liên quan trực tiếp tới bước (thành viên nhiệm vụ)
+  const quickPick = users.filter((u) => taskMemberIds.has(u.id) && u.id !== currentUser.id);
+
+  // Toàn bộ danh sách nhân viên để tìm & thêm người khác ngoài nhiệm vụ
+  const directoryOptions = users
+    .filter((u) => u.id !== currentUser.id && !toIds.has(u.id))
+    .map((u) => ({ id: u.id, label: u.name, sub: u.email || u.department || u.role }));
+
+  const selectedUsers = users.filter((u) => toIds.has(u.id));
 
   function toggleRecipient(id: string) {
     setToIds((prev) => {
@@ -663,15 +933,34 @@ function EmailSection({
     });
   }
 
+  function addFromDirectory(id: string) {
+    if (!id) return;
+    setToIds((prev) => new Set(prev).add(id));
+    setAddUserId("");
+  }
+
+  function addManualEmail() {
+    const email = manualInput.trim();
+    if (!email) return;
+    if (!/^\S+@\S+\.\S+$/.test(email)) { toast.error("Email không hợp lệ"); return; }
+    if (manualEmails.includes(email)) { setManualInput(""); return; }
+    setManualEmails((prev) => [...prev, email]);
+    setManualInput("");
+  }
+
+  function removeManualEmail(email: string) {
+    setManualEmails((prev) => prev.filter((e) => e !== email));
+  }
+
   async function handleSend() {
-    if (toIds.size === 0)      { toast.error("Chưa chọn người nhận"); return; }
+    const recsFromUsers = selectedUsers
+      .filter((u): u is User => !!u.email)
+      .map((u) => ({ id: u.id, name: u.name, email: u.email }));
+    const recsManual = manualEmails.map((email) => ({ id: email, name: email, email }));
+    const recs = [...recsFromUsers, ...recsManual];
+    if (recs.length === 0)     { toast.error("Chưa chọn người nhận"); return; }
     if (!subject.trim())       { toast.error("Nhập tiêu đề"); return; }
     if (!body.trim())          { toast.error("Nhập nội dung"); return; }
-    const recs = Array.from(toIds)
-      .map((id) => users.find((u) => u.id === id))
-      .filter((u): u is User => !!u && !!u.email)
-      .map((u) => ({ id: u.id, name: u.name, email: u.email }));
-    if (!recs.length) { toast.error("Người được chọn chưa có email"); return; }
     setSending(true);
     try {
       const res = await fetch("/api/email/custom", {
@@ -689,17 +978,61 @@ function EmailSection({
   return (
     <div className="space-y-3">
       {/* Recipients */}
-      <div>
-        <p className="text-xs font-semibold text-slate-600 dark:text-slate-400 mb-1.5">Người nhận</p>
-        <div className="space-y-1 max-h-32 overflow-y-auto">
-          {recipients.map((u) => (
-            <label key={u.id} className="flex items-center gap-2 p-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer">
-              <input type="checkbox" checked={toIds.has(u.id)} onChange={() => toggleRecipient(u.id)}
-                className="rounded accent-blue-500" />
-              <UserAvatar user={u} size="xs" showName namePosition="right" />
-            </label>
-          ))}
+      <div className="space-y-2">
+        <p className="text-xs font-semibold text-slate-600 dark:text-slate-400">Người nhận</p>
+
+        {/* Quick-pick: người liên quan trực tiếp tới bước */}
+        {quickPick.length > 0 && (
+          <div className="space-y-1 max-h-28 overflow-y-auto">
+            {quickPick.map((u) => (
+              <label key={u.id} className="flex items-center gap-2 p-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer">
+                <input type="checkbox" checked={toIds.has(u.id)} onChange={() => toggleRecipient(u.id)}
+                  className="rounded accent-blue-500" />
+                <UserAvatar user={u} size="xs" showName namePosition="right" />
+              </label>
+            ))}
+          </div>
+        )}
+
+        {/* Thêm nhân viên khác từ toàn bộ danh sách */}
+        <SearchableSelect
+          value={addUserId}
+          onChange={addFromDirectory}
+          options={directoryOptions}
+          placeholder="+ Thêm nhân viên khác..."
+          emptyText="Không tìm thấy nhân viên"
+          listHeight="max-h-40"
+        />
+
+        {/* Nhập email thủ công */}
+        <div className="flex items-center gap-2">
+          <input value={manualInput} onChange={(e) => setManualInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addManualEmail(); } }}
+            placeholder="Nhập email khác..."
+            className="flex-1 text-xs rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-2.5 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400" />
+          <button onClick={addManualEmail} className="p-2 rounded-lg bg-slate-100 hover:bg-slate-200 transition">
+            <Plus className="w-3.5 h-3.5 text-slate-600" />
+          </button>
         </div>
+
+        {/* Người đã chọn (chip) */}
+        {(selectedUsers.length > 0 || manualEmails.length > 0) && (
+          <div className="flex flex-wrap gap-1.5">
+            {selectedUsers.map((u) => (
+              <span key={u.id} className="flex items-center gap-1 pl-1 pr-1.5 py-1 rounded-full bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 text-[11px]">
+                <UserAvatar user={u} size="xs" />
+                {u.name}
+                <button onClick={() => toggleRecipient(u.id)}><X className="w-3 h-3 hover:text-red-500" /></button>
+              </span>
+            ))}
+            {manualEmails.map((email) => (
+              <span key={email} className="flex items-center gap-1 pl-2 pr-1.5 py-1 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 text-[11px]">
+                {email}
+                <button onClick={() => removeManualEmail(email)}><X className="w-3 h-3 hover:text-red-500" /></button>
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       <input value={subject} onChange={(e) => setSubject(e.target.value)}

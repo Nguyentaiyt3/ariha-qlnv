@@ -61,7 +61,14 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     if (currentReviews.some(r => r.reviewerId === reviewerId)) {
       return NextResponse.json({ error: "Phản biện này đã được chỉ định cho đề tài" }, { status: 409 });
     }
-    // COI check: cảnh báo nhưng không chặn (warning returned in response)
+    // Xung đột lợi ích: phản biện không được là tác giả/đồng tác giả đề tài — chặn hẳn, không
+    // chỉ cảnh báo (trước đây chỉ trả về isCOI để client tự cảnh báo, không chặn server).
+    if (isTopicAuthor({ id: reviewerId }, topic)) {
+      return NextResponse.json(
+        { error: "Không thể chỉ định tác giả/đồng tác giả đề tài làm phản biện của chính đề tài đó" },
+        { status: 409 },
+      );
+    }
   }
 
   const token = genToken();
@@ -88,12 +95,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     { $push: { reviews: review }, $set: { updatedAt: now } },
   );
 
-  // COI warning — phản biện là tác giả/đồng tác giả
-  const isCOI = reviewerId
-    ? isTopicAuthor({ id: reviewerId }, topic)
-    : false;
-
-  return NextResponse.json({ review, token, isCOI });
+  return NextResponse.json({ review, token });
 }
 
 /** DELETE — hủy một chỉ định phản biện theo ?reviewId= */

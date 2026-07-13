@@ -11,10 +11,9 @@ import Link from "next/link";
 import { DollarSign, CreditCard, Wallet, TrendingDown, Clock, ArrowRight, AlertTriangle } from "lucide-react";
 import {
   subscribeAllAdvanceRequests,
-  subscribeAllReimbursementRequests,
   subscribeRecentTransactions,
 } from "@/lib/firebase/finance";
-import type { AdvanceRequest, ReimbursementRequest, FinancialTransaction } from "@/types";
+import type { AdvanceRequest, FinancialTransaction } from "@/types";
 import { cn } from "@/lib/utils";
 import { startOfMonth, endOfMonth, isWithinInterval, parseISO } from "date-fns";
 const vnd = (n: number) =>
@@ -48,30 +47,32 @@ function StatRow({
 
 export default function FinancialOverviewWidget() {
   const [advances,       setAdvances]       = useState<AdvanceRequest[]>([]);
-  const [reimbursements, setReimbursements] = useState<ReimbursementRequest[]>([]);
   const [transactions,   setTransactions]   = useState<FinancialTransaction[]>([]);
 
   useEffect(() => {
     const u1 = subscribeAllAdvanceRequests(setAdvances);
-    const u2 = subscribeAllReimbursementRequests(setReimbursements);
     const u3 = subscribeRecentTransactions(setTransactions, 200);
-    return () => { u1(); u2(); u3(); };
+    return () => { u1(); u3(); };
   }, []);
 
   // KPI aggregates
   const pendingAdvCount  = advances.filter((a) => a.status === "PENDING").length;
   const pendingAdvAmount = advances.filter((a) => a.status === "PENDING").reduce((s, a) => s + a.amount, 0);
-  const pendingReimbAmt  = reimbursements.filter((r) => ["SUBMITTED", "APPROVED"].includes(r.status)).reduce((s, r) => s + r.amount, 0);
+  const pendingReimbAmt  = advances
+    .filter((a) => a.mode === "SELF_PAID" && a.status === "PENDING_SETTLEMENT")
+    .reduce((s, a) => s + (a.settlementAmountUsed ?? 0), 0);
 
   const now = new Date();
   const monthRange = { start: startOfMonth(now), end: endOfMonth(now) };
+  // Chỉ tính giao dịch isDisbursement (tiền công ty thực sự rời đi) — không cộng các giao dịch
+  // "chi từ tạm ứng" (chỉ là phân loại lại khoản đã tính khi giải ngân, không phải chi mới).
   const expenseThisMonth = transactions
-    .filter((t) => t.direction === "DEBIT")
+    .filter((t) => t.direction === "DEBIT" && t.isDisbursement)
     .filter((t) => { try { return isWithinInterval(parseISO(t.createdAt), monthRange); } catch { return false; } })
     .reduce((s, t) => s + t.amount, 0);
 
   const totalLiveAdvanced = advances
-    .filter((a) => a.status === "APPROVED")
+    .filter((a) => (a.mode ?? "ADVANCE") === "ADVANCE" && a.status === "APPROVED")
     .reduce((s, a) => s + a.remainingAmount, 0);
 
   return (
@@ -135,8 +136,9 @@ export default function FinancialOverviewWidget() {
 
       {/* Mini bar: tỷ lệ advance đã dùng */}
       {(() => {
-        const totalApproved = advances.filter((a) => a.status === "APPROVED").reduce((s, a) => s + a.amount, 0);
-        const totalUsed     = advances.filter((a) => a.status === "APPROVED").reduce((s, a) => s + a.usedAmount, 0);
+        const liveAdvances  = advances.filter((a) => (a.mode ?? "ADVANCE") === "ADVANCE" && a.status === "APPROVED");
+        const totalApproved = liveAdvances.reduce((s, a) => s + a.amount, 0);
+        const totalUsed     = liveAdvances.reduce((s, a) => s + a.usedAmount, 0);
         if (totalApproved === 0) return null;
         const pct = Math.min(Math.round((totalUsed / totalApproved) * 100), 100);
         return (

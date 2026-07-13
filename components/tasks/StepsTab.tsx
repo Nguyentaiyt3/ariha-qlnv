@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import {
   Plus, ChevronDown, ChevronRight, Camera, Link2, X,
   Loader2, TrendingUp, TrendingDown, Image as ImageIcon, Paperclip, AlertTriangle,
-  Mail, Send, CreditCard, Check, QrCode, DollarSign, List, GitBranch,
+  Mail, Send, CreditCard, Check, QrCode, List, GitBranch, ThumbsUp, ThumbsDown,
 } from "lucide-react";
 import { cn, generateId, formatDate, priorityLabel } from "@/lib/utils";
 import {
@@ -14,15 +14,17 @@ import {
 import { canAssignTo } from "@/lib/rbac/permissions";
 import { useUnitAbbr } from "@/hooks/useUnitAbbr";
 import { uploadFile } from "@/lib/firebase/storage";
+import { createNotification } from "@/lib/firebase/firestore";
 import { UserAvatar } from "@/components/common/UserAvatar";
-import type { Task, TaskStep, StepSubTask, User, TaskPriority, Proof, AdvanceRequest, FinancialProof, ChangeRequest, Workflow, WorkflowNode, WorkflowEdge } from "@/types";
+import type { Task, TaskStep, StepSubTask, User, TaskPriority, Proof, AdvanceRequest, SpendingMode, ChangeRequest, Workflow, WorkflowNode, WorkflowEdge } from "@/types";
 import {
   createAdvanceRequest, subscribeAdvanceRequests,
-  createTransaction, EXPENSE_CATEGORIES,
 } from "@/lib/firebase/finance";
 import { StepFlowDiagram, type PanelSection } from "@/components/tasks/StepFlowDiagram";
 import { StepTimelineView } from "@/components/tasks/StepTimelineView";
 import { StepNodePanel } from "@/components/tasks/StepNodePanel";
+import { AdvanceSettlementModal } from "@/components/tasks/FinancialWidget";
+import { VIETNAM_BANKS } from "@/lib/vietnamBanks";
 import WorkflowBuilder from "@/components/tasks/WorkflowBuilder";
 import { ResearchStepPanel } from "@/components/tasks/ResearchStepPanel";
 import { toast } from "sonner";
@@ -36,31 +38,6 @@ interface Props {
   onSave: (updates: Partial<Task>) => Promise<void>;
   onEmailSent?: () => void;
 }
-
-const VIETNAM_BANKS = [
-  { id: "970436", name: "Vietcombank (VCB)" },
-  { id: "970422", name: "MB Bank" },
-  { id: "970407", name: "Techcombank (TCB)" },
-  { id: "970416", name: "ACB" },
-  { id: "970418", name: "BIDV" },
-  { id: "970405", name: "Agribank" },
-  { id: "970415", name: "VietinBank (CTG)" },
-  { id: "970432", name: "VPBank" },
-  { id: "970423", name: "TPBank" },
-  { id: "970443", name: "SHB" },
-  { id: "970448", name: "OCB" },
-  { id: "970412", name: "PVcomBank" },
-  { id: "970454", name: "Tiên Phong Bank" },
-  { id: "970449", name: "LPBank" },
-  { id: "970462", name: "SeABank" },
-  { id: "970441", name: "VIB" },
-  { id: "970457", name: "Sacombank" },
-  { id: "970403", name: "Eximbank" },
-  { id: "970426", name: "MSB" },
-  { id: "970431", name: "Shinhan Bank" },
-  { id: "970453", name: "ABBANK" },
-  { id: "970433", name: "Kienlongbank" },
-];
 
 const PRIORITY_COLOR: Record<string, string> = {
   low: "bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400",
@@ -93,12 +70,14 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
   const [proofUrl, setProofUrl] = useState("");
   const [proofLabel, setProofLabel] = useState("");
   const [proofSaving, setProofSaving] = useState(false);
-  // Advance requests realtime
+  // Advance requests realtime (đề nghị chi tiêu — chung cho cả tạm ứng và tự ứng)
   const [taskAdvances, setTaskAdvances] = useState<AdvanceRequest[]>([]);
   useEffect(() => subscribeAdvanceRequests(task.id, setTaskAdvances), [task.id]);
+  const [settlingAdvId, setSettlingAdvId] = useState<string | null>(null);
 
-  // Advance request panel
+  // Đề nghị chi tiêu (panel dùng chung cho tạm ứng + tự ứng)
   const [advanceStepId,     setAdvanceStepId]     = useState<string | null>(null);
+  const [advanceMode,       setAdvanceMode]       = useState<SpendingMode>("ADVANCE");
   const [advanceAmount,     setAdvanceAmount]      = useState("");
   const [advancePurpose,    setAdvancePurpose]     = useState("");
   const [advanceBankId,     setAdvanceBankId]      = useState("");
@@ -106,20 +85,6 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
   const [advanceAccNumber,  setAdvanceAccNumber]   = useState("");
   const [advanceAccName,    setAdvanceAccName]     = useState("");
   const [advanceSaving,     setAdvanceSaving]      = useState(false);
-
-  // Thêm thu/chi (transaction) panel
-  const [txStepId,     setTxStepId]     = useState<string | null>(null);
-  const [txFundSource, setTxFundSource] = useState<"ADVANCE" | "OUT_OF_POCKET" | "REVENUE">("OUT_OF_POCKET");
-  const [txAmount,     setTxAmount]     = useState("");
-  const [txCategory,   setTxCategory]   = useState<string>(EXPENSE_CATEGORIES[0]);
-  const [txDesc,       setTxDesc]       = useState("");
-  const [txProofs,     setTxProofs]     = useState<FinancialProof[]>([]);
-  const [txProofUrl,   setTxProofUrl]   = useState("");
-  const [txUploading,  setTxUploading]  = useState(false);
-  const [txSaving,     setTxSaving]     = useState(false);
-  const [txAdvanceId,  setTxAdvanceId]  = useState("");
-  const txFileRef   = useRef<HTMLInputElement>(null);
-  const txCameraRef = useRef<HTMLInputElement>(null);
 
   // Email compose panel
   const [emailStepId, setEmailStepId] = useState<string | null>(null);
@@ -149,6 +114,22 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
   const [localSteps, setLocalSteps] = useState<TaskStep[]>(task.steps ?? []);
   useEffect(() => { setLocalSteps(task.steps ?? []); }, [task.steps]);
   const steps = localSteps;
+
+  // onSaveTask ở trang cha lưu kiểu "fire-and-forget" (không tự cập nhật lại `task`), giả định
+  // StepsTab đã tự optimistic-update local state — nhưng StepNodePanel (dùng ở chế độ Sơ đồ/DAG)
+  // chỉ tự cập nhật state NỘI BỘ của nó (để hiện ngay trong panel), không hề gọi setLocalSteps ở
+  // đây, nên card/node phía sau panel (và panel khi mở lại) vẫn hiện dữ liệu cũ cho tới khi F5
+  // tải lại toàn trang. Bọc lại onSave truyền cho StepNodePanel để luôn đồng bộ localSteps ngay.
+  async function handlePanelSave(updates: Partial<Task>): Promise<void> {
+    const prevSteps = localSteps;
+    if (updates.steps) setLocalSteps(updates.steps);
+    try {
+      await onSave(updates);
+    } catch (err) {
+      if (updates.steps) setLocalSteps(prevSteps);
+      throw err;
+    }
+  }
 
   // Chỉ hiển thị người đã thuộc task (stakeholder + mainPerformer), cùng cấp trở xuống.
   const taskMemberIds = new Set([
@@ -325,6 +306,7 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
       proofs: [],
       status: "pending",
       createdAt: new Date().toISOString(),
+      assignedBy: currentUser.id, assignedByName: currentUser.name, confirmStatus: "pending",
       ...(subForm.deadline && { deadline: subForm.deadline }),
       ...(subForm.note.trim() && { note: subForm.note.trim() }),
     };
@@ -342,6 +324,13 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
       toast.error("Lưu thất bại — đang hoàn tác");
       setLocalSteps(task.steps ?? []);
     });
+    createNotification({
+      userId: subForm.userId, type: "task_assigned",
+      title: "Bạn được phân công hỗ trợ một bước",
+      body: `${currentUser.name} đã phân công bạn hỗ trợ bước "${step.name}" trong nhiệm vụ "${task.name}". Vui lòng xác nhận.`,
+      link: `/tasks/${task.id}`, read: false, priority: "normal", taskId: task.id, actionRequired: true,
+      createdAt: new Date().toISOString(),
+    }).catch(() => {});
   }
 
   async function handleRemoveSubTask(stepId: string, subId: string) {
@@ -350,6 +339,36 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
     const updatedSteps = patchStep(stepId, { subTasks });
     setLocalSteps(updatedSteps);
     onSave({ steps: updatedSteps }).catch(() => setLocalSteps(task.steps ?? []));
+  }
+
+  const [decliningSubKey, setDecliningSubKey] = useState<string | null>(null);
+  const [declineReason,   setDeclineReason]   = useState("");
+
+  async function handleConfirmHelper(stepId: string, sub: StepSubTask, accept: boolean) {
+    if (!accept && !declineReason.trim()) { toast.error("Nhập lý do từ chối"); return; }
+    const step = steps.find((s) => s.id === stepId)!;
+    const updatedSteps = patchSubTask(stepId, sub.id, {
+      confirmStatus: accept ? "accepted" : "declined",
+      confirmedAt: new Date().toISOString(),
+      ...(accept ? {} : { declineReason: declineReason.trim() }),
+    });
+    setLocalSteps(updatedSteps);
+    toast.success(accept ? "Đã đồng ý hỗ trợ" : "Đã từ chối hỗ trợ");
+    setDecliningSubKey(null);
+    onSave({ steps: updatedSteps }).catch(() => {
+      toast.error("Lưu thất bại — đang hoàn tác");
+      setLocalSteps(task.steps ?? []);
+    });
+    if (!accept && sub.assignedBy) {
+      createNotification({
+        userId: sub.assignedBy, type: "task_assigned",
+        title: "Người hỗ trợ đã từ chối",
+        body: `${currentUser.name} đã từ chối hỗ trợ bước "${step.name}" — Lý do: ${declineReason.trim()}`,
+        link: `/tasks/${task.id}`, read: false, priority: "normal", taskId: task.id, actionRequired: true,
+        createdAt: new Date().toISOString(),
+      }).catch(() => {});
+    }
+    setDeclineReason("");
   }
 
   function startEdit(stepId: string, subId?: string, current = 0) {
@@ -408,15 +427,18 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
     setProofUrl(""); setProofLabel(""); setProofSaving(false);
   }
 
-  function buildPurpose(stepName: string, accNumber: string, bankName: string) {
+  function buildPurpose(mode: SpendingMode, stepName: string, accNumber: string, bankName: string) {
     const today = new Date().toLocaleDateString("vi-VN");
+    const label = mode === "ADVANCE" ? "Tạm ứng" : "Tự ứng";
+    if (mode !== "ADVANCE") return `${label}: ${stepName} - ${today} - ${currentUser.name}`;
     const accPart  = accNumber ? ` - ${accNumber}` : "";
     const bankPart = bankName  ? ` - ${bankName}`  : "";
-    return `Tạm ứng: ${stepName} - ${today} - ${currentUser.name}${accPart}${bankPart}`;
+    return `${label}: ${stepName} - ${today} - ${currentUser.name}${accPart}${bankPart}`;
   }
 
   function openAdvancePanel(step: TaskStep) {
     setAdvanceStepId(step.id);
+    setAdvanceMode("ADVANCE");
     setAdvanceAmount("");
     const ba = (currentUser as { bankAccount?: { bankId: string; bankName: string; accountNumber: string; accountName: string } }).bankAccount;
     const accNum  = ba?.accountNumber ?? "";
@@ -425,7 +447,7 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
     setAdvanceBankName(bankNm);
     setAdvanceAccNumber(accNum);
     setAdvanceAccName(ba?.accountName ?? currentUser.name);
-    setAdvancePurpose(buildPurpose(step.name, accNum, bankNm));
+    setAdvancePurpose(buildPurpose("ADVANCE", step.name, accNum, bankNm));
     setEditKey(null);
     setProofKey(null);
     setEmailStepId(null);
@@ -434,9 +456,11 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
   async function handleAdvanceRequest(step: TaskStep) {
     const num = parseFloat(advanceAmount);
     if (!num || num <= 0)       { toast.error("Nhập số tiền hợp lệ.");     return; }
-    if (!advancePurpose.trim()) { toast.error("Nhập mục đích tạm ứng.");   return; }
-    if (!advanceAccNumber.trim()) { toast.error("Nhập số tài khoản nhận."); return; }
-    if (!advanceAccName.trim())   { toast.error("Nhập tên chủ tài khoản."); return; }
+    if (!advancePurpose.trim()) { toast.error("Nhập lý do chi tiêu.");     return; }
+    if (advanceMode === "ADVANCE") {
+      if (!advanceAccNumber.trim()) { toast.error("Nhập số tài khoản nhận."); return; }
+      if (!advanceAccName.trim())   { toast.error("Nhập tên chủ tài khoản."); return; }
+    }
     setAdvanceSaving(true);
     try {
       await createAdvanceRequest({
@@ -445,96 +469,24 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
         stepName:        step.name,
         requestedBy:     currentUser.id,
         requestedByName: currentUser.name,
+        mode:            advanceMode,
         amount:          num,
         purpose:         advancePurpose.trim(),
-        bankAccount: advanceBankId ? {
-          bankId:        advanceBankId,
-          bankName:      advanceBankName,
-          accountNumber: advanceAccNumber.trim(),
-          accountName:   advanceAccName.trim(),
-        } : undefined,
+        ...(advanceMode === "ADVANCE" && advanceBankId ? {
+          bankAccount: {
+            bankId:        advanceBankId,
+            bankName:      advanceBankName,
+            accountNumber: advanceAccNumber.trim(),
+            accountName:   advanceAccName.trim(),
+          },
+        } : {}),
       });
-      toast.success("Đã gửi đơn tạm ứng. Chờ phê duyệt.");
+      toast.success(advanceMode === "ADVANCE" ? "Đã gửi đề nghị tạm ứng — chờ duyệt." : "Đã gửi đề nghị tự ứng — chờ duyệt.");
       setAdvanceStepId(null);
     } catch (err) {
       toast.error((err as Error).message ?? "Gửi đơn thất bại.");
     } finally {
       setAdvanceSaving(false);
-    }
-  }
-
-  function openTxPanel(step: TaskStep) {
-    setTxStepId(step.id);
-    setTxFundSource("OUT_OF_POCKET");
-    setTxAmount("");
-    setTxCategory(EXPENSE_CATEGORIES[0]);
-    setTxDesc("");
-    setTxProofs([]);
-    setTxProofUrl("");
-    setTxAdvanceId("");
-    setAdvanceStepId(null);
-    setEmailStepId(null);
-  }
-
-  async function handleTxFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? []);
-    if (!files.length) return;
-    setTxUploading(true);
-    try {
-      for (const file of files) {
-        const url = await uploadFile(file, "proofs");
-        setTxProofs((prev) => [
-          ...prev,
-          { id: generateId("proof"), name: file.name, url, type: file.type, size: file.size,
-            uploadedBy: currentUser.id, uploadedAt: new Date().toISOString() },
-        ]);
-      }
-      toast.success(`Đã tải ${files.length} chứng từ.`);
-    } catch { toast.error("Tải chứng từ thất bại."); }
-    finally {
-      setTxUploading(false);
-      if (txFileRef.current) txFileRef.current.value = "";
-      if (txCameraRef.current) txCameraRef.current.value = "";
-    }
-  }
-
-  function addTxProofLink() {
-    const url = txProofUrl.trim();
-    if (!url) return;
-    setTxProofs((prev) => [
-      ...prev,
-      { id: generateId("proof"), name: url, url, type: "link",
-        uploadedBy: currentUser.id, uploadedAt: new Date().toISOString() },
-    ]);
-    setTxProofUrl("");
-  }
-
-  async function handleTxSubmit(step: TaskStep) {
-    const num = parseFloat(txAmount);
-    if (!num || num <= 0) { toast.error("Nhập số tiền hợp lệ."); return; }
-    if (!txDesc.trim()) { toast.error("Nhập mô tả."); return; }
-    if (txFundSource !== "REVENUE" && txProofs.length === 0) { toast.error("Cần ít nhất 1 chứng từ."); return; }
-    setTxSaving(true);
-    try {
-      await createTransaction({
-        taskId: task.id,
-        stepId: step.id,
-        createdBy: currentUser.id,
-        createdByName: currentUser.name,
-        amount: num,
-        direction: txFundSource === "REVENUE" ? "CREDIT" : "DEBIT",
-        fundSource: txFundSource,
-        category: txCategory,
-        description: txDesc.trim(),
-        proofs: txProofs,
-        ...(txFundSource === "ADVANCE" && txAdvanceId ? { advanceRequestId: txAdvanceId } : {}),
-      });
-      toast.success("Đã thêm giao dịch.");
-      setTxStepId(null);
-    } catch (err) {
-      toast.error((err as Error).message ?? "Thất bại.");
-    } finally {
-      setTxSaving(false);
     }
   }
 
@@ -688,6 +640,7 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
             <StepTimelineView
               steps={steps}
               users={users}
+              selectedStepId={panelStepId}
               onStepClick={(stepId) => {
                 setPanelStepId(stepId === panelStepId ? null : stepId);
                 setPanelSection("progress");
@@ -695,21 +648,26 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
             />
           </div>
 
-          {/* Detail panel (right, inline, fixed width) */}
+          {/* Detail panel (right, inline, fixed width) — sticky để luôn nằm trong tầm nhìn khi
+              cuộn danh sách bước dài, không bị trôi mất khỏi khung nhìn như trước. */}
           {panelStepId && (
-            <StepNodePanel
-              task={{ ...task, steps }}
-              stepId={panelStepId}
-              section={panelSection}
-              onSectionChange={setPanelSection}
-              onClose={() => setPanelStepId(null)}
-              users={users}
-              currentUser={currentUser}
-              taskMemberIds={taskMemberIds}
-              onSave={onSave}
-              onEmailSent={onEmailSent}
-              inline
-            />
+            <div className="sticky top-24 self-start max-h-[calc(100vh-7rem)] overflow-y-auto">
+              <StepNodePanel
+                key={panelStepId}
+                task={{ ...task, steps }}
+                stepId={panelStepId}
+                section={panelSection}
+                onSectionChange={setPanelSection}
+                onClose={() => setPanelStepId(null)}
+                users={users}
+                currentUser={currentUser}
+                taskMemberIds={taskMemberIds}
+                canAssignSteps={canAssignSteps}
+                onSave={handlePanelSave}
+                onEmailSent={onEmailSent}
+                inline
+              />
+            </div>
           )}
         </div>
       )}
@@ -735,6 +693,7 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
           />
           {panelStepId && (
             <StepNodePanel
+              key={panelStepId}
               task={{ ...task, steps }}
               stepId={panelStepId}
               section={panelSection}
@@ -743,7 +702,8 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
               users={users}
               currentUser={currentUser}
               taskMemberIds={taskMemberIds}
-              onSave={onSave}
+              canAssignSteps={canAssignSteps}
+              onSave={handlePanelSave}
               onEmailSent={onEmailSent}
             />
           )}
@@ -887,7 +847,7 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
                     return (
                       <span key={adv.id} className={cn("inline-flex items-center gap-1 shrink-0 px-1.5 py-0.5 rounded-full text-[10px] font-medium", ADV_CLS[adv.status] ?? ADV_CLS.PENDING)}>
                         <CreditCard className="w-2.5 h-2.5" />
-                        {adv.amount.toLocaleString("vi-VN")}đ
+                        {(adv.mode ?? "ADVANCE") === "ADVANCE" ? "Tạm ứng" : "Tự ứng"} {adv.amount.toLocaleString("vi-VN")}đ
                         <span className="opacity-70">({ADV_LBL[adv.status]})</span>
                       </span>
                     );
@@ -1111,7 +1071,10 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
                       const subKey = `${step.id}::${sub.id}`;
                       const isEditSub = editKey === subKey;
                       const isProofSub = proofKey === subKey;
-                      const canIUpdateSub = sub.userId === currentUser.id || canAssignSteps;
+                      // Không có confirmStatus = dữ liệu cũ trước khi có bước xác nhận → coi như đã đồng ý.
+                      const helperConfirmStatus = sub.confirmStatus ?? "accepted";
+                      const canIUpdateSub = helperConfirmStatus === "accepted" && (sub.userId === currentUser.id || canAssignSteps);
+                      const isDeclining = decliningSubKey === subKey;
 
                       const isSubUrgent = sub.priority === "urgent";
                       const isSubOverdue = !!sub.deadline && new Date(sub.deadline) < new Date(new Date().toDateString());
@@ -1156,6 +1119,16 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
                                 <span className={cn("text-[10px] font-semibold px-1.5 py-0.5 rounded-full", PRIORITY_COLOR[sub.priority])}>
                                   {priorityLabel(sub.priority)}
                                 </span>
+                                {helperConfirmStatus === "pending" && (
+                                  <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+                                    Chờ xác nhận
+                                  </span>
+                                )}
+                                {helperConfirmStatus === "declined" && (
+                                  <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400">
+                                    Đã từ chối
+                                  </span>
+                                )}
                                 {sub.deadline && (
                                   <span className={cn(
                                     "text-xs",
@@ -1196,6 +1169,43 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
                             </div>
                           </div>
 
+                          {/* Xác nhận phân công — chỉ hiện cho chính người được phân công */}
+                          {helperConfirmStatus === "pending" && isMySub && (
+                            <div className="mt-2 pt-2 border-t border-slate-100 dark:border-slate-700">
+                              {!isDeclining ? (
+                                <div className="flex gap-2">
+                                  <button onClick={() => handleConfirmHelper(step.id, sub, true)}
+                                    className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-xs font-semibold transition">
+                                    <ThumbsUp className="w-3.5 h-3.5" /> Đồng ý
+                                  </button>
+                                  <button onClick={() => { setDecliningSubKey(subKey); setDeclineReason(""); }}
+                                    className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 text-xs font-semibold transition">
+                                    <ThumbsDown className="w-3.5 h-3.5" /> Không đồng ý
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="space-y-1.5">
+                                  <textarea value={declineReason} onChange={(e) => setDeclineReason(e.target.value)} rows={2}
+                                    placeholder="Lý do từ chối... *"
+                                    className="w-full text-xs rounded-lg border border-red-200 dark:border-red-800 bg-white dark:bg-slate-900 px-2.5 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-red-400" />
+                                  <div className="flex gap-2">
+                                    <button onClick={() => setDecliningSubKey(null)}
+                                      className="flex-1 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-500 text-xs">Huỷ</button>
+                                    <button onClick={() => handleConfirmHelper(step.id, sub, false)}
+                                      className="flex-1 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-semibold transition">
+                                      Gửi từ chối
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {helperConfirmStatus === "declined" && sub.declineReason && (
+                            <p className="mt-2 text-[11px] text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-lg px-2 py-1">
+                              Lý do từ chối: {sub.declineReason}
+                            </p>
+                          )}
+
                           {isEditSub && (
                             <div className="mt-2 pt-2 border-t border-slate-100 dark:border-slate-700">
                               <ProgressEditor
@@ -1226,28 +1236,48 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
                   </div>
                 </Section>
 
-                {/* ── Danh sách tạm ứng đã nộp của bước này ── */}
+                {/* ── Danh sách đề nghị chi tiêu của bước này (tạm ứng + tự ứng) ── */}
                 {(() => {
                   const stepAdvs = taskAdvances.filter((a) => (a as { stepId?: string }).stepId === step.id);
                   if (!stepAdvs.length) return null;
-                  const ADV_LABEL: Record<string, { label: string; cls: string }> = {
+                  const STATUS_LABEL: Record<string, { label: string; cls: string }> = {
                     PENDING:  { label: "Chờ duyệt", cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" },
                     APPROVED: { label: "Đã duyệt",  cls: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" },
                     REJECTED: { label: "Từ chối",   cls: "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400" },
-                    SETTLED:  { label: "Quyết toán",cls: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400" },
+                    PENDING_SETTLEMENT: { label: "Chờ duyệt quyết toán", cls: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400" },
+                    SETTLED:  { label: "Đã quyết toán", cls: "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400" },
                   };
                   return (
                     <div className="space-y-1 mb-1">
                       {stepAdvs.map((adv) => {
-                        const b = ADV_LABEL[adv.status] ?? ADV_LABEL.PENDING;
+                        const b = STATUS_LABEL[adv.status] ?? STATUS_LABEL.PENDING;
+                        const mode = adv.mode ?? "ADVANCE";
+                        const settleLabel = mode === "ADVANCE" ? "Thanh toán" : "Hoàn ứng";
                         return (
-                          <div key={adv.id} className="flex items-center gap-2 px-2.5 py-1.5 bg-amber-50/60 dark:bg-amber-900/10 border border-amber-100 dark:border-amber-900/30 rounded-xl text-xs">
-                            <CreditCard className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                            <span className={cn("px-1.5 py-0.5 rounded-full text-[10px] font-medium shrink-0", b.cls)}>{b.label}</span>
-                            <span className="font-bold text-slate-700 dark:text-slate-200 shrink-0">
-                              {adv.amount.toLocaleString("vi-VN")} đ
-                            </span>
-                            <span className="text-slate-400 truncate">{adv.purpose}</span>
+                          <div key={adv.id} className={cn(
+                            "px-2.5 py-1.5 border rounded-xl text-xs space-y-1",
+                            mode === "ADVANCE"
+                              ? "bg-amber-50/60 dark:bg-amber-900/10 border-amber-100 dark:border-amber-900/30"
+                              : "bg-purple-50/60 dark:bg-purple-900/10 border-purple-100 dark:border-purple-900/30",
+                          )}>
+                            <div className="flex items-center gap-2">
+                              <CreditCard className={cn("w-3.5 h-3.5 shrink-0", mode === "ADVANCE" ? "text-amber-500" : "text-purple-500")} />
+                              <span className={cn("px-1.5 py-0.5 rounded-full text-[9px] font-bold shrink-0",
+                                mode === "ADVANCE" ? "bg-blue-100 text-blue-700" : "bg-purple-100 text-purple-700")}>
+                                {mode === "ADVANCE" ? "Tạm ứng" : "Tự ứng"}
+                              </span>
+                              <span className={cn("px-1.5 py-0.5 rounded-full text-[10px] font-medium shrink-0", b.cls)}>{b.label}</span>
+                              <span className="font-bold text-slate-700 dark:text-slate-200 shrink-0">
+                                {adv.amount.toLocaleString("vi-VN")} đ
+                              </span>
+                              <span className="text-slate-400 truncate">{adv.purpose}</span>
+                            </div>
+                            {adv.status === "APPROVED" && adv.requestedBy === currentUser.id && (
+                              <button onClick={() => setSettlingAdvId(adv.id)}
+                                className="w-full flex items-center justify-center gap-1.5 py-1 rounded-lg border border-blue-300 dark:border-blue-700 text-blue-700 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition text-[11px] font-semibold">
+                                <Check className="w-3 h-3" /> {settleLabel}
+                              </button>
+                            )}
                           </div>
                         );
                       })}
@@ -1258,13 +1288,12 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
                 {/* ── Advance + Email buttons (cùng hàng) ── */}
                 {(() => {
                   const isAdvOpen    = advanceStepId === step.id;
-                  const isTxOpen     = txStepId === step.id;
                   const hasAssignees = !!step.assigneeId || (step.subTasks ?? []).length > 0;
                   const isEmailOpen  = emailStepId === step.id;
 
-                  // VietQR URL
+                  // VietQR URL — chỉ áp dụng khi hình thức là tạm ứng (tự ứng chưa cần tài khoản lúc đề nghị)
                   const qrAmount = parseFloat(advanceAmount) || 0;
-                  const qrReady  = isAdvOpen && qrAmount > 0 && advanceBankId && advanceAccNumber;
+                  const qrReady  = isAdvOpen && advanceMode === "ADVANCE" && qrAmount > 0 && advanceBankId && advanceAccNumber;
                   const qrUrl    = qrReady
                     ? `https://img.vietqr.io/image/${advanceBankId}-${advanceAccNumber}-compact2.png` +
                       `?amount=${qrAmount}&addInfo=${encodeURIComponent(advancePurpose)}&accountName=${encodeURIComponent(advanceAccName)}`
@@ -1274,7 +1303,7 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
                     <div className="pt-1 space-y-2">
                       {/* Hàng nút */}
                       <div className="flex justify-end gap-2 flex-wrap">
-                        {/* Tạm ứng */}
+                        {/* Đề nghị chi tiêu */}
                         <button
                           onClick={() => isAdvOpen ? setAdvanceStepId(null) : openAdvancePanel(step)}
                           className={cn(
@@ -1285,20 +1314,7 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
                           )}
                         >
                           <CreditCard className="w-3.5 h-3.5" />
-                          Tạm ứng
-                        </button>
-                        {/* Thêm thu/chi */}
-                        <button
-                          onClick={() => isTxOpen ? setTxStepId(null) : openTxPanel(step)}
-                          className={cn(
-                            "flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-xl border transition",
-                            isTxOpen
-                              ? "bg-green-600 text-white border-green-600"
-                              : "text-green-700 dark:text-green-400 border-green-200 dark:border-green-800 bg-white dark:bg-slate-800 hover:border-green-400 hover:bg-green-50 dark:hover:bg-green-900/20",
-                          )}
-                        >
-                          <DollarSign className="w-3.5 h-3.5" />
-                          Thêm thu/chi
+                          Đề nghị chi tiêu
                         </button>
 
                         {hasAssignees && (
@@ -1317,17 +1333,31 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
                         )}
                       </div>
 
-                      {/* Form tạm ứng */}
+                      {/* Form đề nghị chi tiêu */}
                       {isAdvOpen && (
                         <div className="p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl space-y-3">
                           <p className="text-xs font-semibold text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
                             <CreditCard className="w-3.5 h-3.5" />
-                            Đề nghị tạm ứng — {step.name}
+                            Đề nghị chi tiêu — {step.name}
                           </p>
+
+                          {/* Hình thức */}
+                          <div className="grid grid-cols-2 gap-1.5">
+                            <button type="button" onClick={() => setAdvanceMode("ADVANCE")}
+                              className={cn("py-1.5 rounded-lg text-xs font-semibold border transition",
+                                advanceMode === "ADVANCE" ? "bg-amber-500 text-white border-amber-500" : "border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-amber-300")}>
+                              Xin tạm ứng trước
+                            </button>
+                            <button type="button" onClick={() => setAdvanceMode("SELF_PAID")}
+                              className={cn("py-1.5 rounded-lg text-xs font-semibold border transition",
+                                advanceMode === "SELF_PAID" ? "bg-amber-500 text-white border-amber-500" : "border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-amber-300")}>
+                              Tự ứng (tự chi trước)
+                            </button>
+                          </div>
 
                           {/* Số tiền */}
                           <div>
-                            <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400 block mb-1">Số tiền (VNĐ) *</label>
+                            <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400 block mb-1">Số tiền đề nghị (VNĐ) *</label>
                             <input
                               type="number" min={1} step={1}
                               value={advanceAmount}
@@ -1340,9 +1370,9 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
                             )}
                           </div>
 
-                          {/* Mục đích */}
+                          {/* Lý do */}
                           <div>
-                            <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400 block mb-1">Nội dung chuyển khoản *</label>
+                            <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400 block mb-1">Lý do chi tiêu *</label>
                             <input
                               value={advancePurpose}
                               onChange={(e) => setAdvancePurpose(e.target.value)}
@@ -1350,7 +1380,8 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
                             />
                           </div>
 
-                          {/* Tài khoản ngân hàng */}
+                          {/* Tài khoản ngân hàng — chỉ cần cho tạm ứng, để công ty chuyển tiền */}
+                          {advanceMode === "ADVANCE" && (
                           <div className="space-y-2">
                             <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400 block">Tài khoản nhận tiền *</label>
 
@@ -1362,7 +1393,7 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
                                 const newBankName = opt.value ? opt.text : "";
                                 setAdvanceBankId(e.target.value);
                                 setAdvanceBankName(newBankName);
-                                setAdvancePurpose(buildPurpose(step.name, advanceAccNumber, newBankName));
+                                setAdvancePurpose(buildPurpose("ADVANCE", step.name, advanceAccNumber, newBankName));
                               }}
                               className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-400"
                             >
@@ -1377,7 +1408,7 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
                                 value={advanceAccNumber}
                                 onChange={(e) => {
                                   setAdvanceAccNumber(e.target.value);
-                                  setAdvancePurpose(buildPurpose(step.name, e.target.value, advanceBankName));
+                                  setAdvancePurpose(buildPurpose("ADVANCE", step.name, e.target.value, advanceBankName));
                                 }}
                                 placeholder="Số tài khoản *"
                                 className="px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-400"
@@ -1390,6 +1421,7 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
                               />
                             </div>
                           </div>
+                          )}
 
                           {/* QR Code — hiện tự động khi đủ thông tin */}
                           {qrReady && (
@@ -1431,172 +1463,6 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
                         </div>
                       )}
 
-                      {/* Form thêm thu/chi */}
-                      {isTxOpen && (
-                        <div className="p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl space-y-3">
-                          <p className="text-xs font-semibold text-green-700 dark:text-green-400 flex items-center gap-1.5">
-                            <DollarSign className="w-3.5 h-3.5" />
-                            Thêm thu/chi — {step.name}
-                          </p>
-
-                          {/* Nguồn tiền */}
-                          <div>
-                            <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400 block mb-1">Nguồn tiền *</label>
-                            <select
-                              value={txFundSource}
-                              onChange={(e) => setTxFundSource(e.target.value as "ADVANCE" | "OUT_OF_POCKET" | "REVENUE")}
-                              className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-green-400"
-                            >
-                              <option value="OUT_OF_POCKET">Tự ứng tiền túi</option>
-                              <option value="ADVANCE">Từ tạm ứng</option>
-                              <option value="REVENUE">Thu về</option>
-                            </select>
-                          </div>
-
-                          {/* Chọn đơn tạm ứng nếu chọn ADVANCE */}
-                          {txFundSource === "ADVANCE" && (
-                            <div>
-                              <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400 block mb-1">Đơn tạm ứng</label>
-                              <select
-                                value={txAdvanceId}
-                                onChange={(e) => setTxAdvanceId(e.target.value)}
-                                className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-green-400"
-                              >
-                                <option value="">-- Chọn đơn tạm ứng --</option>
-                                {taskAdvances.filter((a) => a.stepId === step.id && a.status === "APPROVED").map((a) => (
-                                  <option key={a.id} value={a.id}>
-                                    {a.amount.toLocaleString("vi-VN")}đ — {a.purpose}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-                          )}
-
-                          {/* Số tiền */}
-                          <div>
-                            <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400 block mb-1">Số tiền (VNĐ) *</label>
-                            <input
-                              type="number" min={1} step={1}
-                              value={txAmount}
-                              onChange={(e) => setTxAmount(e.target.value)}
-                              placeholder="VD: 500000"
-                              className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-green-400"
-                            />
-                            {txAmount && parseFloat(txAmount) > 0 && (
-                              <p className="text-[10px] text-green-600 mt-0.5">= {parseFloat(txAmount).toLocaleString("vi-VN")} đ</p>
-                            )}
-                          </div>
-
-                          {/* Danh mục (ẩn nếu REVENUE) */}
-                          {txFundSource !== "REVENUE" && (
-                            <div>
-                              <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400 block mb-1">Danh mục chi *</label>
-                              <select
-                                value={txCategory}
-                                onChange={(e) => setTxCategory(e.target.value)}
-                                className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-green-400"
-                              >
-                                {EXPENSE_CATEGORIES.map((cat) => (
-                                  <option key={cat} value={cat}>{cat}</option>
-                                ))}
-                              </select>
-                            </div>
-                          )}
-
-                          {/* Mô tả */}
-                          <div>
-                            <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400 block mb-1">Mô tả *</label>
-                            <textarea
-                              value={txDesc}
-                              onChange={(e) => setTxDesc(e.target.value)}
-                              rows={2}
-                              placeholder="Mô tả giao dịch..."
-                              className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-green-400 resize-none"
-                            />
-                          </div>
-
-                          {/* Chứng từ */}
-                          <div className="space-y-2">
-                            <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400 block">
-                              Chứng từ{txFundSource !== "REVENUE" ? " * (≥1)" : ""}
-                            </label>
-
-                            {/* URL input */}
-                            <div className="flex gap-1.5">
-                              <input
-                                value={txProofUrl}
-                                onChange={(e) => setTxProofUrl(e.target.value)}
-                                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addTxProofLink(); } }}
-                                placeholder="Dán link chứng từ..."
-                                className="flex-1 px-3 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-green-400"
-                              />
-                              <button
-                                onClick={addTxProofLink}
-                                disabled={!txProofUrl.trim()}
-                                className="px-2.5 py-1.5 text-xs bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300 rounded-xl hover:bg-green-200 dark:hover:bg-green-900/60 disabled:opacity-40 transition flex items-center gap-1"
-                              >
-                                <Link2 className="w-3 h-3" /> Thêm link
-                              </button>
-                            </div>
-
-                            {/* File + Camera buttons */}
-                            <div className="flex gap-1.5">
-                              <button
-                                onClick={() => txFileRef.current?.click()}
-                                disabled={txUploading}
-                                className="flex items-center gap-1 px-3 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white hover:border-green-400 hover:text-green-600 transition disabled:opacity-50"
-                              >
-                                <Paperclip className="w-3 h-3" />
-                                {txUploading ? "Đang tải..." : "Tải file / PDF"}
-                              </button>
-                              <button
-                                onClick={() => txCameraRef.current?.click()}
-                                disabled={txUploading}
-                                className="flex items-center gap-1 px-3 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white hover:border-green-400 hover:text-green-600 transition disabled:opacity-50"
-                              >
-                                <Camera className="w-3 h-3" />
-                                Camera
-                              </button>
-                            </div>
-
-                            {/* Hidden inputs */}
-                            <input ref={txFileRef} type="file" accept="image/*,.pdf" className="hidden" onChange={handleTxFileUpload} />
-                            <input ref={txCameraRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleTxFileUpload} />
-
-                            {/* Proof list */}
-                            {txProofs.length > 0 && (
-                              <ul className="space-y-1">
-                                {txProofs.map((p, i) => (
-                                  <li key={i} className="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-300">
-                                    <Link2 className="w-3 h-3 shrink-0 text-green-500" />
-                                    <a href={p.url} target="_blank" rel="noopener noreferrer" className="flex-1 truncate hover:underline text-green-600 dark:text-green-400">{p.name || p.url}</a>
-                                    <button onClick={() => setTxProofs(prev => prev.filter((_, j) => j !== i))} className="text-slate-400 hover:text-red-500 transition">
-                                      <X className="w-3 h-3" />
-                                    </button>
-                                  </li>
-                                ))}
-                              </ul>
-                            )}
-                          </div>
-
-                          {/* Actions */}
-                          <div className="flex justify-end gap-2 pt-1">
-                            <button onClick={() => setTxStepId(null)}
-                              className="px-3 py-1.5 text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400 transition">
-                              Hủy
-                            </button>
-                            <button
-                              onClick={() => handleTxSubmit(step)}
-                              disabled={txSaving || txUploading}
-                              className="flex items-center gap-1.5 px-4 py-1.5 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-xs rounded-xl transition"
-                            >
-                              {txSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
-                              Ghi giao dịch
-                            </button>
-                          </div>
-                        </div>
-                      )}
-
                       {/* Email compose panel */}
                       {hasAssignees && isEmailOpen && (
                         <EmailComposePanel
@@ -1621,6 +1487,19 @@ export function StepsTab({ task, users, currentUser, canAssignSteps, canApprove 
           </div>
         );
       })}
+
+      {settlingAdvId && (() => {
+        const settlingAdv = taskAdvances.find((a) => a.id === settlingAdvId);
+        if (!settlingAdv) return null;
+        return (
+          <AdvanceSettlementModal
+            advance={settlingAdv}
+            currentUser={currentUser}
+            onSuccess={() => setSettlingAdvId(null)}
+            onClose={() => setSettlingAdvId(null)}
+          />
+        );
+      })()}
     </div>
   );
 }

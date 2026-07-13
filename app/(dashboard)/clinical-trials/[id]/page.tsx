@@ -11,7 +11,9 @@ import {
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { hasPermission } from "@/lib/rbac/permissions";
+import { isClinicalTrialViewManager, sameUnit } from "@/lib/rbac/scope";
 import { getClinicalTrial, updateClinicalTrial, deleteClinicalTrial, getWorkflows } from "@/lib/firebase/firestore";
+import { PendingChangeRequestPanel } from "@/components/shared/PendingChangeRequestPanel";
 import { formatPeriodDDMMYY } from "@/lib/utils";
 import { TrialStatusPipeline } from "@/components/clinical-trials/TrialStatusPipeline";
 import { TrialFormModal } from "@/components/clinical-trials/TrialFormModal";
@@ -48,6 +50,7 @@ export default function ClinicalTrialDetailPage() {
   const [loading, setLoading] = useState(true);
   const [showEdit, setShowEdit] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleteReason, setDeleteReason] = useState("");
   const [showUpdateEnrollment, setShowUpdateEnrollment] = useState(false);
   const [showShareEnrollment, setShowShareEnrollment] = useState(false);
   const [showLinkEnrollment, setShowLinkEnrollment] = useState(false);
@@ -61,6 +64,11 @@ export default function ClinicalTrialDetailPage() {
   const [selectedWorkflowId, setSelectedWorkflowId] = useState("");
 
   const canManage = !!currentUser && hasPermission(currentUser.role, "trial:manage");
+  const isDesignatedViewManager = isClinicalTrialViewManager(currentUser);
+  const canEditOrDelete = canManage || isDesignatedViewManager;
+  const canReviewChangeRequest =
+    canManage || (currentUser?.role === "teamLead" && sameUnit(trial?.department, currentUser.department));
+  const isChangeRequester = trial?.pendingChangeRequest?.requestedByUserId === currentUser?.id;
 
   // Check if current user is a member of the trial (PI, coordinator, or creator)
   const isMember = currentUser && trial && (
@@ -93,7 +101,7 @@ export default function ClinicalTrialDetailPage() {
   }, [id]);
 
   useEffect(() => {
-    getWorkflows().then(setWorkflows).catch(() => {});
+    getWorkflows().then((all) => setWorkflows(all.filter((w) => w.status === "published"))).catch(() => {});
   }, []);
 
   async function handleStatusChange(status: ClinicalTrialStatus) {
@@ -138,11 +146,18 @@ export default function ClinicalTrialDetailPage() {
   async function handleDelete() {
     if (!trial) return;
     try {
-      await deleteClinicalTrial(trial.id);
-      toast.success("Đã xoá thử nghiệm lâm sàng");
-      router.push("/clinical-trials");
-    } catch {
-      toast.error("Xoá thất bại");
+      const res = await deleteClinicalTrial(trial.id, deleteReason.trim() || undefined);
+      if (res?.pending) {
+        toast.success("Đã gửi yêu cầu xoá — chờ trưởng nhóm cùng đơn vị duyệt");
+        setShowDeleteConfirm(false);
+        setDeleteReason("");
+        getClinicalTrial(id).then((t) => setTrial(t));
+      } else {
+        toast.success("Đã xoá thử nghiệm lâm sàng");
+        router.push("/clinical-trials");
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Xoá thất bại");
     }
   }
 
@@ -167,6 +182,16 @@ export default function ClinicalTrialDetailPage() {
 
   return (
     <div className="p-6 space-y-6 w-full">
+      <PendingChangeRequestPanel
+        currentRecord={trial as unknown as Record<string, unknown>}
+        pendingChangeRequest={trial.pendingChangeRequest}
+        canReview={canReviewChangeRequest}
+        isRequester={isChangeRequester}
+        approveUrl={`/api/clinical-trials/${trial.id}/approve-change-request`}
+        rejectUrl={`/api/clinical-trials/${trial.id}/reject-change-request`}
+        onChanged={() => getClinicalTrial(id).then((t) => setTrial(t))}
+      />
+
       <div className="flex items-center gap-3">
         <Link href="/clinical-trials" className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition">
           <ArrowLeft className="w-4 h-4 text-slate-500" />
@@ -215,7 +240,7 @@ export default function ClinicalTrialDetailPage() {
               </>
             )
           )}
-          {canManage && (
+          {canEditOrDelete && (
             <>
               <button onClick={() => setShowEdit(true)} className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition" title="Sửa">
                 <Pencil className="w-4 h-4 text-slate-500" />
@@ -288,6 +313,7 @@ export default function ClinicalTrialDetailPage() {
                 <InfoRow icon={UserIcon} label="Mã nghiên cứu" value={trial.code} />
                 <InfoRow icon={UserIcon} label="Số quyết định triển khai" value={trial.deploymentDecisionNo} />
                 <InfoRow icon={UserIcon} label="Nghiên cứu viên chính" value={trial.principalInvestigatorName} />
+                <InfoRow icon={UserIcon} label="Điều phối viên" value={trial.coordinatorName} />
                 <InfoRow icon={Building2} label="Khoa thực hiện" value={trial.department} />
                 <InfoRow icon={Building2} label="Nhà tài trợ" value={trial.sponsor} />
                 <InfoRow icon={Calendar} label="Thời gian" value={trial.startPeriod || trial.endPeriod ? `${formatPeriodDDMMYY(trial.startPeriod)} – ${formatPeriodDDMMYY(trial.endPeriod)}` : undefined} />
@@ -392,17 +418,32 @@ export default function ClinicalTrialDetailPage() {
 
       {showDeleteConfirm && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-sm p-6">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-sm p-6 space-y-3">
             <h3 className="font-semibold text-slate-800 dark:text-white mb-2">Xoá thử nghiệm lâm sàng?</h3>
-            <p className="text-sm text-slate-500 dark:text-slate-400 mb-5">
-              Hành động này không thể hoàn tác. Toàn bộ dữ liệu của "{trial.abbreviation || trial.code}" sẽ bị xoá.
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              {canManage
+                ? `Hành động này không thể hoàn tác. Toàn bộ dữ liệu của "${trial.abbreviation || trial.code}" sẽ bị xoá.`
+                : "Bạn không có quyền xoá trực tiếp — yêu cầu sẽ được gửi cho trưởng nhóm cùng đơn vị duyệt."}
             </p>
-            <div className="flex justify-end gap-2">
-              <button onClick={() => setShowDeleteConfirm(false)} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+            {!canManage && (
+              <textarea
+                value={deleteReason}
+                onChange={(e) => setDeleteReason(e.target.value)}
+                placeholder="Lý do xin xoá (bắt buộc)..."
+                rows={2}
+                className="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-red-500 resize-none"
+              />
+            )}
+            <div className="flex justify-end gap-2 pt-1">
+              <button onClick={() => { setShowDeleteConfirm(false); setDeleteReason(""); }} className="px-4 py-2 rounded-lg text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition">
                 Huỷ
               </button>
-              <button onClick={handleDelete} className={cn("px-4 py-2 rounded-lg text-sm font-semibold bg-red-600 hover:bg-red-700 text-white transition")}>
-                Xoá
+              <button
+                onClick={handleDelete}
+                disabled={!canManage && !deleteReason.trim()}
+                className={cn("px-4 py-2 rounded-lg text-sm font-semibold bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white transition")}
+              >
+                {canManage ? "Xoá" : "Gửi yêu cầu"}
               </button>
             </div>
           </div>

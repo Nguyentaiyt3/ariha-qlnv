@@ -21,6 +21,9 @@ export async function POST(req: NextRequest) {
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const body = await req.json();
   const id = body.id || generateId("wf");
-  await saveWorkflow({ ...body, id });
+  // Ai cũng được tạo quy trình, nhưng luôn bắt đầu ở trạng thái "pending" — chỉ được dùng để
+  // tạo nhiệm vụ sau khi đã qua bước duyệt (PATCH .../[id] action=approve), không cho phép tự
+  // đặt "published" ngay lúc tạo.
+  await saveWorkflow({ ...body, id, status: "pending", createdBy: body.createdBy || user.userId });
   return NextResponse.json({ success: true, id });
 }

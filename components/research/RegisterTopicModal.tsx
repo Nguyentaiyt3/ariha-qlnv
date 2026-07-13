@@ -82,9 +82,15 @@ export function RegisterTopicModal({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(updates),
         });
-        if (!res.ok) throw new Error("Cập nhật thất bại");
-        toast.success("Đã cập nhật đề cương");
-        onCreated({ ...initialData, ...updates });
+        const resData = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(resData?.error || "Cập nhật thất bại");
+        if (resData?.pending) {
+          toast.success("Đã gửi yêu cầu sửa — chờ trưởng nhóm cùng đơn vị duyệt");
+          onCreated(initialData);
+        } else {
+          toast.success("Đã cập nhật đề cương");
+          onCreated({ ...initialData, ...updates });
+        }
       } else {
         const completionY = parseInt(data.completionTimeline.match(/\d{4}/)?.[0] ?? String(new Date().getFullYear()));
         const topic: ResearchTopic = {
@@ -133,8 +139,8 @@ export function RegisterTopicModal({
         onCreated(finalTopic);
       }
       onClose();
-    } catch {
-      toast.error(isEdit ? "Cập nhật thất bại" : "Nộp thất bại, vui lòng thử lại");
+    } catch (err) {
+      toast.error(err instanceof Error && err.message ? err.message : (isEdit ? "Cập nhật thất bại" : "Nộp thất bại, vui lòng thử lại"));
     } finally {
       setSaving(false);
     }

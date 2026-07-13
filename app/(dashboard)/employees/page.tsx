@@ -404,7 +404,28 @@ export default function EmployeesPage() {
   const canCreate = currentUser ? hasPermission(currentUser.role, "user:create") : false;
   const canMerge  = currentUser ? hasPermission(currentUser.role, "user:merge")  : false;
 
-  const duplicatePairs = useMemo(() => (canMerge ? findDuplicatePairs(users) : []), [users, canMerge]);
+  // Trưởng nhóm: trang Nhân sự dùng 1 danh sách RIÊNG, lọc theo đơn vị ngay ở server — tách
+  // biệt với store `users` dùng chung (store đó phải giữ đầy đủ để phục vụ các ô chọn người
+  // dùng khác trong app, vd. chọn stakeholder/PI, nên không thể lọc ngay tại store).
+  const isTeamLeadScoped = currentUser?.role === "teamLead";
+  const [rosterOverride, setRosterOverride] = useState<User[] | null>(null);
+
+  useEffect(() => {
+    if (!isTeamLeadScoped) { setRosterOverride(null); return; }
+    getUsers(true).then(setRosterOverride);
+  }, [isTeamLeadScoped]);
+
+  const roster = isTeamLeadScoped ? (rosterOverride ?? []) : users;
+
+  function refreshRoster() {
+    if (isTeamLeadScoped) {
+      getUsers(true).then(setRosterOverride);
+    } else {
+      getUsers().then(setUsers);
+    }
+  }
+
+  const duplicatePairs = useMemo(() => (canMerge ? findDuplicatePairs(roster) : []), [roster, canMerge]);
 
   if (!canRead) {
     return (
@@ -414,10 +435,10 @@ export default function EmployeesPage() {
     );
   }
 
-  const pendingGuests = users.filter(u => u.role === "guest" && u.isActive);
+  const pendingGuests = roster.filter(u => u.role === "guest" && u.isActive);
 
   // Dashboard cảnh báo hết hạn — gộp hợp đồng + chứng chỉ/bằng cấp sắp/đã hết hạn
-  const expiryAlerts = users
+  const expiryAlerts = roster
     .filter(u => u.isActive)
     .flatMap(u => {
       const items: { user: User; label: string; expired: boolean }[] = [];
@@ -430,7 +451,7 @@ export default function EmployeesPage() {
       return items;
     });
 
-  const filtered = users.filter(u =>
+  const filtered = roster.filter(u =>
     u.name.toLowerCase().includes(search.toLowerCase()) ||
     u.email.toLowerCase().includes(search.toLowerCase()) ||
     (u.department ?? "").toLowerCase().includes(search.toLowerCase())
@@ -471,6 +492,7 @@ export default function EmployeesPage() {
       };
       await saveUser(updated);
       setUsers(users.map(u => u.id === user.id ? updated : u));
+      if (isTeamLeadScoped) setRosterOverride(prev => prev ? prev.map(u => u.id === user.id ? updated : u) : prev);
       toast.success(`Đã cập nhật ${updated.name}`);
       setEditState(null);
     } catch (err) {
@@ -485,6 +507,7 @@ export default function EmployeesPage() {
     setSavingId(user.id);
     try {
       await saveUser({ ...user, isActive: !user.isActive });
+      refreshRoster();
       toast.success(`${user.isActive ? "Đã vô hiệu hóa" : "Đã kích hoạt"} ${user.name}`);
     } catch (err) {
       console.error(err);
@@ -532,6 +555,7 @@ export default function EmployeesPage() {
       const { count } = await res.json();
       toast.success(`Đã duyệt ${count} tài khoản → ${roleLabel(role)}`);
       setSelectedPending(new Set());
+      refreshRoster();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Duyệt thất bại");
     } finally {
@@ -549,7 +573,7 @@ export default function EmployeesPage() {
           <Users className="w-6 h-6 text-blue-500" />
           Nhân viên
           <span className="text-base font-normal text-[var(--muted-foreground)]">
-            ({users.filter(u => u.isActive).length} hoạt động)
+            ({roster.filter(u => u.isActive).length} hoạt động)
           </span>
         </h1>
         {canCreate && (
@@ -575,14 +599,14 @@ export default function EmployeesPage() {
           unitOptions={unitOptions}
           posOptions={posOptions}
           onClose={() => setShowAddEmployee(false)}
-          onCreated={() => { getUsers().then(setUsers); }}
+          onCreated={() => refreshRoster()}
         />
       )}
 
       {showImport && (
         <ImportEmployeesModal
           onClose={() => setShowImport(false)}
-          onImported={() => { getUsers().then(setUsers); }}
+          onImported={() => refreshRoster()}
         />
       )}
 
@@ -591,7 +615,7 @@ export default function EmployeesPage() {
           userA={mergeCandidate.a}
           userB={mergeCandidate.b}
           onClose={() => setMergeCandidate(null)}
-          onMerged={() => { getUsers().then(setUsers); }}
+          onMerged={() => refreshRoster()}
         />
       )}
 
@@ -803,7 +827,7 @@ export default function EmployeesPage() {
                 <th className="text-left px-4 py-3 text-xs font-semibold text-[var(--muted-foreground)] uppercase tracking-wide">Chức vụ / Kiêm nhiệm</th>
                 <th className="text-left px-4 py-3 text-xs font-semibold text-[var(--muted-foreground)] uppercase tracking-wide">Trạng thái</th>
                 {canManage && (
-                  <th className="text-right px-4 py-3 text-xs font-semibold text-[var(--muted-foreground)] uppercase tracking-wide">Hành động</th>
+                  <th className="text-right px-4 py-3 text-xs font-semibold text-[var(--muted-foreground)] uppercase tracking-wide sticky right-0 bg-[var(--muted)] z-10 shadow-[-6px_0_8px_-4px_rgba(0,0,0,0.12)]">Hành động</th>
                 )}
               </tr>
             </thead>
@@ -970,11 +994,11 @@ export default function EmployeesPage() {
                           </button>
                         )}
 
-                        {/* ── Vai trò NCKH ── */}
+                        {/* ── Vai trò NCKH / NCLS ── */}
                         <div className="pt-1.5 border-t border-slate-100 dark:border-slate-700 mt-1.5">
-                          <p className="text-[9px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Vai trò NCKH</p>
+                          <p className="text-[9px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Vai trò NCKH / NCLS</p>
                           <div className="flex flex-wrap gap-1">
-                            {(["researchManager", "reviewer", "councilMember", "councilChair", "councilSecretary"] as const).map(d => {
+                            {(["researchManager", "reviewer", "councilMember", "councilChair", "councilSecretary", "clinicalTrialManager", "principalInvestigator"] as const).map(d => {
                               const active = editState!.researchDesignations.includes(d);
                               return (
                                 <button
@@ -1055,9 +1079,13 @@ export default function EmployeesPage() {
                     </div>
                   </td>
 
-                  {/* Actions */}
+                  {/* Actions — sticky bên phải để luôn thấy nút Lưu/Huỷ dù bảng cuộn ngang (cột
+                      "Chức vụ/Kiêm nhiệm" khi sửa rất rộng, dễ đẩy cột Hành động ra ngoài màn hình) */}
                   {canManage && (
-                    <td className="px-4 py-3">
+                    <td className={cn(
+                      "px-4 py-3 sticky right-0 z-10 shadow-[-6px_0_8px_-4px_rgba(0,0,0,0.12)]",
+                      isEditing(user) ? "bg-blue-50 dark:bg-blue-950" : "bg-[var(--card)]"
+                    )}>
                       <div className="flex items-center justify-end gap-1">
                         {isEditing(user) ? (
                           <>

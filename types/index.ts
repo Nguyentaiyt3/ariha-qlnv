@@ -394,20 +394,24 @@ export interface ResearchCertificate {
 }
 
 /**
- * Chỉ định NCKH cố định của người dùng — khác với việc được gán vào từng đề tài.
- * Lưu trong User.researchDesignations[] để lọc khi chọn phản biện / hội đồng.
- * - researchManager : Quản lý NCKH — cấp canMonitor (giám sát, tiếp nhận đề cương)
- * - reviewer        : được phép làm phản biện kín
- * - councilMember   : thành viên Hội đồng KHCN
- * - councilChair    : Chủ tịch Hội đồng KHCN
- * - councilSecretary: Thư ký Hội đồng KHCN
+ * Chỉ định NCKH/NCLS cố định của người dùng — khác với việc được gán vào từng đề tài/thử nghiệm.
+ * Lưu trong User.researchDesignations[] để lọc khi chọn phản biện / hội đồng / PI / điều phối viên.
+ * - researchManager    : Quản lý NCKH — cấp canMonitor (giám sát, tiếp nhận đề cương)
+ * - reviewer           : được phép làm phản biện kín
+ * - councilMember      : thành viên Hội đồng KHCN
+ * - councilChair       : Chủ tịch Hội đồng KHCN
+ * - councilSecretary   : Thư ký Hội đồng KHCN
+ * - clinicalTrialManager: Quản lý NCLS — đủ điều kiện được chọn làm điều phối viên thử nghiệm lâm sàng
+ * - principalInvestigator: đủ điều kiện được chọn làm Nghiên cứu viên chính (PI) thử nghiệm lâm sàng
  */
 export type ResearchDesignation =
   | "researchManager"
   | "reviewer"
   | "councilMember"
   | "councilChair"
-  | "councilSecretary";
+  | "councilSecretary"
+  | "clinicalTrialManager"
+  | "principalInvestigator";
 
 export const RESEARCH_DESIGNATION_LABEL: Record<ResearchDesignation, string> = {
   researchManager:  "Quản lý NCKH",
@@ -415,6 +419,8 @@ export const RESEARCH_DESIGNATION_LABEL: Record<ResearchDesignation, string> = {
   councilMember:    "Thành viên HĐ KHCN",
   councilChair:     "Chủ tịch HĐ KHCN",
   councilSecretary: "Thư ký HĐ KHCN",
+  clinicalTrialManager: "Quản lý NCLS",
+  principalInvestigator: "Nghiên cứu viên chính (PI)",
 };
 
 /**
@@ -515,6 +521,7 @@ export interface ResearchTopic {
   submitterEmail?: string;
   submitterPhone?: string;
   proposalFileUrl?: string;           // attached file đề cương (URL)
+  finalReportFileUrl?: string;        // File đề tài / báo cáo tổng kết — nộp ở GĐ2 nghiệm thu
   completionTimeline?: string;        // "Quý III, năm 2026"
   proposedReviewers?: string;         // suggested reviewer names (multiline)
   excludedReviewers?: string;         // excluded reviewer names (multiline)
@@ -546,6 +553,9 @@ export interface ResearchTopic {
   createdByName?: string;
   createdAt: string;
   updatedAt?: string;
+
+  /** Yêu cầu sửa/xoá đang chờ trưởng nhóm duyệt (gửi bởi người chỉ có chỉ định Quản lý NCKH). */
+  pendingChangeRequest?: RecordChangeRequest;
 }
 
 export interface GoogleToken {
@@ -625,6 +635,26 @@ export interface EditDeleteRequest {
   approvedByUserId?: string;
   rejectionReason?: string;
   editedData?: Partial<ClinicalTrialPayment>; // For edit requests, store what needs to be changed
+}
+
+/**
+ * Yêu cầu sửa/xoá chờ duyệt gắn trên bản ghi (ResearchTopic/ClinicalTrial) — dùng khi người
+ * thao tác chỉ có quyền qua chỉ định (designation) chứ không có quyền quản lý (role) hay không
+ * phải thành viên trực tiếp của bản ghi đó. Trưởng nhóm cùng đơn vị (hoặc người có quyền quản lý)
+ * phải xem nội dung đề xuất (proposedChanges) hoặc lý do xoá (reason) trước khi duyệt/từ chối.
+ */
+export interface RecordChangeRequest {
+  type: "edit" | "delete";
+  requestedAt: string;
+  requestedBy: string;
+  requestedByUserId: string;
+  reason?: string;                          // Bắt buộc khi type="delete"
+  proposedChanges?: Record<string, unknown>; // Khi type="edit": các field đề xuất thay đổi
+  status: "pending" | "approved" | "rejected";
+  reviewedAt?: string;
+  reviewedBy?: string;
+  reviewedByUserId?: string;
+  rejectionReason?: string;
 }
 
 export interface SettlementConfirmation {
@@ -747,6 +777,7 @@ export interface ClinicalTrial {
   principalInvestigatorName?: string; // plain text PI (import/chưa có tài khoản)
   department?: string;               // Khoa thực hiện
   coordinatorId?: string;            // Điều phối viên Viện ARiHA
+  coordinatorName?: string;
 
   sponsor?: string;
   cro?: string;                      // Contract Research Organization
@@ -784,6 +815,9 @@ export interface ClinicalTrial {
   createdByName?: string;
   createdAt: string;
   updatedAt?: string;
+
+  /** Yêu cầu sửa/xoá đang chờ trưởng nhóm duyệt (gửi bởi người chỉ có chỉ định Quản lý NCLS). */
+  pendingChangeRequest?: RecordChangeRequest;
 }
 
 // ─── PROJECTS ────────────────────────────────────────────────
@@ -819,6 +853,12 @@ export interface SubTask {
   deadline?: string;
 }
 
+/**
+ * Không có = dữ liệu cũ trước khi có bước xác nhận → coi như đã "accepted" (không hồi tố chặn
+ * các phân công đã hoạt động từ trước).
+ */
+export type HelperConfirmStatus = "pending" | "accepted" | "declined";
+
 export interface StepSubTask {
   id: string;
   userId: string;
@@ -832,6 +872,12 @@ export interface StepSubTask {
   status: "pending" | "in_progress" | "completed";
   createdAt: string;
   completedAt?: string;
+  // ── Xác nhận phân công hỗ trợ ──
+  assignedBy?: string;                    // userId người đã phân công
+  assignedByName?: string;
+  confirmStatus?: HelperConfirmStatus;
+  declineReason?: string;                 // bắt buộc khi confirmStatus = "declined"
+  confirmedAt?: string;
 }
 
 export interface Eval3TScore {
@@ -1128,6 +1174,9 @@ export interface WorkflowNode {
   status: "todo" | "in_progress" | "done" | "blocked";
   position: { x: number; y: number };
   locked?: boolean;
+  /** Số thứ tự hiển thị — chỉ ảnh hưởng cách sắp xếp ở chế độ "Theo vùng", không ảnh hưởng thứ
+   * tự thực thi thật (vẫn theo mũi tên phụ thuộc khi tạo nhiệm vụ). */
+  order?: number;
   /** Vai trò yêu cầu cho node (template tái sử dụng — gán người cụ thể lúc tạo task). */
   roleRequired?: UserRole;
   assigneeId?: string;
@@ -1660,6 +1709,13 @@ export interface FinancialTransaction {
   status: TransactionStatus;
   advanceRequestId?: string;    // Liên kết đơn tạm ứng (nếu nguồn = ADVANCE)
   reimbursementRequestId?: string; // Liên kết đơn hoàn ứng (nếu nguồn = OUT_OF_POCKET)
+  /**
+   * true CHỈ với giao dịch tự động ghi khi tiền công ty thực sự di chuyển (giải ngân tạm ứng lúc
+   * duyệt / chi hoàn ứng lúc duyệt quyết toán). Dùng field này để tính "Phát sinh chi" — các giao
+   * dịch "chi từ tạm ứng" do nhân viên tự phân loại sau đó KHÔNG có cờ này vì đó chỉ là phân loại
+   * lại khoản tiền đã được ghi nhận chi ở đây, không phải một khoản chi mới.
+   */
+  isDisbursement?: boolean;
   rejectedReason?: string;      // Lý do từ chối (nếu status = REJECTED)
   createdAt: string;
   updatedAt: string;
@@ -1686,7 +1742,14 @@ export interface FinancialProof {
  */
 export type AdvanceRequestStatus = "PENDING" | "APPROVED" | "REJECTED" | "PENDING_SETTLEMENT" | "SETTLED";
 
-/** Đơn đề nghị tạm ứng từ công ty */
+/**
+ * Hình thức chi tiêu:
+ * - ADVANCE:   Xin tạm ứng trước — công ty chi tiền cho nhân viên ngay khi duyệt.
+ * - SELF_PAID: Tự ứng — nhân viên tự bỏ tiền túi ra chi trước, công ty hoàn ứng sau khi quyết toán.
+ */
+export type SpendingMode = "ADVANCE" | "SELF_PAID";
+
+/** Đơn đề nghị chi tiêu (tạm ứng hoặc tự ứng) — một luồng duyệt/quyết toán chung cho cả 2 hình thức */
 export interface AdvanceRequest {
   id: string;
   taskId: string;
@@ -1694,9 +1757,11 @@ export interface AdvanceRequest {
   stepName?: string;            // Tên bước (denormalized để hiển thị nhanh)
   requestedBy: string;          // userId nhân viên
   requestedByName: string;
-  amount: number;               // Số tiền xin tạm ứng
-  purpose: string;              // Mục đích sử dụng
-  bankAccount?: BankAccount;    // Tài khoản nhận tiền tạm ứng
+  /** Không có = dữ liệu cũ trước khi tách hình thức → mặc định coi là ADVANCE. */
+  mode?: SpendingMode;
+  amount: number;               // Số tiền đề nghị
+  purpose: string;              // Lý do chi tiêu
+  bankAccount?: BankAccount;    // Tài khoản nhận tiền tạm ứng (chỉ áp dụng mode=ADVANCE)
   status: AdvanceRequestStatus;
   approvedBy?: string;          // userId người duyệt
   approvedByName?: string;
@@ -1709,6 +1774,8 @@ export interface AdvanceRequest {
   settlementAmountUsed?: number;       // Số tiền đã chi tiêu thực tế
   settlementProofs?: FinancialProof[]; // Chứng từ thanh toán
   settlementNotes?: string;            // Ghi chú của nhân viên
+  /** Tài khoản nhận hoàn ứng — chỉ thu thập ở bước quyết toán, dành cho mode=SELF_PAID. */
+  settlementBankAccount?: BankAccount;
   settlementSubmittedAt?: string;      // Thời điểm nộp đơn thanh toán
   settlementRejectedReason?: string;   // Lý do từ chối thanh toán
   // ── Thông tin quyết toán (sau khi manager duyệt) ──

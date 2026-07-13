@@ -179,12 +179,20 @@ export async function rejectAdvanceSettlement(id: string, reason?: string): Prom
 
 export async function submitAdvanceSettlement(
   advId: string,
-  data: { amountUsed: number; proofs?: unknown[]; notes?: string }
+  data: { amountUsed: number; proofs?: unknown[]; notes?: string; bankAccount?: unknown }
 ): Promise<void> {
   await apiOrThrow(`/api/finance/advance-requests/${advId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action: "submitSettlement", ...data }),
+  });
+}
+
+export async function submitReimbursement(id: string): Promise<void> {
+  await apiOrThrow(`/api/finance/reimbursement-requests/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "submit" }),
   });
 }
 
@@ -234,7 +242,9 @@ export async function createReimbursementRequest(data: Partial<ReimbursementRequ
   return res?.request ?? null;
 }
 
-export async function createTransaction(data: Partial<FinancialTransaction>): Promise<FinancialTransaction | null> {
+export async function createTransaction(
+  data: Partial<FinancialTransaction> & { stepName?: string }
+): Promise<FinancialTransaction | null> {
   const res = await api<{ transaction: FinancialTransaction }>("/api/finance/transactions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -264,34 +274,6 @@ export async function recomputeFinancialSummary(taskId: string): Promise<TaskFin
   return d?.summary ?? null;
 }
 
-export async function reconcileAdvance(
-  taskId: string,
-  settledBy: string
-): Promise<{
-  difference: number;
-  settlementType: "RETURN_TO_COMPANY" | "PAY_EMPLOYEE_ADDITIONAL" | "BALANCED";
-  totalAdvanced: number;
-  totalActualSpent: number;
-  settledRequests: string[];
-}> {
-  const d = await apiOrThrow<{
-    details: {
-      settlementType: "RETURN_TO_COMPANY" | "PAY_EMPLOYEE_ADDITIONAL" | "BALANCED";
-      settledRequests: string[];
-    };
-  }>(`/api/finance/reconcile/${taskId}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ settledBy }),
-  });
-  return {
-    difference: 0,
-    settlementType: d.details?.settlementType ?? "BALANCED",
-    totalAdvanced: 0,
-    totalActualSpent: 0,
-    settledRequests: d.details?.settledRequests ?? [],
-  };
-}
 
 export async function getFinanceData() { return []; }
 

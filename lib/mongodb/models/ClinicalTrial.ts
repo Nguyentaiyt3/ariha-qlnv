@@ -15,6 +15,8 @@ const clinicalTrialSchema = new Schema(
     principalInvestigatorName: String,
     department: { type: String, index: true },
     coordinatorId: { type: String, index: true },
+    coordinatorName: String,
+    executionTaskId: { type: String, index: true },
 
     sponsor: String,
     cro: String,

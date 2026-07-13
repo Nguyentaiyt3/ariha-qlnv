@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyToken } from "@/lib/mongodb/auth";
+import { verifyToken, getUser } from "@/lib/mongodb/auth";
 import { TaskFinancialSummaryModel } from "@/lib/mongodb/models";
 import { connectDB } from "@/lib/mongodb/config";
-import { recomputeFinancialSummary, getTaskFinancialSummary } from "@/lib/mongodb/firestore";
+import { recomputeFinancialSummary, getTaskFinancialSummary, getTasks } from "@/lib/mongodb/firestore";
+import { sameUnit } from "@/lib/rbac/scope";
 
 async function auth(req: NextRequest) {
   const token = req.cookies.get("auth-token")?.value;
@@ -10,17 +11,25 @@ async function auth(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
-  if (!await auth(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const user = await auth(req);
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const taskId = req.nextUrl.searchParams.get("taskId");
   if (taskId) {
     const summary = await getTaskFinancialSummary(taskId);
     return NextResponse.json({ summary });
   }
   await connectDB();
-  const summaries = await TaskFinancialSummaryModel.find().lean();
-  return NextResponse.json({
-    summaries: summaries.map((s: any) => ({ taskId: String(s._id), ...s })),
-  });
+  let summaries = (await TaskFinancialSummaryModel.find().lean()).map((s: any) => ({ taskId: String(s._id), ...s }));
+
+  // Trưởng nhóm: chỉ thấy tổng hợp tài chính của nhiệm vụ thuộc đơn vị mình.
+  const me = await getUser(user.userId);
+  if (me && me.role === "teamLead") {
+    const tasks = await getTasks();
+    const deptByTaskId = new Map(tasks.map((t) => [t.id, t.department]));
+    summaries = summaries.filter((s) => sameUnit(deptByTaskId.get(s.taskId), me.department));
+  }
+
+  return NextResponse.json({ summaries });
 }
 
 /** POST: recompute summary for a task */

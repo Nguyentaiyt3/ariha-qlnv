@@ -61,20 +61,40 @@ export function normalizeEdgeDirection(nodes: WorkflowNode[], edges: WorkflowEdg
 }
 
 /**
+ * Chỉ mũi tên liền ("Phải hoàn thành trước", `required: true`) mới là ràng buộc thứ tự thật.
+ * Mũi tên đứt (`required: false`/không đặt) là đường "quay lại làm lại" khi không đạt yêu cầu —
+ * không chặn thứ tự thực thi, không tính vào đồ thị phụ thuộc.
+ */
+function requiredEdgesOnly(edges: WorkflowEdge[]): WorkflowEdge[] {
+  return edges.filter((e) => e.required === true);
+}
+
+/**
  * Sắp xếp các node theo thứ tự phụ thuộc (node nguồn trước node đích).
  * Tự phát hiện quy trình vẽ ngược và chuẩn hóa chiều cạnh trước khi sort.
  * Bỏ qua các cạnh tới node ngoài (target dạng "ext::..."). Nếu có chu trình,
  * phần còn lại được nối vào cuối để không mất node nào.
  */
 export function topoSortNodeIds(nodes: WorkflowNode[], edges: WorkflowEdge[]): string[] {
-  const normalizedEdges = normalizeEdgeDirection(nodes, edges);
+  const normalizedEdges = requiredEdgesOnly(normalizeEdgeDirection(nodes, edges));
 
-  // Pre-sort by visual position (left→right, top→bottom) so diagram layout is preserved
-  // when multiple nodes share the same dependency level.
-  const sorted = [...nodes].sort((a, b) => {
-    const dx = (a.position?.x ?? 0) - (b.position?.x ?? 0);
-    return dx !== 0 ? dx : (a.position?.y ?? 0) - (b.position?.y ?? 0);
-  });
+  // Ưu tiên sắp theo số thứ tự (order) tăng dần — node chưa gán order rơi xuống dưới, sắp theo
+  // vị trí trên sơ đồ (trái→phải, trên→dưới) rồi theo index gốc để ổn định.
+  const sorted = nodes
+    .map((n, i) => ({ n, i }))
+    .sort((a, b) => {
+      const oa = a.n.order, ob = b.n.order;
+      if (oa != null && ob != null) return oa - ob;
+      if (oa != null) return -1;
+      if (ob != null) return 1;
+      const dx = (a.n.position?.x ?? 0) - (b.n.position?.x ?? 0);
+      if (dx !== 0) return dx;
+      const dy = (a.n.position?.y ?? 0) - (b.n.position?.y ?? 0);
+      if (dy !== 0) return dy;
+      return a.i - b.i;
+    })
+    .map(({ n }) => n);
+  const priority = new Map(sorted.map((n, i) => [n.id, i]));
 
   const ids = new Set(sorted.map((n) => n.id));
   const indeg = new Map<string, number>();
@@ -92,6 +112,9 @@ export function topoSortNodeIds(nodes: WorkflowNode[], edges: WorkflowEdge[]): s
 
   const order: string[] = [];
   while (queue.length) {
+    // Trong số các node đang sẵn sàng (indegree=0) cùng lúc, luôn chọn node có order/vị trí ưu
+    // tiên thấp nhất trước — đảm bảo số thứ tự người dùng đặt được tôn trọng tối đa.
+    queue.sort((a, b) => (priority.get(a) ?? 0) - (priority.get(b) ?? 0));
     const id = queue.shift()!;
     order.push(id);
     for (const next of adj.get(id) ?? []) {
@@ -100,7 +123,7 @@ export function topoSortNodeIds(nodes: WorkflowNode[], edges: WorkflowEdge[]): s
     }
   }
 
-  // node còn sót (do chu trình) — nối vào cuối theo thứ tự vị trí
+  // node còn sót (do chu trình) — nối vào cuối theo thứ tự ưu tiên
   if (order.length < nodes.length) {
     const seen = new Set(order);
     for (const n of sorted) if (!seen.has(n.id)) order.push(n.id);
@@ -108,9 +131,9 @@ export function topoSortNodeIds(nodes: WorkflowNode[], edges: WorkflowEdge[]): s
   return order;
 }
 
-/** Map nodeId → id các node tiền nhiệm (đầu vào trực tiếp). */
+/** Map nodeId → id các node tiền nhiệm (đầu vào trực tiếp) — chỉ tính mũi tên liền (bắt buộc). */
 export function buildDependsOnMap(nodes: WorkflowNode[], edges: WorkflowEdge[]): Map<string, string[]> {
-  const normalizedEdges = normalizeEdgeDirection(nodes, edges);
+  const normalizedEdges = requiredEdgesOnly(normalizeEdgeDirection(nodes, edges));
   const ids = new Set(nodes.map((n) => n.id));
   const deps = new Map<string, string[]>();
   ids.forEach((id) => deps.set(id, []));

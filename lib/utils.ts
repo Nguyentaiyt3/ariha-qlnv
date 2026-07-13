@@ -2,6 +2,7 @@ import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { format, formatDistanceToNow, isAfter, isBefore, addDays, differenceInDays } from "date-fns";
 import { vi } from "date-fns/locale";
+import { sameUnit, isFullAccessRole } from "@/lib/rbac/scope";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -236,13 +237,15 @@ export function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
 
-// Task visibility — managers see all; others only see tasks they participate in
+// Task visibility — director/hrAdmin see all; teamLead sees own-unit tasks + tasks they
+// participate in; others only see tasks they participate in.
 export function isTaskVisible(
-  task: { creatorId: string; mainPerformerId: string; stakeholders?: { userId: string }[]; steps?: { assigneeId: string; subTasks?: { userId: string }[] }[] },
+  task: { creatorId: string; mainPerformerId: string; department?: string; stakeholders?: { userId: string }[]; steps?: { assigneeId: string; subTasks?: { userId: string }[] }[] },
   userId: string,
   role: string,
+  department?: string,
 ): boolean {
-  if (["teamLead", "director", "hrAdmin"].includes(role)) return true;
+  if (isFullAccessRole(role)) return true;
   if (task.creatorId === userId) return true;
   if (task.mainPerformerId === userId) return true;
   if ((task.stakeholders ?? []).some((s) => s.userId === userId)) return true;
@@ -250,5 +253,8 @@ export function isTaskVisible(
     s.assigneeId === userId ||
     (s.subTasks ?? []).some((st) => st.userId === userId)
   )) return true;
+  if (role === "teamLead") {
+    return sameUnit(department, task.department);
+  }
   return false;
 }

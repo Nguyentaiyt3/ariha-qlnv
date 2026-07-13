@@ -29,8 +29,8 @@ export async function getUser(userId: string): Promise<User | null> {
   return data?.user ?? null;
 }
 
-export async function getUsers(): Promise<User[]> {
-  const data = await api<{ users: User[] }>("/api/users");
+export async function getUsers(onlyOwnUnit?: boolean): Promise<User[]> {
+  const data = await api<{ users: User[] }>(onlyOwnUnit ? "/api/users?onlyOwnUnit=1" : "/api/users");
   return data?.users ?? [];
 }
 
@@ -266,11 +266,21 @@ export async function getResearchTopic(id: string): Promise<ResearchTopic | null
 export async function saveResearchTopic(topic: ResearchTopic): Promise<{ id: string; autoLinked: boolean; taskId: string | null } | null> {
   return api<{ id: string; autoLinked: boolean; taskId: string | null }>("/api/research", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(topic) });
 }
-export async function updateResearchTopic(id: string, updates: Partial<ResearchTopic>): Promise<void> {
-  await api(`/api/research/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(updates) });
+export async function updateResearchTopic(id: string, updates: Partial<ResearchTopic>): Promise<{ pending?: boolean }> {
+  const res = await fetch(`/api/research/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(updates) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || "Cập nhật đề tài thất bại");
+  return data;
 }
-export async function deleteResearchTopic(id: string): Promise<void> {
-  await api(`/api/research/${id}`, { method: "DELETE" });
+export async function deleteResearchTopic(id: string, reason?: string): Promise<{ pending?: boolean }> {
+  const res = await fetch(`/api/research/${id}`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || "Xoá đề tài thất bại");
+  return data;
 }
 /** Sinh Task per-đề-tài (hub tích hợp) khi đề tài vào GĐ Triển khai. Idempotent. */
 export async function generateResearchTask(id: string): Promise<{ taskId: string; created: boolean } | null> {
@@ -304,6 +314,10 @@ export async function getClinicalTrials(): Promise<ClinicalTrial[]> {
   const data = await api<{ trials: ClinicalTrial[] }>("/api/clinical-trials");
   return data?.trials ?? [];
 }
+export async function getClinicalTrialsByTaskId(taskId: string): Promise<ClinicalTrial[]> {
+  const data = await api<{ trials: ClinicalTrial[] }>(`/api/clinical-trials?taskId=${taskId}`);
+  return data?.trials ?? [];
+}
 export async function getClinicalTrial(id: string): Promise<ClinicalTrial | null> {
   const data = await api<{ trial: ClinicalTrial }>(`/api/clinical-trials/${id}`);
   return data?.trial ?? null;
@@ -311,11 +325,43 @@ export async function getClinicalTrial(id: string): Promise<ClinicalTrial | null
 export async function saveClinicalTrial(trial: ClinicalTrial): Promise<{ id: string } | null> {
   return api<{ id: string }>("/api/clinical-trials", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(trial) });
 }
-export async function updateClinicalTrial(id: string, updates: Partial<ClinicalTrial>): Promise<void> {
-  await api(`/api/clinical-trials/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(updates) });
+export async function updateClinicalTrial(id: string, updates: Partial<ClinicalTrial>): Promise<{ pending?: boolean }> {
+  const res = await fetch(`/api/clinical-trials/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(updates) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || "Cập nhật thử nghiệm thất bại");
+  return data;
 }
-export async function deleteClinicalTrial(id: string): Promise<void> {
-  await api(`/api/clinical-trials/${id}`, { method: "DELETE" });
+export async function deleteClinicalTrial(id: string, reason?: string): Promise<{ pending?: boolean }> {
+  const res = await fetch(`/api/clinical-trials/${id}`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || "Xoá thử nghiệm thất bại");
+  return data;
+}
+export interface BulkGenerateTaskResult {
+  trialId: string;
+  taskId?: string;
+  created?: boolean;
+  error?: string;
+}
+export async function bulkGenerateClinicalTrialTasks(
+  trialIds: string[],
+  assigneeId: string,
+  workflowId?: string,
+  supervisorId?: string,
+  planId?: string,
+): Promise<{ results: BulkGenerateTaskResult[]; createdCount: number; existingCount: number; errorCount: number }> {
+  const res = await fetch("/api/clinical-trials/bulk-generate-task", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ trialIds, assigneeId, workflowId, supervisorId, planId }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || "Tạo nhiệm vụ hàng loạt thất bại");
+  return data;
 }
 
 // ─── MILESTONE CONFIG ─────────────────────────────────────────

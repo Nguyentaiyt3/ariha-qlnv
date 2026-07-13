@@ -7,12 +7,12 @@ import {
   CheckSquare, MessageSquare, Users, Mail, Activity, BarChart3,
   CheckCheck, Loader2, Star, Send, ClipboardCheck, Pencil, Trash2, X as XIcon, Save,
   Paperclip, Link2, FolderOpen, FileText, Download, Plus, DollarSign, ShieldAlert,
-  Microscope, ChevronRight, ChevronDown, Bell, Copy, Check,
+  Microscope, FlaskConical, ChevronRight, ChevronDown, Bell, Copy, Check,
 } from "lucide-react";
 import { cn, formatDate, formatDateTime, formatRelativeTime, statusLabel, priorityLabel, getInitials, avatarColor, isTaskVisible } from "@/lib/utils";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useAuthStore } from "@/stores/useAuthStore";
-import { subscribeTask, updateTask, deleteTask, getEmailLogs, getAuditTrail, addAuditEvent, addNotification, getEvaluations, saveEvaluation, getEvaluationConfig, getTaskEvaluations, getResearchTopics } from "@/lib/firebase/firestore";
+import { subscribeTask, updateTask, deleteTask, getEmailLogs, getAuditTrail, addAuditEvent, addNotification, getEvaluations, saveEvaluation, getEvaluationConfig, getTaskEvaluations, getResearchTopics, getClinicalTrialsByTaskId } from "@/lib/firebase/firestore";
 import { uploadFile } from "@/lib/firebase/storage";
 import { hasPermission, canAssignTo } from "@/lib/rbac/permissions";
 import { useUnitAbbr } from "@/hooks/useUnitAbbr";
@@ -21,7 +21,8 @@ import { StepsTab } from "@/components/tasks/StepsTab";
 import { TaskChat } from "@/components/tasks/TaskChat";
 import { FinancialWidget } from "@/components/tasks/FinancialWidget";
 import { UserAvatar } from "@/components/common/UserAvatar";
-import type { Task, User as UserType, EmailLog, AuditEvent, Evaluation, CompletionProposal, TaskResource, ChangeRequest, EvaluationConfig, ResearchTopic } from "@/types";
+import type { Task, User as UserType, EmailLog, AuditEvent, Evaluation, CompletionProposal, TaskResource, ChangeRequest, EvaluationConfig, ResearchTopic, ClinicalTrial } from "@/types";
+import { CLINICAL_TRIAL_STATUS_LABEL } from "@/types";
 import { scoreT1, scoreT2Task, scoreT3Task, buildEval3TScore, DEFAULT_EVAL_CONFIG, GRADE_LABEL } from "@/lib/eval3T";
 import { generateId } from "@/lib/utils";
 import { toast } from "sonner";
@@ -555,6 +556,81 @@ function ResearchWidget({
   );
 }
 
+// ─── TrialWidget ─────────────────────────────────────────────
+// Card "Thử nghiệm lâm sàng liên kết" — hiện khi nhiệm vụ này là task theo dõi/pha của một
+// thử nghiệm lâm sàng (executionTaskId / phaseTaskIds trỏ về task này), hoặc người xem có quyền
+// tạo/quản lý thử nghiệm (để họ có lối tắt mở danh sách kể cả khi chưa có liên kết nào).
+function TrialWidget({
+  trials, canManage, canCreate,
+}: {
+  trials: ClinicalTrial[];
+  canManage: boolean;
+  canCreate: boolean;
+}) {
+  const [collapsed, setCollapsed] = useState(false);
+
+  return (
+    <div className="bg-white dark:bg-slate-800 rounded-2xl border border-cyan-200 dark:border-cyan-800 shadow-sm overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between px-5 py-3.5 border-b border-cyan-100 dark:border-cyan-800 bg-cyan-50/60 dark:bg-cyan-900/10">
+        <button
+          onClick={() => setCollapsed(v => !v)}
+          className="flex items-center gap-2 text-left flex-1 min-w-0"
+        >
+          <FlaskConical className="w-4 h-4 text-cyan-600 shrink-0" />
+          <span className="text-sm font-semibold text-cyan-700 dark:text-cyan-300">
+            Thử nghiệm lâm sàng liên kết
+          </span>
+          {trials.length > 0 && (
+            <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-cyan-100 dark:bg-cyan-900/40 text-cyan-600 dark:text-cyan-300">
+              {trials.length}
+            </span>
+          )}
+          <ChevronDown className={cn("w-3.5 h-3.5 text-cyan-400 shrink-0 transition-transform", collapsed && "-rotate-90")} />
+        </button>
+        <a
+          href="/clinical-trials"
+          className="flex items-center gap-1 text-xs text-cyan-600 hover:text-cyan-800 dark:text-cyan-400 font-medium transition shrink-0"
+        >
+          {trials.length > 0 ? "Xem & quản lý" : "Mở danh sách"} <ChevronRight className="w-3.5 h-3.5" />
+        </a>
+      </div>
+
+      {!collapsed && (
+        <div className="p-5 space-y-2">
+          {trials.length === 0 ? (
+            <p className="text-sm text-slate-400 text-center py-2">
+              {canCreate || canManage
+                ? "Chưa có thử nghiệm lâm sàng nào liên kết tới nhiệm vụ này."
+                : "Không có thử nghiệm lâm sàng liên kết."}
+            </p>
+          ) : (
+            trials.map((t) => (
+              <a
+                key={t.id}
+                href={`/clinical-trials/${t.id}`}
+                className="flex items-center justify-between gap-3 p-3 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-cyan-300 dark:hover:border-cyan-700 hover:bg-cyan-50/40 dark:hover:bg-cyan-900/10 transition"
+              >
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-slate-700 dark:text-slate-200 truncate">
+                    {t.code} — {t.title}
+                  </p>
+                  {t.principalInvestigatorName && (
+                    <p className="text-xs text-slate-400 truncate">PI: {t.principalInvestigatorName}</p>
+                  )}
+                </div>
+                <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-cyan-100 dark:bg-cyan-900/40 text-cyan-700 dark:text-cyan-300 shrink-0">
+                  {CLINICAL_TRIAL_STATUS_LABEL[t.status]}
+                </span>
+              </a>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function TaskDetailsPage() {
   const { id } = useParams() as { id: string };
   const router = useRouter();
@@ -577,6 +653,9 @@ export default function TaskDetailsPage() {
 
   // Research topics linked to this task
   const [researchTopics, setResearchTopics] = useState<ResearchTopic[]>([]);
+
+  // Clinical trials linked to this task (executionTaskId hoặc phaseTaskIds trỏ về task này)
+  const [linkedTrials, setLinkedTrials] = useState<ClinicalTrial[]>([]);
 
   // Completion proposal state
   const [proposalSummary, setProposalSummary] = useState("");
@@ -630,10 +709,15 @@ export default function TaskDetailsPage() {
     getResearchTopics(id, true).then(setResearchTopics).catch(() => {});
   }, [id]);
 
+  // Load clinical trials linked to this task
+  useEffect(() => {
+    getClinicalTrialsByTaskId(id).then(setLinkedTrials).catch(() => {});
+  }, [id]);
+
   // Access guard — redirect if user is not a participant
   useEffect(() => {
     if (!task || !currentUser) return;
-    if (!isTaskVisible(task, currentUser.id, currentUser.role)) {
+    if (!isTaskVisible(task, currentUser.id, currentUser.role, currentUser.department)) {
       toast.error("Bạn không có quyền xem nhiệm vụ này.");
       router.push("/tasks");
     }
@@ -880,13 +964,8 @@ export default function TaskDetailsPage() {
   async function handleApprove() {
     if (!currentUser || !task) return;
     try {
+      // Server ghi nhật ký "approved" ngay trong PATCH — không cần client gọi thêm.
       await updateTask(id, { approved: true, approvedBy: currentUser.id, approvedAt: new Date().toISOString() });
-      await addAuditEvent(id, {
-        taskId: id, action: "approved",
-        userId: currentUser.id, userName: currentUser.name,
-        before: { approved: false }, after: { approved: true },
-        timestamp: new Date().toISOString(),
-      });
       toast.success("Đã phê duyệt nhiệm vụ.");
     } catch { toast.error("Phê duyệt thất bại."); }
   }
@@ -897,15 +976,9 @@ export default function TaskDetailsPage() {
       toast.error("Chỉ người thực hiện chính mới có thể thay đổi trạng thái.");
       return;
     }
-    const old = task.status;
     try {
+      // Server ghi nhật ký "status_changed" ngay trong PATCH — không cần client gọi thêm.
       await updateTask(id, { status, updatedAt: new Date().toISOString() });
-      await addAuditEvent(id, {
-        taskId: id, action: "status_changed",
-        userId: currentUser.id, userName: currentUser.name,
-        before: { status: old }, after: { status },
-        timestamp: new Date().toISOString(),
-      });
 
       // Notify approvers + all managers when task moves to review
       if (status === "review") {
@@ -1872,8 +1945,19 @@ export default function TaskDetailsPage() {
         />
       )}
 
-      {/* Tabs */}
-      <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden shadow-sm">
+      {/* Clinical trials widget — shown for anyone with trial:create or trial:manage */}
+      {task && (linkedTrials.length > 0 || (currentUser && (hasPermission(currentUser.role, "trial:manage") || hasPermission(currentUser.role, "trial:create")))) && (
+        <TrialWidget
+          trials={linkedTrials}
+          canManage={!!(currentUser && hasPermission(currentUser.role, "trial:manage"))}
+          canCreate={!!(currentUser && hasPermission(currentUser.role, "trial:create"))}
+        />
+      )}
+
+      {/* Tabs — KHÔNG dùng overflow-hidden ở đây: nó chặn hẳn position:sticky của card điều
+          chỉnh bước trong tab Quy trình (mọi ancestor có overflow hidden/auto/scroll đều phá
+          sticky). Bo góc vẫn giữ nguyên vì các phần tử con đã tự bo góc riêng, không tràn ra ngoài. */}
+      <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-sm">
         <div className="flex border-b border-slate-100 dark:border-slate-700 overflow-x-auto">
           {TABS.map(({ id: tabId, label, Icon }) => (
             <button

@@ -32,8 +32,6 @@ import { useAuthStore } from "@/stores/useAuthStore";
 import {
   subscribeAllAdvanceRequests,
   subscribeMyAdvanceRequests,
-  subscribeAllReimbursementRequests,
-  subscribeMyReimbursementRequests,
   subscribeAllFinancialSummaries,
   subscribeRecentTransactions,
   subscribeAllTransactionsForReport,
@@ -44,11 +42,8 @@ import {
   rejectAdvanceRequest,
   approveAdvanceSettlement,
   rejectAdvanceSettlement,
-  approveReimbursement,
-  markReimbursementPaid,
-  rejectReimbursement,
 } from "@/lib/firebase/finance";
-import type { AdvanceRequest, ReimbursementRequest, FinancialTransaction, TaskFinancialSummary, CostItem } from "@/types";
+import type { AdvanceRequest, FinancialTransaction, TaskFinancialSummary, CostItem } from "@/types";
 import {
   format, subMonths, startOfMonth, endOfMonth, parseISO, isWithinInterval,
   startOfQuarter, endOfQuarter, startOfYear, endOfYear, subQuarters, subYears, addMonths, addQuarters, addYears,
@@ -122,14 +117,6 @@ const ADV_STATUS: Record<AdvanceRequest["status"], { label: string; cls: string;
   SETTLED:             { label: "Đã quyết toán", cls: "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400",    icon: <Check className="w-3 h-3" /> },
 };
 
-const REIMB_STATUS: Record<ReimbursementRequest["status"], { label: string; cls: string }> = {
-  DRAFT:     { label: "Nháp",         cls: "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400" },
-  SUBMITTED: { label: "Đã nộp",       cls: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400" },
-  APPROVED:  { label: "Đã duyệt",     cls: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" },
-  PAID:      { label: "Đã thanh toán", cls: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" },
-  REJECTED:  { label: "Từ chối",      cls: "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400" },
-};
-
 const TX_SOURCE: Record<FinancialTransaction["fundSource"], { label: string; cls: string }> = {
   ADVANCE:       { label: "Tạm ứng",  cls: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400" },
   OUT_OF_POCKET: { label: "Tự ứng",   cls: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400" },
@@ -171,7 +158,6 @@ export default function FinanceDashboardPage() {
   const { currentUser } = useAuthStore();
 
   const [advances,       setAdvances]       = useState<AdvanceRequest[]>([]);
-  const [reimbursements, setReimbursements] = useState<ReimbursementRequest[]>([]);
   const [transactions,   setTransactions]   = useState<FinancialTransaction[]>([]);
   const [allSummaries,   setAllSummaries]   = useState<TaskFinancialSummary[]>([]);
 
@@ -187,13 +173,12 @@ export default function FinanceDashboardPage() {
   const [showPrePeriod,      setShowPrePeriod]      = useState(false);
   const [trendRange,         setTrendRange]         = useState<"3m" | "6m" | "12m" | "3y">("6m");
 
-  const [activeTab, setActiveTab] = useState<"advances" | "reimbursements" | "transactions" | "tasks" | "trial-payments">("advances");
+  const [activeTab, setActiveTab] = useState<"advances" | "transactions" | "tasks" | "trial-payments">("advances");
   const [advFilter, setAdvFilter] = useState<AdvanceRequest["status"] | "ALL">("ALL");
-  const [rmbFilter, setRmbFilter] = useState<ReimbursementRequest["status"] | "ALL">("ALL");
   const [search,    setSearch]    = useState("");
 
   // Pending UI
-  const [rejectTarget,   setRejectTarget]   = useState<{ type: "advance" | "reimb" | "settlement"; id: string; taskId?: string } | null>(null);
+  const [rejectTarget,   setRejectTarget]   = useState<{ type: "advance" | "settlement"; id: string; taskId?: string } | null>(null);
   const [loadingId,      setLoadingId]      = useState<string | null>(null);
   const [expandedAdvId,  setExpandedAdvId]  = useState<string | null>(null);
 
@@ -213,14 +198,11 @@ export default function FinanceDashboardPage() {
     const unsub1 = isApprover
       ? subscribeAllAdvanceRequests(setAdvances)
       : subscribeMyAdvanceRequests(currentUser.id, setAdvances);
-    const unsub2 = isApprover
-      ? subscribeAllReimbursementRequests(setReimbursements)
-      : subscribeMyReimbursementRequests(currentUser.id, setReimbursements);
     const unsub3 = subscribeRecentTransactions(setTransactions, 100);
     const unsub4 = isApprover ? subscribeAllFinancialSummaries(setAllSummaries) : () => {};
     const unsub5 = isApprover ? subscribeAllTransactionsForReport(setReportTx) : () => {};
     const unsub6 = isApprover ? subscribeOpeningBalance(setOpeningBal) : () => {};
-    return () => { unsub1(); unsub2(); unsub3(); unsub4(); unsub5(); unsub6(); };
+    return () => { unsub1(); unsub3(); unsub4(); unsub5(); unsub6(); };
   }, [currentUser]);
 
   // Gọi lại sau khi duyệt hoàn tất bàn giao (ghi nhận thu Viện ARiHA) để bảng "Chi tiết phát sinh trong kỳ" cập nhật ngay
@@ -253,11 +235,18 @@ export default function FinanceDashboardPage() {
   }, [currentUser]);
 
   // ── KPI aggregates ────────────────────────────────────────────────────────
-  // Chỉ tính APPROVED + PENDING_SETTLEMENT — SETTLED đã quyết toán xong, không còn lưu hành
-  const totalAdvanced     = advances.filter((a) => ["APPROVED", "PENDING_SETTLEMENT"].includes(a.status)).reduce((s, a) => s + a.amount, 0);
+  // Chỉ tính APPROVED + PENDING_SETTLEMENT — SETTLED đã quyết toán xong, không còn lưu hành.
+  // "Tạm ứng đang lưu hành" chỉ tính mode=ADVANCE (tự ứng chưa từng nhận tiền công ty).
+  const totalAdvanced     = advances
+    .filter((a) => (a.mode ?? "ADVANCE") === "ADVANCE" && ["APPROVED", "PENDING_SETTLEMENT"].includes(a.status))
+    .reduce((s, a) => s + a.amount, 0);
+  // "Chờ duyệt" gộp cả 2 hình thức — cùng là bước duyệt-trước-khi-chi trong luồng thống nhất.
   const pendingAdvCount   = advances.filter((a) => a.status === "PENDING").length;
   const pendingAdvAmount  = advances.filter((a) => a.status === "PENDING").reduce((s, a) => s + a.amount, 0);
-  const pendingReimb      = reimbursements.filter((r) => ["SUBMITTED", "APPROVED"].includes(r.status)).reduce((s, r) => s + r.amount, 0);
+  // "Chờ hoàn ứng": đơn tự ứng đã nộp quyết toán, chờ duyệt chi.
+  const pendingReimb      = advances
+    .filter((a) => a.mode === "SELF_PAID" && a.status === "PENDING_SETTLEMENT")
+    .reduce((s, a) => s + (a.settlementAmountUsed ?? 0), 0);
 
   // ── Phân quyền giao dịch: approver thấy tất cả, staff chỉ thấy của mình ──
   const isApproverView = currentUser && ["director", "hrAdmin", "teamLead"].includes(currentUser.role);
@@ -269,7 +258,9 @@ export default function FinanceDashboardPage() {
   const txThisMonth = myTx.filter((t) => {
     try { return isWithinInterval(parseISO(t.createdAt), thisMonth); } catch { return false; }
   });
-  const expenseThisMonth = txThisMonth.filter((t) => t.direction === "DEBIT").reduce((s, t) => s + t.amount, 0);
+  // Chỉ tính giao dịch đánh dấu isDisbursement (tiền công ty thực sự rời đi lúc duyệt tạm ứng/hoàn ứng) —
+  // không cộng các giao dịch "chi từ tạm ứng" (chỉ là phân loại lại khoản đã tính, không phải chi mới).
+  const expenseThisMonth = txThisMonth.filter((t) => t.direction === "DEBIT" && t.isDisbursement).reduce((s, t) => s + t.amount, 0);
 
   // ── Tổng hợp toàn đơn vị từ TaskFinancialSummary (denormalized, realtime) ──
   const orgTotalRevenue = allSummaries.reduce((acc, s) => acc + s.totalRevenue, 0);
@@ -279,7 +270,7 @@ export default function FinanceDashboardPage() {
   const orgBudgetTotal  = allSummaries.reduce((acc, s) => acc + (s.budget ?? 0), 0);
   const netCashFlowAll  = isApproverView ? orgNetCashFlow
     : myTx.filter((t) => t.fundSource === "REVENUE" && t.status === "VALID").reduce((s, t) => s + t.amount, 0)
-      - myTx.filter((t) => t.direction === "DEBIT" && t.status === "VALID").reduce((s, t) => s + t.amount, 0);
+      - myTx.filter((t) => t.direction === "DEBIT" && t.status === "VALID" && t.isDisbursement).reduce((s, t) => s + t.amount, 0);
 
   // ── Báo cáo tài chính theo kỳ ────────────────────────────────────────────
   // Dùng reportTx (toàn bộ VALID, 5000) cho approver; myTx cho staff.
@@ -321,11 +312,12 @@ export default function FinanceDashboardPage() {
   const prePeriodTx  = sortedForReport.filter((t) => t.createdAt < rStartIso);
   const periodTx     = sortedForReport.filter((t) => t.createdAt >= rStartIso && t.createdAt <= rEndIso);
 
-  const txNetBefore = prePeriodTx.reduce((s, t) => s + (t.direction === "CREDIT" ? t.amount : -t.amount), 0);
+  // Chi chỉ tính giao dịch isDisbursement (tiền công ty thực sự rời đi) — xem ghi chú ở expenseThisMonth.
+  const txNetBefore = prePeriodTx.reduce((s, t) => s + (t.direction === "CREDIT" ? t.amount : (t.isDisbursement ? -t.amount : 0)), 0);
   const openingAmount = openingBal?.amount ?? 0;
   const tonDau      = openingAmount + txNetBefore;
   const phatSinhThu = periodTx.filter((t) => t.direction === "CREDIT").reduce((s, t) => s + t.amount, 0);
-  const phatSinhChi = periodTx.filter((t) => t.direction === "DEBIT").reduce((s, t)  => s + t.amount, 0);
+  const phatSinhChi = periodTx.filter((t) => t.direction === "DEBIT" && t.isDisbursement).reduce((s, t)  => s + t.amount, 0);
   const tonCuoi     = tonDau + phatSinhThu - phatSinhChi;
 
   async function handleSaveOpening() {
@@ -411,7 +403,7 @@ export default function FinanceDashboardPage() {
         const bucketTx = txForTrend.filter((t) => {
           try { return isWithinInterval(parseISO(t.createdAt), range); } catch { return false; }
         });
-        const chi = bucketTx.filter((t) => t.direction === "DEBIT").reduce((s, t) => s + t.amount, 0);
+        const chi = bucketTx.filter((t) => t.direction === "DEBIT" && t.isDisbursement).reduce((s, t) => s + t.amount, 0);
         const thu = bucketTx.filter((t) => t.direction === "CREDIT").reduce((s, t) => s + t.amount, 0);
         return { label, chi: Math.round(chi / 1000), thu: Math.round(thu / 1000) };
       })
@@ -422,7 +414,7 @@ export default function FinanceDashboardPage() {
         const bucketTx = txForTrend.filter((t) => {
           try { return isWithinInterval(parseISO(t.createdAt), range); } catch { return false; }
         });
-        const chi = bucketTx.filter((t) => t.direction === "DEBIT").reduce((s, t) => s + t.amount, 0);
+        const chi = bucketTx.filter((t) => t.direction === "DEBIT" && t.isDisbursement).reduce((s, t) => s + t.amount, 0);
         const thu = bucketTx.filter((t) => t.direction === "CREDIT").reduce((s, t) => s + t.amount, 0);
         return { label, chi: Math.round(chi / 1000), thu: Math.round(thu / 1000) };
       });
@@ -450,9 +442,6 @@ export default function FinanceDashboardPage() {
     .filter((a) => advFilter === "ALL" || a.status === advFilter)
     .filter((a) => !searchLower || a.purpose.toLowerCase().includes(searchLower) || a.requestedByName.toLowerCase().includes(searchLower));
 
-  const filteredReimbs = reimbursements
-    .filter((r) => rmbFilter === "ALL" || r.status === rmbFilter)
-    .filter((r) => !searchLower || r.description.toLowerCase().includes(searchLower) || r.requestedByName.toLowerCase().includes(searchLower));
   const filteredTx = myTx.filter(
     (t) => !searchLower || t.description.toLowerCase().includes(searchLower) || t.category.toLowerCase().includes(searchLower) || t.createdByName.toLowerCase().includes(searchLower)
   );
@@ -494,25 +483,6 @@ export default function FinanceDashboardPage() {
       toast.success("Đã từ chối thanh toán. Nhân viên cần nộp lại.");
     } catch (err) { toast.error((err as Error).message); }
     finally { setLoadingId(null); setRejectTarget(null); }
-  }
-
-  async function handleApproveReimb(reimb: ReimbursementRequest) {
-    if (!currentUser) return;
-    setLoadingId(reimb.id);
-    try {
-      await approveReimbursement(reimb.id, currentUser.id, currentUser.name);
-      toast.success(`Đã duyệt đơn hoàn ứng ${vnd(reimb.amount)} cho ${reimb.requestedByName}.`);
-    } catch (err) { toast.error((err as Error).message); }
-    finally { setLoadingId(null); }
-  }
-
-  async function handlePayReimb(reimb: ReimbursementRequest) {
-    setLoadingId(reimb.id);
-    try {
-      await markReimbursementPaid(reimb.id, reimb.taskId);
-      toast.success(`Đã xác nhận thanh toán ${vnd(reimb.amount)} cho ${reimb.requestedByName}.`);
-    } catch (err) { toast.error((err as Error).message); }
-    finally { setLoadingId(null); }
   }
 
   // ── Custom tooltip cho chart ──────────────────────────────────────────────
@@ -604,8 +574,9 @@ export default function FinanceDashboardPage() {
           label="Tổng tạm ứng đang lưu hành"
           value={vnd(totalAdvanced)}
           sub={(() => {
-            const active = advances.filter((a) => ["APPROVED", "PENDING_SETTLEMENT"].includes(a.status)).length;
-            const settled = advances.filter((a) => a.status === "SETTLED").length;
+            const isAdvanceMode = (a: AdvanceRequest) => (a.mode ?? "ADVANCE") === "ADVANCE";
+            const active = advances.filter((a) => isAdvanceMode(a) && ["APPROVED", "PENDING_SETTLEMENT"].includes(a.status)).length;
+            const settled = advances.filter((a) => isAdvanceMode(a) && a.status === "SETTLED").length;
             if (active === 0 && settled > 0) return `${settled} đơn đã quyết toán`;
             if (active > 0 && settled > 0) return `${active} đang hoạt động · ${settled} đã quyết toán`;
             return active > 0 ? `${active} đơn đang hoạt động` : "Không có đơn nào";
@@ -615,7 +586,7 @@ export default function FinanceDashboardPage() {
           iconColor={PALETTE.blue}
         />
         <KpiCard
-          label="Đơn tạm ứng chờ duyệt"
+          label="Đề nghị chờ duyệt"
           value={pendingAdvCount.toString()}
           sub={pendingAdvCount > 0 ? `Tổng: ${vnd(pendingAdvAmount)}` : "Không có đơn chờ"}
           icon={Clock}
@@ -626,7 +597,7 @@ export default function FinanceDashboardPage() {
         <KpiCard
           label="Chờ hoàn ứng"
           value={vnd(pendingReimb)}
-          sub={`${reimbursements.filter((r) => ["SUBMITTED", "APPROVED"].includes(r.status)).length} đơn chưa thanh toán`}
+          sub={`${advances.filter((a) => a.mode === "SELF_PAID" && a.status === "PENDING_SETTLEMENT").length} đơn chưa thanh toán`}
           icon={Wallet}
           iconBg="bg-purple-50 dark:bg-purple-900/30"
           iconColor={PALETTE.purple}
@@ -1164,9 +1135,8 @@ export default function FinanceDashboardPage() {
         {/* Tab bar */}
         <div className="flex border-b border-slate-200 dark:border-slate-700 px-4 mt-3">
           {[
-            { key: "advances", label: `Tạm ứng`, count: advances.filter((a) => a.status === "PENDING").length },
-            { key: "reimbursements", label: `Hoàn ứng`, count: reimbursements.filter((r) => r.status === "SUBMITTED").length },
-            { key: "transactions", label: `Giao dịch (${transactions.length})`, count: 0 },
+            { key: "advances", label: `Tạm ứng / Tự ứng`, count: advances.filter((a) => a.status === "PENDING").length },
+            { key: "transactions", label: `Giao dịch (${myTx.length})`, count: 0 },
             ...(isApproverView && allSummaries.length > 0
               ? [{ key: "tasks", label: `Theo nhiệm vụ (${allSummaries.length})`, count: 0 }]
               : []
@@ -1226,16 +1196,21 @@ export default function FinanceDashboardPage() {
                   const s          = ADV_STATUS[adv.status];
                   const isLoading  = loadingId === adv.id;
                   const isExpanded = expandedAdvId === adv.id;
-                  const ba         = adv.bankAccount;
+                  const isSelfPaidMode = (adv.mode ?? "ADVANCE") === "SELF_PAID";
+                  // Tạm ứng: tài khoản thu thập lúc đề nghị. Tự ứng: tài khoản thu thập lúc nộp quyết toán.
+                  const ba         = isSelfPaidMode ? adv.settlementBankAccount : adv.bankAccount;
+                  const qrAmount   = isSelfPaidMode ? (adv.settlementAmountUsed ?? 0) : adv.amount;
+                  const qrPurpose  = isSelfPaidMode ? `Hoàn ứng: ${adv.purpose}` : adv.purpose;
                   const qrUrl      = ba
                     ? `https://img.vietqr.io/image/${ba.bankId}-${ba.accountNumber}-compact2.png` +
-                      `?amount=${adv.amount}&addInfo=${encodeURIComponent(adv.purpose)}&accountName=${encodeURIComponent(ba.accountName)}`
+                      `?amount=${qrAmount}&addInfo=${encodeURIComponent(qrPurpose)}&accountName=${encodeURIComponent(ba.accountName)}`
                     : "";
-                  // PENDING + có tài khoản → luôn hiện QR panel (người duyệt thấy ngay)
-                  const showQrPanel = (adv.status === "PENDING" && !!ba) || (isExpanded && !!ba);
+                  // Tạm ứng tự hiện QR lúc PENDING (chờ duyệt chi); Tự ứng tự hiện lúc PENDING_SETTLEMENT (chờ duyệt hoàn ứng).
+                  const autoShowStatus = isSelfPaidMode ? "PENDING_SETTLEMENT" : "PENDING";
+                  const showQrPanel = (adv.status === autoShowStatus && !!ba) || (isExpanded && !!ba);
 
                   return (
-                    <div key={adv.id} className={cn(adv.status === "PENDING" && ba ? "bg-amber-50/30 dark:bg-amber-900/5" : "")}>
+                    <div key={adv.id} className={cn(adv.status === autoShowStatus && ba ? "bg-amber-50/30 dark:bg-amber-900/5" : "")}>
                       {/* ── Main row ── */}
                       <div className="px-4 py-3 flex items-start gap-3 hover:bg-slate-50/80 dark:hover:bg-slate-800/50 transition">
                         {/* Icon */}
@@ -1246,6 +1221,10 @@ export default function FinanceDashboardPage() {
                         {/* Info */}
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
+                            <span className={cn("text-[9px] px-1.5 py-0.5 rounded-full font-bold shrink-0",
+                              (adv.mode ?? "ADVANCE") === "ADVANCE" ? "bg-blue-100 text-blue-700" : "bg-purple-100 text-purple-700")}>
+                              {(adv.mode ?? "ADVANCE") === "ADVANCE" ? "Tạm ứng" : "Tự ứng"}
+                            </span>
                             <p className="text-sm font-semibold text-slate-700 dark:text-slate-200 truncate">{adv.purpose}</p>
                             <span className={cn("inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full font-medium", s.cls)}>
                               {s.icon} {s.label}
@@ -1267,6 +1246,11 @@ export default function FinanceDashboardPage() {
                           {adv.status === "PENDING_SETTLEMENT" && (
                             <div className="mt-1 text-[11px] text-blue-600 dark:text-blue-400 space-y-0.5">
                               <p>Đã chi: <strong>{vnd(adv.settlementAmountUsed ?? 0)}</strong></p>
+                              {adv.mode === "SELF_PAID" && adv.settlementBankAccount && (
+                                <p className="text-slate-400">
+                                  Chuyển hoàn ứng tới: <strong>{adv.settlementBankAccount.bankName} · {adv.settlementBankAccount.accountNumber} · {adv.settlementBankAccount.accountName}</strong>
+                                </p>
+                              )}
                               {adv.settlementNotes && <p className="text-slate-400">Ghi chú: {adv.settlementNotes}</p>}
                               {adv.settlementProofs && adv.settlementProofs.length > 0 && (
                                 <div className="flex flex-wrap gap-1 mt-1">
@@ -1339,8 +1323,8 @@ export default function FinanceDashboardPage() {
                               </button>
                             </div>
                           )}
-                          {/* Toggle chi tiết chỉ hiện cho trạng thái đã xử lý */}
-                          {adv.status !== "PENDING" && ba && (
+                          {/* Toggle chi tiết chỉ hiện khi không tự động hiện sẵn */}
+                          {adv.status !== autoShowStatus && ba && (
                             <button
                               onClick={() => setExpandedAdvId(isExpanded ? null : adv.id)}
                               className="flex items-center gap-1 text-[10px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition ml-auto"
@@ -1360,7 +1344,7 @@ export default function FinanceDashboardPage() {
                             <div className="flex-1 space-y-2 min-w-0">
                               <p className="text-xs font-semibold text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
                                 <CreditCard className="w-3.5 h-3.5" />
-                                Thông tin chuyển khoản tạm ứng
+                                {isSelfPaidMode ? "Thông tin chuyển khoản hoàn ứng" : "Thông tin chuyển khoản tạm ứng"}
                               </p>
                               <div className="space-y-1.5">
                                 <div className="flex justify-between gap-4 items-center">
@@ -1377,11 +1361,11 @@ export default function FinanceDashboardPage() {
                                 </div>
                                 <div className="flex justify-between gap-4 items-center pt-1.5 border-t border-slate-100 dark:border-slate-700">
                                   <span className="text-[11px] text-slate-500">Số tiền</span>
-                                  <span className="font-bold text-amber-600 text-base">{vnd(adv.amount)}</span>
+                                  <span className="font-bold text-amber-600 text-base">{vnd(qrAmount)}</span>
                                 </div>
                                 <div className="pt-1">
                                   <p className="text-[10px] text-slate-400 mb-0.5">Nội dung chuyển khoản:</p>
-                                  <p className="text-xs text-slate-600 dark:text-slate-300 font-medium break-all bg-slate-50 dark:bg-slate-700/50 px-2 py-1 rounded-lg">{adv.purpose}</p>
+                                  <p className="text-xs text-slate-600 dark:text-slate-300 font-medium break-all bg-slate-50 dark:bg-slate-700/50 px-2 py-1 rounded-lg">{qrPurpose}</p>
                                 </div>
                               </div>
                             </div>
@@ -1415,105 +1399,6 @@ export default function FinanceDashboardPage() {
         )}
 
         {/* ── Tab: Đơn hoàn ứng ── */}
-        {activeTab === "reimbursements" && (
-          <div>
-            {/* Filter chips */}
-            <div className="flex gap-1.5 px-4 py-3 flex-wrap">
-              {(["ALL", "SUBMITTED", "APPROVED", "PAID", "REJECTED"] as const).map((s) => (
-                <button
-                  key={s}
-                  onClick={() => setRmbFilter(s)}
-                  className={cn(
-                    "px-2.5 py-1 rounded-lg text-[11px] font-medium transition",
-                    rmbFilter === s
-                      ? "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300"
-                      : "bg-slate-100 dark:bg-slate-800 text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-700"
-                  )}
-                >
-                  {s === "ALL" ? `Tất cả (${reimbursements.length})` : REIMB_STATUS[s].label}
-                  {s !== "ALL" && <span className="ml-1">({reimbursements.filter((r) => r.status === s).length})</span>}
-                </button>
-              ))}
-            </div>
-
-            {filteredReimbs.length === 0 ? (
-              <p className="text-center text-sm text-slate-400 py-10">Không có đơn hoàn ứng nào.</p>
-            ) : (
-              <div className="divide-y divide-slate-100 dark:divide-slate-800">
-                {filteredReimbs.map((reimb) => {
-                  const s = REIMB_STATUS[reimb.status];
-                  const isLoading = loadingId === reimb.id;
-                  return (
-                    <div key={reimb.id} className="px-4 py-3 flex items-start gap-3 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition">
-                      <div className="w-8 h-8 rounded-xl bg-purple-50 dark:bg-purple-900/20 flex items-center justify-center shrink-0 mt-0.5">
-                        <Receipt className="w-4 h-4 text-purple-600" />
-                      </div>
-
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <p className="text-sm font-semibold text-slate-700 dark:text-slate-200 truncate">{reimb.description}</p>
-                          <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full font-medium", s.cls)}>{s.label}</span>
-                        </div>
-                        <p className="text-xs text-slate-400 mt-0.5">
-                          {reimb.requestedByName} ·{" "}
-                          {format(parseISO(reimb.createdAt), "dd/MM/yyyy HH:mm", { locale: vi })}
-                        </p>
-                        {reimb.proofs.length > 0 && (
-                          <p className="text-[11px] text-slate-400 mt-0.5">
-                            <FileText className="w-3 h-3 inline mr-0.5" />
-                            {reimb.proofs.length} chứng từ đính kèm
-                          </p>
-                        )}
-                        <Link href={`/tasks/${reimb.taskId}`}
-                          className="text-[10px] text-blue-500 hover:underline mt-0.5 inline-block">
-                          → Xem nhiệm vụ
-                        </Link>
-                      </div>
-
-                      <div className="text-right shrink-0 space-y-1.5">
-                        <p className="text-base font-bold text-slate-800 dark:text-white">{vnd(reimb.amount)}</p>
-                        {canApprove && (
-                          <div className="flex gap-1.5 justify-end flex-wrap">
-                            {reimb.status === "SUBMITTED" && (
-                              <>
-                                <button
-                                  onClick={() => handleApproveReimb(reimb)}
-                                  disabled={!!isLoading}
-                                  className="px-2.5 py-1 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg text-[11px] font-medium transition flex items-center gap-1"
-                                >
-                                  {isLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
-                                  Duyệt
-                                </button>
-                                <button
-                                  onClick={() => setRejectTarget({ type: "reimb", id: reimb.id, taskId: reimb.taskId })}
-                                  disabled={!!isLoading}
-                                  className="px-2.5 py-1 border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg text-[11px] font-medium transition"
-                                >
-                                  <X className="w-3 h-3 inline mr-0.5" /> Từ chối
-                                </button>
-                              </>
-                            )}
-                            {reimb.status === "APPROVED" && (
-                              <button
-                                onClick={() => handlePayReimb(reimb)}
-                                disabled={!!isLoading}
-                                className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg text-[11px] font-medium transition flex items-center gap-1"
-                              >
-                                {isLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <DollarSign className="w-3 h-3" />}
-                                Xác nhận trả tiền
-                              </button>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        )}
-
         {/* ── Tab: Giao dịch gần đây ── */}
         {activeTab === "transactions" && (
           <div>
@@ -1663,20 +1548,8 @@ export default function FinanceDashboardPage() {
           onConfirm={async (reason) => {
             if (rejectTarget.type === "advance") {
               await handleRejectAdv(rejectTarget.id, reason);
-            } else if (rejectTarget.type === "settlement") {
-              await handleRejectSettlement(rejectTarget.id, reason);
             } else {
-              // Hoàn ứng từ chối
-              setLoadingId(rejectTarget.id);
-              try {
-                await rejectReimbursement(rejectTarget.id, reason);
-                toast.success("Đã từ chối đơn hoàn ứng.");
-              } catch (err) {
-                toast.error((err as Error).message);
-              } finally {
-                setLoadingId(null);
-                setRejectTarget(null);
-              }
+              await handleRejectSettlement(rejectTarget.id, reason);
             }
           }}
           onCancel={() => setRejectTarget(null)}

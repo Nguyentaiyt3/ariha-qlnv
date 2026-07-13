@@ -29,6 +29,8 @@ export const ACTION_LABEL: Record<string, string> = {
   risk_flagged:          "Gắn cờ rủi ro",
   comment_added:         "Thêm bình luận",
   deleted:               "Xoá nhiệm vụ",
+  reassigned:            "Đổi người thực hiện chính",
+  deadline_changed:      "Đổi hạn nhiệm vụ",
 };
 
 export const ENTITY_TYPE_LABEL: Record<string, string> = {

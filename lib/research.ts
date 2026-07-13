@@ -116,3 +116,51 @@ export function redactReviewer(r: ResearchReview): ResearchReview {
     reviewerOrg: undefined,
   };
 }
+
+/**
+ * Ẩn danh tính phản biện theo đúng nguyên tắc phản biện kín 2 chiều, tính theo góc nhìn của
+ * 1 người xem cụ thể:
+ *  - Tác giả/đồng tác giả KHÔNG được biết danh tính bất kỳ phản biện nào của đề tài mình —
+ *    kể cả khi họ đồng thời có quyền quản lý (director/hrAdmin/Quản lý NCKH tự đăng ký đề tài).
+ *  - 1 phản biện KHÔNG được biết danh tính phản biện còn lại CÙNG giai đoạn — kể cả khi họ
+ *    đồng thời có quyền quản lý.
+ *  - Phiếu của chính người xem luôn hiển thị đầy đủ.
+ *  - Quản lý THUẦN (không phải tác giả, không phải 1 trong 2 phản biện của đề tài đó) vẫn thấy
+ *    đầy đủ danh tính để điều phối/phân công.
+ */
+export function redactTopicReviewsForViewer(
+  reviews: ResearchReview[] | undefined,
+  viewerId: string,
+  viewerIsAuthor: boolean,
+): ResearchReview[] {
+  const list = reviews ?? [];
+  return list.map((r) => {
+    if (r.reviewerId === viewerId) return r;
+    if (viewerIsAuthor) return redactReviewer(r);
+    const viewerIsReviewerSameStage = list.some((rr) => rr.reviewerId === viewerId && rr.stage === r.stage);
+    if (viewerIsReviewerSameStage) return redactReviewer(r);
+    return r;
+  });
+}
+
+/**
+ * File đề cương chỉ được sửa/xoá/thay thế TRƯỚC khi nộp thẩm định GĐ1 (còn ở GĐ0, hoặc đang ở
+ * bước "Tổng hợp đề cương" p_compile trước khi bấm Nộp thẩm định). Một khi đã nộp (currentStep
+ * chuyển sang p_assign trở đi, hoặc đã qua hẳn giai đoạn khác), file bị khoá vĩnh viễn cho vòng
+ * thẩm định đó — vì phản biện có thể đã/đang đánh giá đúng file này.
+ */
+export function isProposalFileLocked(topic: Pick<ResearchTopic, "stage" | "currentStep">): boolean {
+  return !(
+    topic.stage === "init" ||
+    (topic.stage === "proposal" && (topic.currentStep === "p_intake" || topic.currentStep === "p_compile"))
+  );
+}
+
+/**
+ * File đề tài/báo cáo tổng kết chỉ được sửa/xoá/thay thế TRƯỚC khi nộp thẩm định GĐ2 (chưa bước
+ * vào giai đoạn Nghiệm thu). Một khi đã nộp, file bị khoá vì phản biện GĐ2 có thể đã/đang đánh
+ * giá đúng file này.
+ */
+export function isFinalReportFileLocked(topic: Pick<ResearchTopic, "stage">): boolean {
+  return topic.stage === "recognition" || topic.stage === "completed";
+}
