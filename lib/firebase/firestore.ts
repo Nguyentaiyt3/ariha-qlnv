@@ -256,7 +256,12 @@ export async function getResearchTopics(taskId?: string, forIntake?: boolean): P
   if (taskId) params.set("taskId", taskId);
   if (forIntake) params.set("forIntake", "1");
   const qs = params.toString();
-  const data = await api<{ topics: ResearchTopic[] }>(`/api/research${qs ? `?${qs}` : ""}`);
+  // Không dùng helper api() dùng chung ở đây — nó nuốt lỗi mạng/HTTP thành null, khiến một lỗi
+  // tạm thời (vd. kết nối DB chập chờn) bị hiển thị y hệt "không có đề tài nào", làm danh sách
+  // "Phiếu của tôi" lúc có lúc không mà không có dấu hiệu gì cho người dùng biết là do lỗi tải.
+  const res = await fetch(`/api/research${qs ? `?${qs}` : ""}`);
+  if (!res.ok) throw new Error("Không tải được danh sách đề tài");
+  const data = await res.json().catch(() => ({})) as { topics?: ResearchTopic[] };
   return data?.topics ?? [];
 }
 export async function getResearchTopic(id: string): Promise<ResearchTopic | null> {

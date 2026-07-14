@@ -120,6 +120,8 @@ interface Props {
   canAnnotate: boolean;            // can add highlights/notes
   canManageAll?: boolean;          // can edit/delete others' annotations
   currentUserId?: string;
+  /** Panel "Ghi chú" mở sẵn hay thu gọn lúc mới mở — mặc định mở (true). */
+  notesDefaultOpen?: boolean;
   onAdd?: (a: Omit<ResearchAnnotation, "id" | "authorId" | "authorName" | "createdAt">) => Promise<ResearchAnnotation | null>;
   onUpdate?: (id: string, patch: { note?: string; color?: ResearchAnnotation["color"] }) => Promise<void>;
   onDelete?: (id: string) => Promise<void>;
@@ -131,7 +133,7 @@ interface ActivePopover { aid: string; x: number; y: number; }
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function DocxAnnotator({
-  fileUrl, annotations, canAnnotate, canManageAll = false, currentUserId,
+  fileUrl, annotations, canAnnotate, canManageAll = false, currentUserId, notesDefaultOpen = true,
   onAdd, onUpdate, onDelete,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -140,7 +142,7 @@ export function DocxAnnotator({
   const [rendered, setRendered] = useState(false);
 
   const [items, setItems] = useState<ResearchAnnotation[]>(annotations);
-  const [showNotes, setShowNotes] = useState(true);
+  const [showNotes, setShowNotes] = useState(notesDefaultOpen);
   const [toolbar, setToolbar] = useState<Toolbar | null>(null);
   const [popover, setPopover] = useState<ActivePopover | null>(null);
   const [noteDraft, setNoteDraft] = useState("");

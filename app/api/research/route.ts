@@ -3,8 +3,8 @@ import { verifyToken, getUser } from "@/lib/mongodb/auth";
 import { getResearchTopics, createResearchTopic, claimPublicTopicsByEmail } from "@/lib/mongodb/firestore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { sameUnit } from "@/lib/rbac/scope";
-import { isNckhManager, isTopicAuthor } from "@/lib/researchUtils";
-import { redactTopicReviewsForViewer } from "@/lib/research";
+import { isNckhManager, isTopicAuthor, isTopicReviewer } from "@/lib/researchUtils";
+import { redactTopicReviewsForViewer, redactAuthorForReviewer } from "@/lib/research";
 import { generateId } from "@/lib/utils";
 import { connectDB } from "@/lib/mongodb/config";
 import { TaskModel } from "@/lib/mongodb/models";
@@ -50,9 +50,10 @@ export async function GET(req: NextRequest) {
   // lỗ hổng này, để lộ toàn bộ đề tài NCKH cho bất kỳ ai được giao task, không liên quan gì đến
   // vai trò/chỉ định quản lý NCKH).
   const me = await getUser(session.userId);
+  const isNckhMgr = !!me && isNckhManager(me);
   const isFullManager = !!me && hasPermission(me.role, "research:manage");
   const isTeamLeadMonitor = !!me && me.role === "teamLead" && hasPermission(me.role, "research:monitor");
-  const canSeeAll = isFullManager || isNckhManager(me);
+  const canSeeAll = isFullManager || isNckhMgr;
 
   let topics: ResearchTopic[];
   if (canSeeAll) {
@@ -82,8 +83,13 @@ export async function GET(req: NextRequest) {
   // danh tính phản biện cho tác giả/phản biện còn lại nếu họ đồng thời có quyền quản lý.
   topics = topics.map((t) => ({
     ...t,
-    reviews: redactTopicReviewsForViewer(t.reviews, session.userId, isTopicAuthor({ id: session.userId, email: me?.email }, t)),
+    reviews: redactTopicReviewsForViewer(t.reviews, session.userId, isTopicAuthor({ id: session.userId, email: me?.email }, t), isNckhMgr),
   }));
+
+  // Chiều còn lại của phản biện kín: phản biện không được biết danh tính tác giả/nhóm thực hiện —
+  // áp dụng ngay cả khi họ đồng thời có quyền quản lý (khớp cùng nguyên tắc với reviews ở trên:
+  // đã là phản biện của 1 đề tài thì không còn "quản lý thuần" cho riêng đề tài đó nữa).
+  topics = topics.map((t) => (isTopicReviewer(t, session.userId) ? redactAuthorForReviewer(t) : t));
 
   return NextResponse.json({ topics });
 }

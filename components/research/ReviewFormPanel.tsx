@@ -5,6 +5,7 @@ import { CheckCircle2, Loader2, FileText, Star, AlertCircle } from "lucide-react
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { researchFileUrl } from "@/lib/researchFileUrl";
+import { DocxAnnotator } from "@/components/research/DocxAnnotator";
 import type { ResearchReview, ResearchTopic, ReviewScores, ReviewVerdict, ReviewGrade } from "@/types";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -85,7 +86,20 @@ interface Props {
   onCancel: () => void;
 }
 
+const STAGE_META = {
+  proposal:    { badge: "Đề cương nghiên cứu", title: "Thẩm định đề cương — GĐ1", fileLabel: "File đề cương" },
+  recognition: { badge: "Báo cáo kết quả nghiên cứu", title: "Thẩm định đề tài — GĐ2", fileLabel: "File báo cáo kết quả" },
+} as const;
+
 export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
+  const stageMeta = STAGE_META[review.stage];
+  const fileUrl = review.topicFileUrl ?? (review.stage === "recognition" ? topic.finalReportFileUrl : topic.proposalFileUrl);
+  // Xem file chính (đề cương/báo cáo kết quả) hoặc chuyển qua từng minh chứng đính kèm — cùng 1
+  // khung xem, không cần rời khỏi phiếu nhận xét để mở minh chứng.
+  const [activeDocId, setActiveDocId] = useState<string | null>(null);
+  const activeDoc = activeDocId ? topic.documents.find(d => d.id === activeDocId) : undefined;
+  const activeFileUrl = activeDoc?.url ?? fileUrl;
+  const activeFileLabel = activeDoc?.name ?? stageMeta.fileLabel;
   // Pre-fill if already partially filled
   const [scores, setScores] = useState<ReviewScores>(review.scores ?? { ...EMPTY_SCORES });
   const [urgency,       setUrgency]       = useState(review.urgency       ?? "");
@@ -98,20 +112,39 @@ export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
   const [grade,         setGrade]         = useState<ReviewGrade   | "">(review.grade   ?? "");
   const [needResubmit,  setNeedResubmit]  = useState(review.needResubmit ?? false);
   const [saving, setSaving] = useState(false);
+  const isConfirmMode = review.mode === "confirm";
+  const [confirmVerdict, setConfirmVerdict] = useState<"pass" | "fail" | "">(
+    review.verdict === "pass" || review.verdict === "fail" ? review.verdict : ""
+  );
 
   const totalScore = Object.values(scores).reduce((a, b) => a + b, 0);
   const maxScore   = CRITERIA.length * 5; // 35
 
   const filledCriteria = Object.values(scores).filter(v => v > 0).length;
-  const canSubmit = filledCriteria === CRITERIA.length && verdict !== "";
+  // "Không đồng ý" bắt buộc phải nêu lý do — để tác giả biết cụ thể cần sửa gì thêm.
+  const canSubmit = isConfirmMode
+    ? confirmVerdict !== "" && (confirmVerdict === "pass" || addComments.trim() !== "")
+    : filledCriteria === CRITERIA.length && verdict !== "";
 
   async function handleSubmit() {
     if (!canSubmit) {
-      if (filledCriteria < CRITERIA.length) toast.warning("Hãy chấm điểm tất cả 7 tiêu chí");
+      if (isConfirmMode) {
+        if (confirmVerdict === "") toast.warning("Hãy chọn Đồng ý hoặc Không đồng ý");
+        else toast.warning("Hãy nêu lý do vì sao chưa đạt yêu cầu");
+      }
+      else if (filledCriteria < CRITERIA.length) toast.warning("Hãy chấm điểm tất cả 7 tiêu chí");
       else toast.warning("Hãy chọn kết luận (ĐẠT / KHÔNG ĐẠT)");
       return;
     }
     setSaving(true);
+    if (isConfirmMode) {
+      await onSubmit({
+        verdict: confirmVerdict as ReviewVerdict,
+        additionalComments: addComments.trim() || undefined,
+      });
+      setSaving(false);
+      return;
+    }
     await onSubmit({
       scores,
       urgency:            urgency.trim()      || undefined,
@@ -133,106 +166,220 @@ export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
       <div className="relative flex flex-col lg:flex-row w-full max-w-7xl mx-auto my-4 mx-4 bg-background rounded-2xl shadow-2xl overflow-hidden">
 
         {/* ── LEFT: Proposal content ─────────────────────────────── */}
-        <div className="lg:w-[45%] flex flex-col border-r border-border overflow-y-auto max-h-[90vh]">
+        <div className="lg:w-2/3 flex flex-col border-r border-border max-h-[90vh]">
           <div className="px-5 py-4 border-b border-border bg-violet-50 dark:bg-violet-900/10 shrink-0">
             <div className="flex items-center gap-2 mb-1">
               <FileText className="w-4 h-4 text-violet-600" />
-              <span className="text-xs font-semibold text-violet-600 uppercase tracking-wide">Đề cương nghiên cứu</span>
+              <span className="text-xs font-semibold text-violet-600 uppercase tracking-wide">{stageMeta.badge}</span>
             </div>
             <h2 className="text-base font-bold text-foreground leading-tight">{topic.title}</h2>
+            {/* Phản biện kín: không hiển thị chủ nhiệm/đơn vị — server đã ẩn danh tính tác giả
+                cho người xem là phản biện, chỉ còn Năm để hiện. */}
             <p className="text-xs text-slate-500 mt-1">
-              Chủ nhiệm: <strong>{topic.principalInvestigatorId}</strong>
-              {topic.department && ` · ${topic.department}`} · Năm {topic.year}
+              {topic.principalInvestigatorId && <>Chủ nhiệm: <strong>{topic.principalInvestigatorId}</strong>{topic.department && ` · ${topic.department}`} · </>}
+              Năm {topic.year}
             </p>
           </div>
 
-          <div className="flex-1 px-5 py-4 space-y-4 overflow-y-auto">
-            {/* Abstract */}
-            {topic.abstract && (
-              <div>
-                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Tóm tắt</p>
-                <p className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed italic">{topic.abstract}</p>
-              </div>
-            )}
-
-            {/* Compile note (proposal summary) */}
-            {topic.compileNote ? (
-              <div>
-                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Nội dung đề cương</p>
-                <div className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed whitespace-pre-wrap bg-slate-50 dark:bg-slate-800/50 rounded-xl p-4 border border-slate-100 dark:border-slate-700">
-                  {topic.compileNote}
+          {/* Tóm tắt / nội dung đề cương / lĩnh vực — khối gọn phía trên, không chiếm chỗ khung xem file */}
+          {(topic.abstract || (review.stage === "proposal") || topic.field) && (
+            <div className="px-5 pt-3 pb-1 space-y-3 shrink-0 overflow-y-auto max-h-[30vh]">
+              {topic.abstract && (
+                <div>
+                  <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Tóm tắt</p>
+                  <p className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed italic">{topic.abstract}</p>
                 </div>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2 p-4 bg-amber-50 dark:bg-amber-900/10 rounded-xl border border-amber-200 dark:border-amber-800">
-                <AlertCircle className="w-4 h-4 text-amber-500 shrink-0" />
-                <p className="text-sm text-amber-700 dark:text-amber-400">Chưa có nội dung đề cương được nộp.</p>
-              </div>
-            )}
+              )}
 
-            {/* Keywords / field */}
-            {topic.field && (
-              <div>
-                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Lĩnh vực</p>
-                <span className="text-xs px-2 py-0.5 rounded-full bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300">
-                  {topic.field}
-                </span>
-              </div>
-            )}
+              {/* Nội dung tổng hợp đề cương (compileNote) chỉ liên quan GĐ1 — không hiện ở phiếu GĐ2,
+                  nhường chỗ cho phần xem file báo cáo kết quả rộng rãi hơn cả trên lẫn dưới. */}
+              {review.stage === "proposal" && (
+                topic.compileNote ? (
+                  <div>
+                    <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Nội dung đề cương</p>
+                    <div className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed whitespace-pre-wrap bg-slate-50 dark:bg-slate-800/50 rounded-xl p-4 border border-slate-100 dark:border-slate-700">
+                      {topic.compileNote}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 p-4 bg-amber-50 dark:bg-amber-900/10 rounded-xl border border-amber-200 dark:border-amber-800">
+                    <AlertCircle className="w-4 h-4 text-amber-500 shrink-0" />
+                    <p className="text-sm text-amber-700 dark:text-amber-400">Chưa có nội dung đề cương được nộp.</p>
+                  </div>
+                )
+              )}
 
-            {/* Proposal file */}
-            {(review.topicFileUrl ?? topic.proposalFileUrl) && (
-              <div>
-                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">File đề cương</p>
-                <a
-                  href={researchFileUrl(review.topicFileUrl ?? topic.proposalFileUrl)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 text-sm text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 underline"
-                >
-                  <FileText className="w-4 h-4" />
-                  Xem file đề cương (PDF / DOC)
-                </a>
-              </div>
-            )}
-
-            {/* Scoring summary read-only */}
-            {filledCriteria > 0 && (
-              <div className="mt-2 pt-3 border-t border-slate-100 dark:border-slate-700">
-                <div className="flex justify-between items-center">
-                  <p className="text-xs text-slate-500">Tổng điểm hiện tại</p>
-                  <span className={cn(
-                    "text-lg font-bold",
-                    totalScore >= 28 ? "text-green-600" : totalScore >= 21 ? "text-amber-600" : "text-red-500",
-                  )}>
-                    {totalScore} / {maxScore}
+              {topic.field && (
+                <div>
+                  <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Lĩnh vực</p>
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300">
+                    {topic.field}
                   </span>
                 </div>
-                <div className="mt-1 h-2 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
-                  <div
-                    className={cn(
-                      "h-full rounded-full transition-all",
-                      totalScore >= 28 ? "bg-green-500" : totalScore >= 21 ? "bg-amber-500" : "bg-red-500",
-                    )}
-                    style={{ width: `${(totalScore / maxScore) * 100}%` }}
+              )}
+            </div>
+          )}
+
+          {/* Khung xem file — kéo dãn hết chiều cao còn lại, sát lề dưới. Tab đầu là file chính
+              (đề cương/báo cáo kết quả tương ứng đúng giai đoạn phiếu), các tab sau là từng minh
+              chứng đính kèm — xem trực tiếp không cần rời phiếu nhận xét. */}
+          {(fileUrl || topic.documents.length > 0) && (
+            <div className="flex-1 min-h-0 flex flex-col px-5 pt-2 pb-3">
+              <div className="flex items-center justify-between gap-2 mb-1.5 shrink-0">
+                <div className="flex items-center gap-1 overflow-x-auto">
+                  {fileUrl && (
+                    <button
+                      onClick={() => setActiveDocId(null)}
+                      className={cn(
+                        "shrink-0 text-[11px] font-semibold px-2.5 py-1 rounded-full transition",
+                        activeDocId === null
+                          ? "bg-violet-600 text-white"
+                          : "bg-slate-100 dark:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300",
+                      )}
+                    >
+                      {stageMeta.fileLabel}
+                    </button>
+                  )}
+                  {topic.documents.map(doc => (
+                    <button
+                      key={doc.id}
+                      onClick={() => setActiveDocId(doc.id)}
+                      title={doc.name}
+                      className={cn(
+                        "shrink-0 max-w-[140px] truncate text-[11px] font-semibold px-2.5 py-1 rounded-full transition",
+                        activeDocId === doc.id
+                          ? "bg-violet-600 text-white"
+                          : "bg-slate-100 dark:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300",
+                      )}
+                    >
+                      {doc.name}
+                    </button>
+                  ))}
+                </div>
+                {activeFileUrl && (
+                  <a
+                    href={researchFileUrl(activeFileUrl)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="shrink-0 inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 underline"
+                  >
+                    <FileText className="w-3 h-3" />
+                    Mở trong tab mới
+                  </a>
+                )}
+              </div>
+              <div className="flex-1 min-h-0 rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+                {activeFileUrl ? (
+                  <DocxAnnotator
+                    key={activeFileUrl}
+                    fileUrl={activeFileUrl}
+                    annotations={[]}
+                    canAnnotate={false}
+                    notesDefaultOpen={false}
                   />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-sm text-slate-400">
+                    Chưa có file cho mục này
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Scoring summary read-only */}
+          {filledCriteria > 0 && (
+            <div className="px-5 pb-4 pt-2 border-t border-slate-100 dark:border-slate-700 shrink-0">
+              <div className="flex justify-between items-center">
+                <p className="text-xs text-slate-500">Tổng điểm hiện tại</p>
+                <span className={cn(
+                  "text-lg font-bold",
+                  totalScore >= 28 ? "text-green-600" : totalScore >= 21 ? "text-amber-600" : "text-red-500",
+                )}>
+                  {totalScore} / {maxScore}
+                </span>
+              </div>
+              <div className="mt-1 h-2 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
+                <div
+                  className={cn(
+                    "h-full rounded-full transition-all",
+                    totalScore >= 28 ? "bg-green-500" : totalScore >= 21 ? "bg-amber-500" : "bg-red-500",
+                  )}
+                  style={{ width: `${(totalScore / maxScore) * 100}%` }}
+                />
                 </div>
               </div>
             )}
           </div>
-        </div>
 
         {/* ── RIGHT: Review form ─────────────────────────────────── */}
-        <div className="lg:w-[55%] flex flex-col overflow-y-auto max-h-[90vh]">
+        <div className="lg:w-1/3 flex flex-col overflow-y-auto max-h-[90vh]">
           {/* Header */}
           <div className="px-5 py-4 border-b border-border bg-card shrink-0 flex items-center justify-between">
             <div>
-              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Phiếu nhận xét kín</p>
-              <h3 className="text-sm font-bold text-foreground">Thẩm định đề cương — GĐ1</h3>
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+                {isConfirmMode ? "Phiếu xác nhận bản chỉnh sửa" : "Phiếu nhận xét kín"}
+              </p>
+              <h3 className="text-sm font-bold text-foreground">{stageMeta.title}</h3>
             </div>
             <button onClick={onCancel} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 text-xl leading-none">✕</button>
           </div>
 
+          {isConfirmMode ? (
+            <div className="flex-1 px-5 py-4 space-y-5 overflow-y-auto">
+              <div className="flex items-center gap-2 p-3 bg-violet-50 dark:bg-violet-900/10 rounded-xl border border-violet-200 dark:border-violet-800">
+                <AlertCircle className="w-4 h-4 text-violet-600 shrink-0" />
+                <p className="text-sm text-violet-700 dark:text-violet-300">
+                  Tác giả đã nộp lại bản chỉnh sửa theo ý kiến của bạn. Vui lòng xem file bên trái và xác nhận bản sửa đã đạt yêu cầu hay chưa.
+                </p>
+              </div>
+              {review.revisionPoints && (
+                <div>
+                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">Điểm cần chỉnh sửa (lần trước)</p>
+                  <div className="text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap bg-slate-50 dark:bg-slate-800/50 rounded-xl p-3 border border-slate-100 dark:border-slate-700">
+                    {review.revisionPoints}
+                  </div>
+                </div>
+              )}
+              <section>
+                <label className="block text-xs font-semibold text-slate-500 mb-2">Xác nhận *</label>
+                <div className="space-y-1.5">
+                  {[
+                    { value: "pass" as const, label: "Đồng ý — bản sửa đã đạt yêu cầu", color: "text-green-600" },
+                    { value: "fail" as const, label: "Không đồng ý — vẫn chưa đạt yêu cầu", color: "text-red-600" },
+                  ].map(opt => (
+                    <label key={opt.value} className={cn(
+                      "flex items-center gap-2.5 p-2.5 rounded-lg border cursor-pointer transition",
+                      confirmVerdict === opt.value
+                        ? "border-violet-400 dark:border-violet-600 bg-violet-50 dark:bg-violet-900/20"
+                        : "border-slate-200 dark:border-slate-700 hover:border-slate-300",
+                    )}>
+                      <input
+                        type="radio"
+                        name="confirmVerdict"
+                        value={opt.value}
+                        checked={confirmVerdict === opt.value}
+                        onChange={() => setConfirmVerdict(opt.value)}
+                        className="accent-violet-600"
+                      />
+                      <span className={cn("text-sm font-semibold", opt.color)}>{opt.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </section>
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1">
+                  {confirmVerdict === "fail" ? "Lý do chưa đạt yêu cầu *" : "Ghi chú (nếu có)"}
+                </label>
+                <textarea
+                  rows={4}
+                  placeholder={confirmVerdict === "fail" ? "Nêu cụ thể điểm chưa đạt để tác giả sửa tiếp..." : "Ý kiến thêm về bản chỉnh sửa..."}
+                  value={addComments}
+                  onChange={e => setAddComments(e.target.value)}
+                  className="w-full text-sm border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 bg-white dark:bg-slate-800 text-foreground placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500 resize-none"
+                />
+              </div>
+            </div>
+          ) : (
           <div className="flex-1 px-5 py-4 space-y-6 overflow-y-auto">
 
             {/* ── Tiêu chí chấm điểm ── */}
@@ -393,11 +540,14 @@ export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
               </div>
             </section>
           </div>
+          )}
 
           {/* Footer */}
           <div className="px-5 py-4 border-t border-border bg-card shrink-0 flex items-center justify-between gap-3">
             <p className="text-xs text-slate-400">
-              {filledCriteria < CRITERIA.length
+              {isConfirmMode
+                ? (confirmVerdict === "" ? <span className="text-amber-600">⚠ Chưa xác nhận</span> : <span className="text-green-600">✓ Sẵn sàng nộp</span>)
+                : filledCriteria < CRITERIA.length
                 ? <span className="text-amber-600">⚠ Còn {CRITERIA.length - filledCriteria} tiêu chí chưa chấm điểm</span>
                 : verdict === ""
                 ? <span className="text-amber-600">⚠ Chưa chọn kết luận</span>
@@ -414,7 +564,7 @@ export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
                 className="px-5 py-2 text-sm bg-violet-600 hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold rounded-lg transition flex items-center gap-2"
               >
                 {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-                Nộp phiếu thẩm định
+                {isConfirmMode ? "Nộp xác nhận" : "Nộp phiếu thẩm định"}
               </button>
             </div>
           </div>

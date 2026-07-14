@@ -11,8 +11,9 @@ import Link from "next/link";
 import { cn, generateId } from "@/lib/utils";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useTaskStore } from "@/stores/useTaskStore";
-import { hasPermission, canDoResearchAction, canUserAssignReviewer } from "@/lib/rbac/permissions";
+import { hasPermission, canDoResearchAction, canUserAssignReviewer, getEffectiveRole, ROLE_RANK } from "@/lib/rbac/permissions";
 import { sameUnit } from "@/lib/rbac/scope";
+import { isNckhManager } from "@/lib/researchUtils";
 import {
   getResearchTopic, updateResearchTopic, addNotification,
   getResearchGroups, createResearchGroup, updateResearchGroup,
@@ -24,10 +25,12 @@ import { DocxAnnotator } from "@/components/research/DocxAnnotator";
 import { PendingChangeRequestPanel } from "@/components/shared/PendingChangeRequestPanel";
 import {
   RESEARCH_STEPS, STAGE_LABEL, researchProgress, stepMeta, researchTaskSync,
-  isProposalFileLocked, isFinalReportFileLocked,
+  isProposalFileLocked, isFinalReportFileLocked, TASK_ONLY_STEP_KEYS,
+  activeReviews, submittedReviewCount, isAwaitingRevisionResubmit, isAwaitingRevisionProcessing,
+  reviewersToResendForReconfirm,
 } from "@/lib/research";
 import type {
-  ResearchTopic, ResearchStage, ResearchStepStatus, ResearchGroup,
+  ResearchTopic, ResearchStage, ResearchStepStatus, ResearchStepKey, ResearchGroup,
   ResearchReview, ResearchCouncilSession, ResearchCouncilMember, CouncilMemberRole,
   ResearchContributor, TaskResource,
 } from "@/types";
@@ -59,6 +62,73 @@ const CONTRIBUTOR_ROLE_COLOR: Record<string, string> = {
   participant: "text-slate-500 dark:text-slate-400",
 };
 
+const REVIEW_VERDICT_LABEL: Record<string, string> = {
+  pass: "ĐẠT", pass_if_revised: "ĐẠT (nếu chỉnh sửa)", fail: "KHÔNG ĐẠT",
+};
+const REVIEW_GRADE_LABEL: Record<string, string> = {
+  excellent: "Giỏi", good: "Khá", average: "Trung bình", fail: "Không đạt",
+};
+
+const fmtDate = (iso?: string) => iso ? new Date(iso).toLocaleDateString("vi-VN") : undefined;
+
+/**
+ * Kết quả thực tế gắn với 1 bước đã hoàn thành trong timeline — hiển thị thay cho gạch ngang, để
+ * người xem thấy ngay dữ liệu thật (ngày tiếp nhận, kết luận phản biện, ngày biên bản, số chứng
+ * nhận...) thay vì chỉ biết bước đó "đã xong". Trả về null nếu không có dữ liệu thật để hiện.
+ */
+function stepResultDetail(topic: ResearchTopic, key: ResearchStepKey, stepCompletedAt?: string): string | null {
+  switch (key) {
+    case "p_intake":
+    case "r_intake": {
+      // intakeLogs không được ghi bởi luồng hiện tại (field còn để đó từ trước, không có nơi nào
+      // push vào) — dùng completedAt của chính bước này (luôn được ghi khi advanceStep chạy) để
+      // không lấy nhầm ngày của giai đoạn khác khi intakeLogs chỉ có 1 mục cũ.
+      const date = fmtDate(stepCompletedAt);
+      return date ? `Ngày tiếp nhận: ${date}` : null;
+    }
+    case "p_review":
+    case "r_review": {
+      const stage = key === "p_review" ? "proposal" : "recognition";
+      const parts = topic.reviews
+        .filter(r => r.stage === stage && r.status === "submitted")
+        .map((r, i) => `PB${i + 1}: ${r.verdict ? (REVIEW_VERDICT_LABEL[r.verdict] ?? "—") : "—"}`);
+      return parts.length ? parts.join(" · ") : null;
+    }
+    case "p_council":
+    case "r_council": {
+      const stage = key === "p_council" ? "proposal" : "recognition";
+      const cs = topic.councilSessions.find(s => s.stage === stage);
+      if (!cs) return null;
+      const decisionLabel =
+        cs.decision === "passed" ? "Thông qua" :
+        cs.decision === "failed" ? "Không thông qua" :
+        cs.decision === "revise" ? "Yêu cầu sửa đổi" : undefined;
+      const date = fmtDate(cs.scheduledAt ?? cs.createdAt);
+      const parts = [decisionLabel, date].filter((v): v is string => !!v);
+      return parts.length ? parts.join(" · ") : null;
+    }
+    case "p_ethics": {
+      const cert = topic.certificates.find(c => c.type === "ethics");
+      if (!cert) return null;
+      if (cert.number) return `Số: ${cert.number}`;
+      const date = fmtDate(cert.issuedAt);
+      return date ? `Cấp ngày: ${date}` : "Đã cấp";
+    }
+    case "r_recognize": {
+      const cert = topic.certificates.find(c => c.type === "recognition");
+      if (!cert) return null;
+      if (cert.scope) return `Phạm vi: ${cert.scope}`;
+      if (cert.number) return `Số: ${cert.number}`;
+      const date = fmtDate(cert.issuedAt);
+      return date ? `Cấp ngày: ${date}` : "Đã công nhận";
+    }
+    default: {
+      const date = fmtDate(stepCompletedAt);
+      return date ? `Ngày: ${date}` : null;
+    }
+  }
+}
+
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 function advanceStep(
@@ -80,6 +150,64 @@ function advanceStep(
   };
 }
 
+/**
+ * Báo cho người phụ trách chỉ định phản biện + Quản lý NCKH biết tác giả đã nộp lại bản chỉnh
+ * sửa, để họ vào tab "Nghiên cứu KH" xử lý tiếp (tiếp nhận/chuyển bước) — không phải chờ họ tự
+ * phát hiện qua badge trạng thái.
+ */
+async function notifyResubmission(
+  topic: ResearchTopic,
+  users: { id: string; researchDesignations?: string[]; role?: string }[],
+  excludeUserId: string | undefined,
+  stageLabel: string,
+) {
+  const stamp = new Date().toISOString();
+  const targets = new Set<string>();
+  if (topic.reviewAssignment?.delegatedTo) targets.add(topic.reviewAssignment.delegatedTo);
+  for (const u of users) {
+    if (u.role === "hrAdmin" || (u.researchDesignations ?? []).includes("researchManager")) targets.add(u.id);
+  }
+  targets.delete(excludeUserId ?? "");
+  await Promise.all([...targets].map(uid =>
+    addNotification({
+      userId: uid, type: "approval_request", title: `${stageLabel} — đã nộp lại`,
+      body: `Đề tài "${topic.title}" đã được nộp lại sau yêu cầu sửa đổi — cần xử lý tiếp.`,
+      link: `/research/${topic.id}`, read: false, priority: "normal", createdAt: stamp,
+    }).catch(() => {})
+  ));
+}
+
+/**
+ * Gửi phiếu xác nhận rút gọn (mode "confirm") cho đúng (các) phản biện cần xem lại bản chỉnh
+ * sửa — dùng chung cho cả lượt xác nhận đầu tiên (người phụ trách bấm) lẫn các lượt lặp lại tự
+ * động sau đó (tác giả nộp lại khi vòng lặp đang chạy). Có thông báo cho từng phản biện.
+ */
+async function sendReconfirmReviews(
+  topicId: string,
+  stage: "proposal" | "recognition",
+  priorReviews: ResearchReview[],
+  topicTitle: string,
+) {
+  const stamp = new Date().toISOString();
+  for (const r of priorReviews) {
+    await fetch(`/api/research/${topicId}/reviews`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        stage, mode: "confirm",
+        reviewerType: r.reviewerType, reviewerId: r.reviewerId, reviewerName: r.reviewerName,
+        reviewerEmail: r.reviewerEmail, reviewerOrg: r.reviewerOrg,
+      }),
+    }).catch(() => {});
+    if (r.reviewerId) {
+      await addNotification({
+        userId: r.reviewerId, type: "approval_request", title: "Cần xác nhận bản chỉnh sửa",
+        body: `Đề tài "${topicTitle}" đã nộp lại theo yêu cầu của bạn — vui lòng xác nhận Đồng ý/Không đồng ý.`,
+        link: `/research/${topicId}`, read: false, priority: "normal", createdAt: stamp,
+      }).catch(() => {});
+    }
+  }
+}
+
 // ─── Main page ───────────────────────────────────────────────────────────────
 
 export default function ResearchDetailPage() {
@@ -96,8 +224,17 @@ export default function ResearchDetailPage() {
   const [activeTab, setActiveTab] = useState<"process" | "proposal" | "topic">("process");
 
   // Quyền quản lý toàn bộ quy trình (tiếp nhận, chuyển bước, từ chối...)
-  // director/hrAdmin: luôn true; teamLead: chỉ true nếu đề tài thuộc đơn vị mình
-  const canManage = !!currentUser && canDoResearchAction(currentUser, "research:manage", topic?.department);
+  // director/hrAdmin: luôn true; teamLead: chỉ true nếu đề tài thuộc đơn vị mình.
+  // KHÔNG chỉ dựa vào permission "research:manage" đơn thuần — một số tổ chức đã cấp permission
+  // này rộng cho cả vai trò "staff" qua cấu hình phân quyền chung, khiến chính tác giả (nếu vai
+  // trò của họ có permission đó) thấy nhầm các nút hành động quản lý (vd. "Đã tiếp nhận kết quả")
+  // ngay trên đề tài của chính mình. Chỉ coi là quản lý thật khi có cấp bậc quản lý thực sự
+  // (teamLead trở lên) HOẶC được chỉ định "Quản lý NCKH" rõ ràng.
+  const canManage = !!currentUser && (
+    isNckhManager(currentUser) ||
+    (ROLE_RANK[getEffectiveRole(currentUser)] >= ROLE_RANK.teamLead &&
+      canDoResearchAction(currentUser, "research:manage", topic?.department))
+  );
   // Quyền chỉ định phản biện — chỉ Trưởng VP (Văn phòng) hoặc Director/hrAdmin
   const canAssignReviewer = !!currentUser && canUserAssignReviewer(currentUser, topic?.department);
   // Quyền thành lập hội đồng — scoped theo đơn vị
@@ -159,6 +296,7 @@ export default function ResearchDetailPage() {
       currentStep: resetTo,
       revisionNote: note || undefined,
       revisionCount: (topic.revisionCount ?? 0) + 1,
+      revisionResubmittedAt: null,
     };
     try {
       await updateResearchTopic(topic.id, updates);
@@ -344,7 +482,9 @@ export default function ResearchDetailPage() {
         <ProposalTab
           topic={topic}
           canEdit={canManage || isPI || isPerformer}
+          canManage={canManage}
           onUpdate={handleUpdate}
+          onReload={reload}
         />
       )}
 
@@ -352,7 +492,9 @@ export default function ResearchDetailPage() {
         <FinalTopicTab
           topic={topic}
           canEdit={canManage || isPI || isPerformer}
+          canManage={canManage}
           onUpdate={handleUpdate}
+          onReload={reload}
         />
       )}
 
@@ -408,6 +550,7 @@ export default function ResearchDetailPage() {
           isPI={isPI}
           isPerformer={isPerformer}
           onUpdate={handleUpdate}
+          onReload={reload}
           onGroupCreated={g => setGroups(prev => [g, ...prev])}
           onRevise={handleRevise}
           onReject={handleReject}
@@ -438,6 +581,7 @@ export default function ResearchDetailPage() {
           isPI={isPI}
           isPerformer={isPerformer}
           onUpdate={handleUpdate}
+          onReload={reload}
           onGroupCreated={g => setGroups(prev => [g, ...prev])}
           onRevise={handleRevise}
           onReject={handleReject}
@@ -462,9 +606,20 @@ export default function ResearchDetailPage() {
       {/* Pipeline tracker */}
       <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5">
         <h2 className="text-sm font-semibold text-[var(--foreground)] mb-3">Tiến trình thẩm định & công nhận</h2>
+        {(() => {
+          // Phản biện chỉ cần thấy các mốc thẩm định, không cần biết chi tiết vận hành/nhiệm vụ nội
+          // bộ đề tài (Tổng hợp đề cương, Phê duyệt & gán người...) — áp dụng ngay cả khi họ đồng
+          // thời có quyền quản lý (nhất quán với nguyên tắc ẩn danh tính tác giả: đã là phản biện
+          // của đề tài này thì không còn "quản lý thuần" cho riêng đề tài đó). Tác giả/thực hiện
+          // chính (không thể đồng thời là phản biện của chính đề tài mình) vẫn luôn thấy đầy đủ.
+          const viewerIsReviewerOnly =
+            !isPI && !isPerformer &&
+            topic.reviews.some(r => r.reviewerId === currentUser?.id);
+          return (
         <div className="space-y-4">
           {STAGES.map(stage => {
-            const steps = RESEARCH_STEPS.filter(s => s.stage === stage);
+            const steps = RESEARCH_STEPS.filter(s =>
+              s.stage === stage && (!viewerIsReviewerOnly || !TASK_ONLY_STEP_KEYS.has(s.key)));
             return (
               <div key={stage}>
                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">{STAGE_LABEL[stage]}</p>
@@ -472,16 +627,19 @@ export default function ResearchDetailPage() {
                   {steps.map(s => {
                     const st = stepStatus(s.key);
                     const isCurrent = topic.currentStep === s.key;
+                    const completedAt = topic.steps.find(s2 => s2.key === s.key)?.completedAt;
+                    const detail = st === "passed" ? stepResultDetail(topic, s.key, completedAt) : null;
                     return (
                       <div key={s.key} className={cn("flex items-center gap-2.5 px-3 py-2 rounded-lg",
                         isCurrent ? "bg-violet-50 dark:bg-violet-900/20 border border-violet-200 dark:border-violet-800" : "")}>
                         {STEP_ICON[st]}
-                        <span className={cn("text-sm flex-1", st === "passed" ? "text-slate-400 line-through" : "text-[var(--foreground)]")}>
-                          {s.label}
-                        </span>
+                        <div className="flex-1 min-w-0">
+                          <span className="text-sm text-[var(--foreground)]">{s.label}</span>
+                          {detail && <p className="text-[11px] text-slate-400 truncate">{detail}</p>}
+                        </div>
                         {s.needsTwoReviews && (
                           <span className="text-[10px] text-slate-400">
-                            {topic.reviews.filter(r => r.stage === (stage === "proposal" ? "proposal" : "recognition") && r.status === "submitted").length}/2
+                            {submittedReviewCount(topic, s.stage as "proposal" | "recognition")}/2
                           </span>
                         )}
                         {isCurrent && <span className="text-[10px] font-semibold text-violet-600 dark:text-violet-400">Hiện tại</span>}
@@ -493,6 +651,8 @@ export default function ResearchDetailPage() {
             );
           })}
         </div>
+          );
+        })()}
       </div>
 
       {/* Counters */}
@@ -643,6 +803,7 @@ interface GD1Props {
   isPI: boolean;
   isPerformer: boolean;
   onUpdate: (updates: Partial<ResearchTopic>, msg: string) => Promise<void>;
+  onReload: () => void;
   onGroupCreated: (g: ResearchGroup) => void;
   onRevise: (note: string) => Promise<void>;
   onReject: (reason: string) => Promise<void>;
@@ -915,49 +1076,63 @@ function PAssignPanel({ topic, currentUser, canManage, users, groups, onUpdate, 
 }
 
 // ── p_review ─────────────────────────────────────────────────────────────────
-function PReviewPanel({ topic, currentUser, canManage, canAssignReviewer, users, onUpdate, onRevise, onReject }: GD1Props) {
+function PReviewPanel({ topic, currentUser, canAssignReviewer, users, onUpdate, onReload }: GD1Props) {
   const [showAdd, setShowAdd] = useState(false);
-  const [saving, setSaving] = useState(false);
 
   // Which review's full form is open
   const [submitReviewId, setSubmitReviewId] = useState<string | null>(null);
 
-  // Revise / reject inline actions
-  const [actionMode, setActionMode] = useState<"advance" | "revise" | "reject" | null>(null);
-  const [actionNote, setActionNote] = useState("");
-  const [actioning, setActioning] = useState(false);
-
   const stage: "proposal" | "recognition" = topic.currentStep === "r_review" ? "recognition" : "proposal";
-  const reviewKey = stage === "recognition" ? "r_review" : "p_review";
-  const nextKey = stage === "recognition" ? "r_council" : "p_council";
   const stageLabel = stage === "recognition" ? "GĐ2" : "GĐ1";
 
-  const proposalReviews = topic.reviews.filter(r => r.stage === stage);
+  // Chỉ phiếu của vòng thẩm định hiện tại — sau khi "Yêu cầu sửa đổi" (revisionCount tăng), phiếu
+  // vòng trước không còn tính vào đây nữa, đề tài coi như cần thẩm định lại từ đầu cho vòng mới.
+  const proposalReviews = activeReviews(topic, stage);
   const submittedCount = proposalReviews.filter(r => r.status === "submitted").length;
-  const canAdvance = submittedCount >= 2 && canManage;
 
+  // Không bao giờ PATCH nguyên mảng `reviews` (state client có thể đã bị ẩn danh tính phản biện
+  // khác theo nguyên tắc phản biện kín) — dùng route riêng, thao tác đúng 1 phần tử trên server,
+  // rồi tải lại toàn bộ đề tài để đồng bộ.
   async function handleAddReviewer(reviewer: ResearchReview) {
-    await onUpdate({ reviews: [...topic.reviews, reviewer] }, `Đã chỉ định ${reviewer.reviewerName} làm phản biện viên`);
+    try {
+      const res = await fetch(`/api/research/${topic.id}/reviews`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          stage: reviewer.stage,
+          reviewerType: reviewer.reviewerType,
+          reviewerId: reviewer.reviewerId,
+          reviewerName: reviewer.reviewerName,
+          reviewerEmail: reviewer.reviewerEmail,
+          reviewerOrg: reviewer.reviewerOrg,
+          dueAt: reviewer.dueAt,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { toast.error(data.error ?? "Không thể chỉ định phản biện viên"); return; }
+      toast.success(`Đã chỉ định ${reviewer.reviewerName} làm phản biện viên`);
+      onReload();
+    } catch { toast.error("Chỉ định phản biện viên thất bại"); }
     setShowAdd(false);
   }
 
   async function handleSubmitReview(reviewId: string, data: Partial<ResearchReview>) {
-    const updated = topic.reviews.map(r =>
-      r.id === reviewId
-        ? { ...r, ...data, status: "submitted" as const, submittedAt: new Date().toISOString() }
-        : r
-    );
-    await onUpdate({ reviews: updated }, "Đã nộp phiếu thẩm định");
+    try {
+      const res = await fetch(`/api/research/${topic.id}/reviews`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reviewId, ...data }),
+      });
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok) { toast.error(resData.error ?? "Không thể nộp phiếu"); return; }
+      toast.success("Đã nộp phiếu thẩm định");
+      const review = proposalReviews.find(r => r.id === reviewId);
+      if (review?.mode === "confirm" && (data.verdict === "pass" || data.verdict === "fail")) {
+        await handleConfirmReviewOutcome(topic, review, data.verdict, data.additionalComments, onUpdate);
+      }
+      onReload();
+    } catch { toast.error("Nộp phiếu thất bại"); }
     setSubmitReviewId(null);
-  }
-
-  async function handleAdvance() {
-    setSaving(true);
-    await onUpdate(advanceStep(topic, reviewKey, nextKey),
-      stage === "recognition"
-        ? "Đã hoàn thành phản biện nghiệm thu — chuyển sang họp Hội đồng"
-        : "Đã hoàn thành phản biện — chuyển sang họp Hội đồng");
-    setSaving(false);
   }
 
   return (
@@ -1045,62 +1220,15 @@ function PReviewPanel({ topic, currentUser, canManage, canAssignReviewer, users,
         </button>
       )}
 
-      {/* Action footer */}
-      {canManage && submittedCount >= 2 && (
-        <div className="pt-2 border-t border-blue-200 dark:border-blue-700 space-y-2">
-          {/* Inline note/reason form when an action is chosen */}
-          {actionMode && actionMode !== "advance" && (
-            <div className="space-y-2">
-              <textarea
-                value={actionNote}
-                onChange={e => setActionNote(e.target.value)}
-                rows={2}
-                placeholder={actionMode === "revise" ? "Ghi chú yêu cầu sửa đổi cho PI..." : "Lý do từ chối đề tài..."}
-                className="w-full border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-1.5 text-sm bg-white dark:bg-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-              />
-              <div className="flex gap-2 justify-end">
-                <button onClick={() => { setActionMode(null); setActionNote(""); }}
-                  className="text-xs text-slate-400 hover:text-slate-600 px-3 py-1.5">Hủy</button>
-                <button
-                  disabled={actioning}
-                  onClick={async () => {
-                    setActioning(true);
-                    if (actionMode === "revise") await onRevise(actionNote);
-                    else await onReject(actionNote);
-                    setActioning(false);
-                    setActionMode(null); setActionNote("");
-                  }}
-                  className={cn("px-4 py-1.5 text-white text-xs font-medium rounded-lg flex items-center gap-2 disabled:opacity-60 transition",
-                    actionMode === "revise" ? "bg-amber-500 hover:bg-amber-600" : "bg-red-600 hover:bg-red-700")}>
-                  {actioning && <Loader2 className="w-3 h-3 animate-spin" />}
-                  {actionMode === "revise" ? "Xác nhận sửa đổi" : "Xác nhận từ chối"}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {!actionMode && (
-            <div className="flex flex-wrap gap-2 justify-end">
-              <button onClick={() => setActionMode("revise")}
-                className="px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-700 text-xs font-medium rounded-lg flex items-center gap-1.5 transition">
-                <RotateCcw className="w-3.5 h-3.5" /> Yêu cầu sửa đổi
-              </button>
-              <button onClick={() => setActionMode("reject")}
-                className="px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 text-xs font-medium rounded-lg flex items-center gap-1.5 transition">
-                <AlertTriangle className="w-3.5 h-3.5" /> Từ chối đề tài
-              </button>
-              <button onClick={handleAdvance} disabled={saving}
-                className="px-4 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-medium rounded-lg transition disabled:opacity-60 flex items-center gap-2">
-                {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
-                Chuyển sang Họp HĐ ({submittedCount}/2 phiếu)
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-      {!canAdvance && submittedCount < 2 && (
-        <p className="text-xs text-slate-400">{submittedCount}/2 phiếu phản biện đã nộp — cần đủ 2 để tiếp tục.</p>
-      )}
+      {/* Quyết định bước tiếp theo (chuyển Hội đồng / yêu cầu sửa / từ chối) được thực hiện tập
+          trung tại tab "Hội đồng KH&CN" → "Tổng hợp kết quả" một khi đã đủ 2 phiếu, không còn xử
+          lý rời rạc ở đây để tránh người chỉ có vai trò phản biện thấy các nút hành động không
+          liên quan đến mình. */}
+      <p className="text-xs text-slate-400 pt-2 border-t border-slate-100 dark:border-slate-700">
+        {submittedCount >= 2
+          ? "Đã đủ 2 phiếu phản biện — chờ tổng hợp kết quả tại tab Hội đồng KH&CN."
+          : `${submittedCount}/2 phiếu phản biện đã nộp.`}
+      </p>
     </PanelWrap>
 
     {/* ── Assign reviewer modal ── */}
@@ -1110,6 +1238,7 @@ function PReviewPanel({ topic, currentUser, canManage, canAssignReviewer, users,
         existingReviews={proposalReviews}
         slotsLeft={2 - proposalReviews.length}
         stage={stage}
+        currentUserId={currentUser?.id}
         onAssign={handleAddReviewer}
         onClose={() => setShowAdd(false)}
       />
@@ -1558,28 +1687,88 @@ function GD2ActionPanel(props: GD1Props) {
 }
 
 // ── r_intake ──────────────────────────────────────────────────────────────────
-function RIntakePanel({ topic, canManage, onUpdate }: GD1Props) {
+function RIntakePanel({ topic, canManage, onUpdate, onReload }: GD1Props) {
   const [saving, setSaving] = useState(false);
+  const awaitingResubmit = isAwaitingRevisionResubmit(topic);
+  const awaitingProcessing = isAwaitingRevisionProcessing(topic);
+  // Sau khi tác giả nộp lại (revisionCount > 0), người phụ trách xác nhận đã nhận — hệ thống rẽ
+  // theo đúng xếp loại đã chọn ở "Tổng hợp kết quả": chuyển thẳng Hội đồng (skipReviewRound),
+  // hoặc gửi lại đúng phản biện cũ 1 phiếu xác nhận rút gọn (needsReviewerReconfirmRound). Nếu
+  // đây là lần tiếp nhận đầu tiên (revisionCount = 0, chưa từng yêu cầu sửa đổi) thì vẫn theo
+  // luồng gốc: chuyển sang thẩm định đầy đủ (r_review, 2 phản biện mới).
+  const canSkipToCouncil = topic.skipReviewRound === (topic.revisionCount ?? 0);
+  const needsReconfirm = topic.needsReviewerReconfirmRound === (topic.revisionCount ?? 0);
   async function handle() {
     setSaving(true);
-    await onUpdate(advanceStep(topic, "r_intake", "r_review"), "Đã tiếp nhận kết quả — chuyển sang phản biện nghiệm thu");
+    const stamp = new Date().toISOString();
+    if (canSkipToCouncil) {
+      const steps = topic.steps.map(s =>
+        (s.key === "r_intake" || s.key === "r_review") ? { ...s, status: "passed" as const, completedAt: stamp }
+        : s.key === "r_council" ? { ...s, status: "in_progress" as const }
+        : s
+      );
+      await onUpdate({ steps, currentStep: "r_council" }, "Đã xác nhận — chuyển thẳng sang Hội đồng thông qua");
+    } else if (needsReconfirm) {
+      const steps = topic.steps.map(s =>
+        s.key === "r_intake" ? { ...s, status: "passed" as const, completedAt: stamp }
+        : s.key === "r_review" ? { ...s, status: "in_progress" as const }
+        : s
+      );
+      await onUpdate(
+        { steps, currentStep: "r_review", reconfirmLoopActive: true },
+        "Đã xác nhận — gửi lại phản biện xác nhận bản chỉnh sửa"
+      );
+      // Vòng vừa được xếp loại là round = revisionCount - 1 (đã tăng lúc phân loại ở Tổng hợp
+      // kết quả) — chỉ gửi phiếu xác nhận cho ĐÚNG (các) phản biện đã yêu cầu xem lại.
+      const priorRound = (topic.revisionCount ?? 1) - 1;
+      const priorReviews = reviewersToResendForReconfirm(
+        topic.reviews.filter(r => r.stage === "recognition" && (r.round ?? 0) === priorRound)
+      );
+      await sendReconfirmReviews(topic.id, "recognition", priorReviews, topic.title);
+      onReload();
+    } else {
+      await onUpdate(advanceStep(topic, "r_intake", "r_review"), "Đã tiếp nhận kết quả — chuyển sang phản biện nghiệm thu");
+    }
     setSaving(false);
   }
   return (
     <PanelWrap title="GĐ2 · Tiếp nhận kết quả nghiên cứu" icon={<BookOpen className="w-4 h-4" />} tone="violet">
+      {awaitingResubmit && (
+        <div className="flex items-start gap-2 bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800 rounded-xl p-3 mb-3">
+          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+          <div className="text-sm text-amber-700 dark:text-amber-400">
+            <p className="font-medium">Đã yêu cầu sửa đổi (lần {topic.revisionCount}) — đang chờ tác giả nộp lại</p>
+            {topic.revisionNote && <p className="text-xs mt-0.5 whitespace-pre-wrap">{topic.revisionNote}</p>}
+          </div>
+        </div>
+      )}
+      {awaitingProcessing && (
+        <div className="flex items-start gap-2 bg-blue-50 dark:bg-blue-900/10 border border-blue-200 dark:border-blue-800 rounded-xl p-3 mb-3">
+          <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+          <p className="text-sm text-blue-700 dark:text-blue-400 font-medium">
+            Tác giả đã nộp lại (lần {topic.revisionCount}) — sẵn sàng xác nhận.
+          </p>
+        </div>
+      )}
       {canManage ? (
         <div className="flex items-center gap-3">
           <p className="text-sm text-slate-600 dark:text-slate-300 flex-1">
-            Xác nhận đã tiếp nhận báo cáo kết quả nghiên cứu để chuyển sang thẩm định nghiệm thu (2 phản biện kín).
+            {awaitingProcessing && needsReconfirm
+              ? "Xác nhận đã nhận bản chỉnh sửa — gửi lại đúng phản biện cũ để xác nhận."
+              : awaitingProcessing && canSkipToCouncil
+              ? "Xác nhận đã nhận bản chỉnh sửa — báo hoàn tất, chuyển thẳng Hội đồng thông qua."
+              : "Xác nhận đã tiếp nhận báo cáo kết quả nghiên cứu để chuyển sang thẩm định nghiệm thu (2 phản biện kín)."}
           </p>
-          <button onClick={handle} disabled={saving}
+          <button onClick={handle} disabled={saving || awaitingResubmit}
             className="px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium rounded-lg transition disabled:opacity-60 flex items-center gap-2 whitespace-nowrap">
             {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-            Đã tiếp nhận kết quả
+            {awaitingProcessing ? "Xác nhận đã nhận" : "Đã tiếp nhận kết quả"}
           </button>
         </div>
       ) : (
-        <p className="text-sm text-violet-600 dark:text-violet-400">Đang chờ quản lý tiếp nhận kết quả nghiên cứu.</p>
+        <p className="text-sm text-violet-600 dark:text-violet-400">
+          {awaitingResubmit ? "Đang chờ tác giả nộp lại kết quả đã chỉnh sửa." : "Đang chờ quản lý tiếp nhận kết quả nghiên cứu."}
+        </p>
       )}
     </PanelWrap>
   );
@@ -1602,7 +1791,7 @@ function RRecognizePanel({ topic, currentUser, canManage, onUpdate }: GD1Props) 
   const [saving, setSaving] = useState(false);
 
   // Điểm trung bình từ phản biện GĐ2 (đã nộp) → quy đổi 3T cho Hiệu suất
-  const recReviews = topic.reviews.filter(r => r.stage === "recognition" && r.status === "submitted");
+  const recReviews = activeReviews(topic, "recognition").filter(r => r.status === "submitted");
   const scores = recReviews.map(r => r.score).filter((s): s is number => typeof s === "number");
   const avg35 = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
   const avg10 = avg35 != null ? Math.round((avg35 / 35) * 100) / 10 : null;
@@ -1857,16 +2046,11 @@ function FileUrlField({ label, url, canEdit, folder, lockedMessage, onSave }: {
 
 // ─── Tóm tắt phản biện theo giai đoạn (dùng chung cho 2 tab) ─────────────────
 
-const REVIEW_VERDICT_LABEL: Record<string, string> = {
-  pass: "ĐẠT", pass_if_revised: "ĐẠT (nếu chỉnh sửa)", fail: "KHÔNG ĐẠT",
-};
-const REVIEW_GRADE_LABEL: Record<string, string> = {
-  excellent: "Giỏi", good: "Khá", average: "Trung bình", fail: "Không đạt",
-};
-
-function ReviewStageSummary({ reviews, stage }: {
+function ReviewStageSummary({ reviews, stage, currentUserId, onOpenReview }: {
   reviews: ResearchReview[];
   stage: "proposal" | "recognition";
+  currentUserId?: string;
+  onOpenReview?: (reviewId: string) => void;
 }) {
   const stageReviews = reviews.filter(r => r.stage === stage);
   const submitted = stageReviews.filter(r => r.status === "submitted");
@@ -1924,6 +2108,16 @@ function ReviewStageSummary({ reviews, stage }: {
                   )}
                 </div>
               )}
+              {/* Phiếu của chính người xem, chưa nộp — mở phiếu thẩm định ngay từ tab Đề cương/Đề tài,
+                  không bắt buộc phải qua tab Quy trình mới thẩm định được. */}
+              {r.status !== "submitted" && r.reviewerId === currentUserId && onOpenReview && (
+                <button
+                  onClick={() => onOpenReview(r.id)}
+                  className="mt-1.5 text-xs font-medium text-violet-600 dark:text-violet-400 hover:underline flex items-center gap-1"
+                >
+                  {r.mode === "confirm" ? "Mở phiếu xác nhận bản sửa →" : "Mở phiếu thẩm định →"}
+                </button>
+              )}
             </div>
           );
         })}
@@ -1937,14 +2131,109 @@ function ReviewStageSummary({ reviews, stage }: {
 interface TabProps {
   topic: ResearchTopic;
   canEdit: boolean;
+  canManage: boolean;
   onUpdate: (updates: Partial<ResearchTopic>, msg: string) => Promise<void>;
+  onReload: () => void;
 }
 
-function ProposalTab({ topic, canEdit, onUpdate }: TabProps) {
+/** Nộp phiếu thẩm định của chính mình qua route riêng — không PATCH nguyên mảng reviews (xem
+ * lý do ở handleSubmitReview trong PReviewPanel: state client có thể đã bị ẩn danh phản biện
+ * khác, PATCH cả mảng sẽ xoá vĩnh viễn danh tính thật của người khác trong DB). */
+async function submitOwnReview(topicId: string, reviewId: string, data: Partial<ResearchReview>) {
+  const res = await fetch(`/api/research/${topicId}/reviews`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reviewId, ...data }),
+  });
+  const resData = await res.json().catch(() => ({}));
+  if (!res.ok) { toast.error(resData.error ?? "Không thể nộp phiếu"); return false; }
+  toast.success("Đã nộp phiếu thẩm định");
+  return true;
+}
+
+/**
+ * Xử lý sau khi phản biện nộp phiếu xác nhận rút gọn (mode "confirm") — thực hiện đúng vòng lặp
+ * tác giả↔phản biện: Đồng ý (và không còn phiếu xác nhận nào khác của round này chưa nộp) →
+ * chuyển thẳng sang Hội đồng thông qua, kết thúc vòng lặp. Không đồng ý → tự động bắt đầu 1 vòng
+ * sửa đổi mới, giữ nguyên cờ vòng lặp đang chạy để lần nộp lại tiếp theo tự động gửi lại đúng
+ * phản biện đó — không cần người phụ trách can thiệp lại mỗi vòng.
+ */
+async function handleConfirmReviewOutcome(
+  topic: ResearchTopic,
+  review: ResearchReview,
+  verdict: "pass" | "fail",
+  note: string | undefined,
+  onUpdate: (updates: Partial<ResearchTopic>, msg: string) => Promise<void>,
+) {
+  const stamp = new Date().toISOString();
+  const stage = review.stage;
+  const notifyIds = [...new Set([topic.principalInvestigatorId, topic.mainPerformerId].filter(Boolean) as string[])];
+
+  if (verdict === "fail") {
+    const resetTo = stage === "recognition" ? "r_intake" : "p_compile";
+    const loopKeys = stage === "recognition"
+      ? ["r_intake", "r_review", "r_council", "r_recognize"]
+      : ["p_compile", "p_assign", "p_review", "p_council", "p_ethics", "p_agree"];
+    const newRound = (topic.revisionCount ?? 0) + 1;
+    const steps = topic.steps.map(s =>
+      s.key === resetTo ? { ...s, status: "in_progress" as const, completedAt: undefined }
+      : loopKeys.includes(s.key) ? { ...s, status: "pending" as const, completedAt: undefined }
+      : s
+    );
+    await onUpdate(
+      {
+        steps, currentStep: resetTo,
+        revisionNote: note || undefined,
+        revisionCount: newRound,
+        revisionResubmittedAt: null,
+        needsReviewerReconfirmRound: newRound,
+        reconfirmLoopActive: true,
+      },
+      "Phản biện chưa đồng ý — tiếp tục quy trình chỉnh sửa"
+    );
+    await Promise.all(notifyIds.map(uid =>
+      addNotification({
+        userId: uid, type: "approval_request", title: "Cần chỉnh sửa lại",
+        body: `Phản biện chưa đồng ý với bản chỉnh sửa của đề tài "${topic.title}".${note ? ` Lý do: ${note}` : ""}`,
+        link: `/research/${topic.id}`, read: false, priority: "urgent", createdAt: stamp,
+      }).catch(() => {})
+    ));
+    return;
+  }
+
+  // Đồng ý — chỉ chuyển tiếp khi KHÔNG còn phiếu xác nhận nào khác của round này chưa nộp/chưa
+  // đồng ý (trường hợp hiếm gặp nhiều phản biện cùng yêu cầu xác nhận).
+  const round = topic.revisionCount ?? 0;
+  const roundConfirmReviews = topic.reviews.filter(r => r.stage === stage && r.mode === "confirm" && (r.round ?? 0) === round);
+  const allAgreed = roundConfirmReviews.every(r => r.id === review.id || (r.status === "submitted" && r.verdict === "pass"));
+  if (!allAgreed) return;
+
+  const councilKey = stage === "recognition" ? "r_council" : "p_council";
+  const reviewKey = stage === "recognition" ? "r_review" : "p_review";
+  const steps = topic.steps.map(s =>
+    s.key === reviewKey ? { ...s, status: "passed" as const, completedAt: stamp }
+    : s.key === councilKey ? { ...s, status: "in_progress" as const }
+    : s
+  );
+  await onUpdate(
+    { steps, currentStep: councilKey, reconfirmLoopActive: false },
+    "Phản biện đã đồng ý — chuyển sang Hội đồng thông qua"
+  );
+  await Promise.all(notifyIds.map(uid =>
+    addNotification({
+      userId: uid, type: "request_approved", title: "Hoàn tất chỉnh sửa",
+      body: `Phản biện đã đồng ý với bản chỉnh sửa của đề tài "${topic.title}" — chuyển sang Hội đồng thông qua.`,
+      link: `/research/${topic.id}`, read: false, priority: "normal", createdAt: stamp,
+    }).catch(() => {})
+  ));
+}
+
+function ProposalTab({ topic, canEdit, canManage, onUpdate, onReload }: TabProps) {
   const { currentUser } = useAuthStore();
   const { users } = useTaskStore();
   const [note, setNote] = useState(topic.compileNote ?? "");
   const [submitting, setSubmitting] = useState(false);
+  const [submitReviewId, setSubmitReviewId] = useState<string | null>(null);
 
   const fileEditable = canEdit && !isProposalFileLocked(topic);
 
@@ -1959,30 +2248,143 @@ function ProposalTab({ topic, canEdit, onUpdate }: TabProps) {
   // currentStep chuyển sang p_assign nên nút này tự ẩn.
   const needsSubmission = canEdit && topic.currentStep === "p_compile" && !!topic.proposalFileUrl;
 
+  const wasAwaitingResubmit = isAwaitingRevisionResubmit(topic);
+
   async function handleSubmitForReview() {
     if (!note.trim()) { toast.error("Nhập tóm tắt đề cương trước khi nộp thẩm định"); return; }
     setSubmitting(true);
-    const managers = users.filter(u =>
-      ["teamLead", "director", "hrAdmin"].includes(u.role ?? "") && u.id !== currentUser?.id
-    );
+    const stamp = new Date().toISOString();
     try {
-      await onUpdate(
-        { compileNote: note.trim(), ...advanceStep(topic, "p_compile", "p_assign") },
-        "Đã nộp đề cương — chờ phê duyệt thực hiện"
-      );
-      await Promise.all(managers.map(u =>
-        addNotification({
-          userId: u.id, type: "approval_request", title: "Đề cương chờ phê duyệt",
-          body: `Đề tài "${topic.title}" đã nộp đề cương — cần phê duyệt thực hiện & gán người.`,
-          link: `/research/${topic.id}`, read: false, priority: "normal",
-          createdAt: new Date().toISOString(),
-        }).catch(() => {})
-      ));
+      const reconfirmLoop = topic.needsReviewerReconfirmRound === (topic.revisionCount ?? 0) && topic.reconfirmLoopActive;
+      if (wasAwaitingResubmit && reconfirmLoop) {
+        // Vòng lặp xác nhận đang chạy (phản biện đã "Không đồng ý" ít nhất 1 lần trước đó) —
+        // người phụ trách đã quyết định 1 lần rồi, không cần xác nhận lại mỗi vòng: tự động gửi
+        // thẳng cho đúng phản biện đó xác nhận lại bản mới.
+        const steps = topic.steps.map(s =>
+          (s.key === "p_compile" || s.key === "p_assign") ? { ...s, status: "passed" as const, completedAt: stamp }
+          : s.key === "p_review" ? { ...s, status: "in_progress" as const }
+          : s
+        );
+        await onUpdate(
+          { compileNote: note.trim(), steps, currentStep: "p_review", revisionResubmittedAt: stamp },
+          "Đã nộp lại đề cương — gửi lại phản biện xác nhận"
+        );
+        const priorRound = (topic.revisionCount ?? 1) - 1;
+        const priorReviews = reviewersToResendForReconfirm(
+          topic.reviews.filter(r => r.stage === "proposal" && (r.round ?? 0) === priorRound)
+        );
+        await sendReconfirmReviews(topic.id, "proposal", priorReviews, topic.title);
+        onReload();
+      } else if (wasAwaitingResubmit) {
+        // Nộp lại sau "Yêu cầu sửa đổi" — chỉ cập nhật nội dung & đánh dấu đã nộp lại, KHÔNG tự
+        // động chuyển bước. Người phụ trách chỉ định phản biện/Quản lý NCKH sẽ xác nhận đã nhận
+        // và quyết định bước tiếp theo (xem khối "Xác nhận đã nhận" bên dưới).
+        await onUpdate(
+          { compileNote: note.trim(), revisionResubmittedAt: stamp },
+          "Đã nộp lại đề cương — chờ xác nhận"
+        );
+        await notifyResubmission(topic, users, currentUser?.id, "Đề cương");
+      } else {
+        const managers = users.filter(u =>
+          ["teamLead", "director", "hrAdmin"].includes(u.role ?? "") && u.id !== currentUser?.id
+        );
+        await onUpdate(
+          { compileNote: note.trim(), ...advanceStep(topic, "p_compile", "p_assign") },
+          "Đã nộp đề cương — chờ phê duyệt thực hiện"
+        );
+        await Promise.all(managers.map(u =>
+          addNotification({
+            userId: u.id, type: "approval_request", title: "Đề cương chờ phê duyệt",
+            body: `Đề tài "${topic.title}" đã nộp đề cương — cần phê duyệt thực hiện & gán người.`,
+            link: `/research/${topic.id}`, read: false, priority: "normal",
+            createdAt: stamp,
+          }).catch(() => {})
+        ));
+      }
     } finally { setSubmitting(false); }
+  }
+
+  // ── Xác nhận đã nhận bản chỉnh sửa (người phụ trách chỉ định phản biện / Quản lý NCKH) ──
+  const [confirming, setConfirming] = useState(false);
+  const needsReconfirm = topic.needsReviewerReconfirmRound === (topic.revisionCount ?? 0);
+  const canSkipToCouncil = topic.skipReviewRound === (topic.revisionCount ?? 0);
+
+  async function handleConfirmComplete() {
+    setConfirming(true);
+    const stamp = new Date().toISOString();
+    const steps = topic.steps.map(s =>
+      (s.key === "p_compile" || s.key === "p_assign" || s.key === "p_review")
+        ? { ...s, status: "passed" as const, completedAt: stamp }
+      : s.key === "p_council" ? { ...s, status: "in_progress" as const }
+      : s
+    );
+    await onUpdate({ steps, currentStep: "p_council" }, "Đã xác nhận — chuyển thẳng sang Hội đồng thông qua");
+    setConfirming(false);
+  }
+
+  async function handleConfirmReconfirm() {
+    setConfirming(true);
+    const stamp = new Date().toISOString();
+    const steps = topic.steps.map(s =>
+      (s.key === "p_compile" || s.key === "p_assign")
+        ? { ...s, status: "passed" as const, completedAt: stamp }
+      : s.key === "p_review" ? { ...s, status: "in_progress" as const }
+      : s
+    );
+    await onUpdate(
+      { steps, currentStep: "p_review", reconfirmLoopActive: true },
+      "Đã xác nhận — gửi lại phản biện xác nhận bản chỉnh sửa"
+    );
+    // Vòng vừa được xếp loại là round = revisionCount - 1 (đã tăng lúc phân loại ở Tổng hợp kết
+    // quả) — chỉ gửi phiếu xác nhận cho ĐÚNG (các) phản biện đã yêu cầu xem lại, không phải toàn
+    // bộ phản biện của vòng đó.
+    const priorRound = (topic.revisionCount ?? 1) - 1;
+    const priorReviews = reviewersToResendForReconfirm(
+      topic.reviews.filter(r => r.stage === "proposal" && (r.round ?? 0) === priorRound)
+    );
+    await sendReconfirmReviews(topic.id, "proposal", priorReviews, topic.title);
+    onReload();
+    setConfirming(false);
   }
 
   return (
     <div className="space-y-4">
+      {isAwaitingRevisionResubmit(topic) && (
+        <div className="flex items-start gap-2 bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800 rounded-xl p-3">
+          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+          <div className="text-sm text-amber-700 dark:text-amber-400">
+            <p className="font-medium">Phản biện yêu cầu sửa đổi (lần {topic.revisionCount}) — vui lòng cập nhật file & nộp lại thẩm định</p>
+            {topic.revisionNote && <p className="text-xs mt-0.5 whitespace-pre-wrap">{topic.revisionNote}</p>}
+          </div>
+        </div>
+      )}
+      {isAwaitingRevisionProcessing(topic) && (
+        <div className="flex items-start gap-2 bg-blue-50 dark:bg-blue-900/10 border border-blue-200 dark:border-blue-800 rounded-xl p-3">
+          <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm text-blue-700 dark:text-blue-400 font-medium">
+              Đã nộp lại đề cương (lần {topic.revisionCount}) — đang chờ quản lý xử lý tiếp.
+            </p>
+            {canManage && (
+              <div className="mt-2">
+                {needsReconfirm ? (
+                  <button onClick={handleConfirmReconfirm} disabled={confirming}
+                    className="px-3 py-1.5 bg-orange-100 hover:bg-orange-200 text-orange-700 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition disabled:opacity-60">
+                    {confirming && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                    Xác nhận đã nhận — gửi lại phản biện xác nhận
+                  </button>
+                ) : canSkipToCouncil ? (
+                  <button onClick={handleConfirmComplete} disabled={confirming}
+                    className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 transition disabled:opacity-60">
+                    {confirming && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                    Xác nhận đã nhận — báo hoàn tất, chuyển Hội đồng
+                  </button>
+                ) : null}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
         <FileUrlField
           label="File đề cương"
@@ -2020,8 +2422,31 @@ function ProposalTab({ topic, canEdit, onUpdate }: TabProps) {
       </div>
       <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5">
         <h2 className="text-sm font-semibold text-[var(--foreground)] mb-3">Điểm đạt Giai đoạn 1 (thẩm định đề cương)</h2>
-        <ReviewStageSummary reviews={topic.reviews} stage="proposal" />
+        <ReviewStageSummary reviews={activeReviews(topic, "proposal")} stage="proposal" currentUserId={currentUser?.id} onOpenReview={setSubmitReviewId} />
       </div>
+
+      {submitReviewId && (() => {
+        const rev = topic.reviews.find(r => r.id === submitReviewId);
+        if (!rev) return null;
+        return (
+          <ReviewFormPanel
+            key={submitReviewId}
+            review={rev}
+            topic={topic}
+            onCancel={() => setSubmitReviewId(null)}
+            onSubmit={async data => {
+              const ok = await submitOwnReview(topic.id, submitReviewId, data);
+              if (ok) {
+                if (rev.mode === "confirm" && (data.verdict === "pass" || data.verdict === "fail")) {
+                  await handleConfirmReviewOutcome(topic, rev, data.verdict, data.additionalComments, onUpdate);
+                }
+                onReload();
+              }
+              setSubmitReviewId(null);
+            }}
+          />
+        );
+      })()}
 
       {(councilSession || ethicsCert || agreePassed) && (
         <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
@@ -2181,9 +2606,12 @@ function EvidenceDocsField({ documents, canEdit, onChange }: {
 
 // ─── Tab: Đề tài ──────────────────────────────────────────────────────────────
 
-function FinalTopicTab({ topic, canEdit, onUpdate }: TabProps) {
+function FinalTopicTab({ topic, canEdit, onUpdate, onReload }: TabProps) {
+  const { currentUser } = useAuthStore();
+  const { users } = useTaskStore();
   const recognitionCert = topic.certificates.find(c => c.type === "recognition");
   const [submitting, setSubmitting] = useState(false);
+  const [submitReviewId, setSubmitReviewId] = useState<string | null>(null);
 
   const fileEditable = canEdit && !isFinalReportFileLocked(topic);
   // Đã có file và chưa bước vào GĐ2 (Nghiệm thu) — cho phép đề nghị thẩm định để bắt đầu GĐ2
@@ -2194,6 +2622,29 @@ function FinalTopicTab({ topic, canEdit, onUpdate }: TabProps) {
   async function handleSubmitForReview() {
     setSubmitting(true);
     const stamp = new Date().toISOString();
+    const wasAwaitingResubmit = isAwaitingRevisionResubmit(topic);
+    const reconfirmLoop = topic.needsReviewerReconfirmRound === (topic.revisionCount ?? 0) && topic.reconfirmLoopActive;
+    if (wasAwaitingResubmit && reconfirmLoop) {
+      // Vòng lặp xác nhận đang chạy — không cần người phụ trách xác nhận lại mỗi vòng: tự động
+      // gửi thẳng cho đúng phản biện đã yêu cầu xác nhận xem lại bản mới.
+      const steps = topic.steps.map(s =>
+        s.key === "r_intake" ? { ...s, status: "passed" as const, completedAt: stamp }
+        : s.key === "r_review" ? { ...s, status: "in_progress" as const }
+        : s
+      );
+      await onUpdate(
+        { steps, currentStep: "r_review", revisionResubmittedAt: stamp },
+        "Đã nộp lại kết quả — gửi lại phản biện xác nhận"
+      );
+      const priorRound = (topic.revisionCount ?? 1) - 1;
+      const priorReviews = reviewersToResendForReconfirm(
+        topic.reviews.filter(r => r.stage === "recognition" && (r.round ?? 0) === priorRound)
+      );
+      await sendReconfirmReviews(topic.id, "recognition", priorReviews, topic.title);
+      onReload();
+      setSubmitting(false);
+      return;
+    }
     // Đánh dấu luôn "Bắt đầu triển khai" (nếu chưa) để tiến trình ở tab Quy trình không bị
     // thiếu bước — rồi mới nộp kết quả & chuyển sang GĐ2 Nghiệm thu.
     const steps = topic.steps.map(s =>
@@ -2203,14 +2654,32 @@ function FinalTopicTab({ topic, canEdit, onUpdate }: TabProps) {
       : s
     );
     await onUpdate(
-      { steps, currentStep: "r_intake", stage: "recognition" },
-      "Đã nộp báo cáo kết quả — chuyển sang GĐ2 Nghiệm thu"
+      { steps, currentStep: "r_intake", stage: "recognition", ...(wasAwaitingResubmit ? { revisionResubmittedAt: stamp } : {}) },
+      wasAwaitingResubmit ? "Đã nộp lại kết quả nghiên cứu — chờ tiếp nhận" : "Đã nộp báo cáo kết quả — chuyển sang GĐ2 Nghiệm thu"
     );
+    if (wasAwaitingResubmit) await notifyResubmission(topic, users, currentUser?.id, "Kết quả nghiên cứu (GĐ2)");
     setSubmitting(false);
   }
 
   return (
     <div className="space-y-4">
+      {isAwaitingRevisionResubmit(topic) && (
+        <div className="flex items-start gap-2 bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800 rounded-xl p-3">
+          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+          <div className="text-sm text-amber-700 dark:text-amber-400">
+            <p className="font-medium">Phản biện yêu cầu sửa đổi (lần {topic.revisionCount}) — vui lòng cập nhật file & nộp lại thẩm định</p>
+            {topic.revisionNote && <p className="text-xs mt-0.5 whitespace-pre-wrap">{topic.revisionNote}</p>}
+          </div>
+        </div>
+      )}
+      {isAwaitingRevisionProcessing(topic) && (
+        <div className="flex items-start gap-2 bg-blue-50 dark:bg-blue-900/10 border border-blue-200 dark:border-blue-800 rounded-xl p-3">
+          <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+          <p className="text-sm text-blue-700 dark:text-blue-400 font-medium">
+            Đã nộp lại kết quả (lần {topic.revisionCount}) — đang chờ quản lý tiếp nhận.
+          </p>
+        </div>
+      )}
       <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5 space-y-4">
         <FileUrlField
           label="File đề tài / báo cáo tổng kết"
@@ -2248,8 +2717,31 @@ function FinalTopicTab({ topic, canEdit, onUpdate }: TabProps) {
       </div>
       <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5">
         <h2 className="text-sm font-semibold text-[var(--foreground)] mb-3">Điểm Giai đoạn 2 (nghiệm thu & công nhận)</h2>
-        <ReviewStageSummary reviews={topic.reviews} stage="recognition" />
+        <ReviewStageSummary reviews={activeReviews(topic, "recognition")} stage="recognition" currentUserId={currentUser?.id} onOpenReview={setSubmitReviewId} />
       </div>
+
+      {submitReviewId && (() => {
+        const rev = topic.reviews.find(r => r.id === submitReviewId);
+        if (!rev) return null;
+        return (
+          <ReviewFormPanel
+            key={submitReviewId}
+            review={rev}
+            topic={topic}
+            onCancel={() => setSubmitReviewId(null)}
+            onSubmit={async data => {
+              const ok = await submitOwnReview(topic.id, submitReviewId, data);
+              if (ok) {
+                if (rev.mode === "confirm" && (data.verdict === "pass" || data.verdict === "fail")) {
+                  await handleConfirmReviewOutcome(topic, rev, data.verdict, data.additionalComments, onUpdate);
+                }
+                onReload();
+              }
+              setSubmitReviewId(null);
+            }}
+          />
+        );
+      })()}
     </div>
   );
 }

@@ -22,7 +22,11 @@ import { useAuthStore } from "@/stores/useAuthStore";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { hasPermission, getEffectiveRole, ROLE_RANK } from "@/lib/rbac/permissions";
 import { getResearchTopics, saveResearchTopic, updateResearchTopic, deleteResearchTopic } from "@/lib/firebase/firestore";
-import { RESEARCH_STEPS, STAGE_LABEL, buildInitialSteps, researchProgress, stepMeta } from "@/lib/research";
+import {
+  RESEARCH_STEPS, STAGE_LABEL, buildInitialSteps, researchProgress, stepMeta,
+  isAwaitingRevisionResubmit, isAwaitingRevisionProcessing,
+  activeReviews, classifySynthesisOutcome, type SynthesisOutcome,
+} from "@/lib/research";
 import type { ResearchTopic, ResearchStage, ResearchReview, ResearchCouncilSession, IntakeLog, Task, ResearchDesignation, ResearchStepKey, User } from "@/types";
 import { toast } from "sonner";
 
@@ -251,7 +255,7 @@ function MyTopicsTab({
     const executing = mine.filter(t => t.stage === "executing").length;
     const completed = mine.filter(t => t.stage === "completed").length;
     const rejected  = mine.filter(t => t.stage === "rejected").length;
-    const needRevision = mine.filter(t => t.intakeStatus === "revision_needed").length;
+    const needRevision = mine.filter(t => t.intakeStatus === "revision_needed" || isAwaitingRevisionResubmit(t) || isAwaitingRevisionProcessing(t)).length;
     const intakeRejected = mine.filter(t => t.intakeStatus === "rejected").length;
     const needReview = mine.filter(t =>
       (t.stage === "proposal" || t.stage === "recognition") &&
@@ -362,6 +366,16 @@ function MyTopicsTab({
                     {t.intakeStatus === "rejected" && (
                       <span className="inline-flex items-center gap-1 mt-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-700">
                         <XCircle className="w-2.5 h-2.5" /> Từ chối tiếp nhận
+                      </span>
+                    )}
+                    {isAwaitingRevisionResubmit(t) && (
+                      <span className="inline-flex items-center gap-1 mt-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-700">
+                        <AlertCircle className="w-2.5 h-2.5" /> Phản biện yêu cầu sửa — chờ nộp lại
+                      </span>
+                    )}
+                    {isAwaitingRevisionProcessing(t) && (
+                      <span className="inline-flex items-center gap-1 mt-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-700">
+                        <CheckCircle2 className="w-2.5 h-2.5" /> Đã nộp lại — chờ xử lý
                       </span>
                     )}
                   </td>
@@ -728,6 +742,16 @@ function ReviewManagementView({
                     <span className="font-mono text-[11px] text-slate-400 shrink-0">{topic.code}</span>
                   )}
                   <p className="font-semibold text-sm text-slate-800 dark:text-white line-clamp-1 flex-1">{topic.title}</p>
+                  {isAwaitingRevisionResubmit(topic) && (
+                    <span className="inline-flex items-center gap-1 shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-700">
+                      <AlertCircle className="w-2.5 h-2.5" /> Yêu cầu sửa — chờ nộp lại
+                    </span>
+                  )}
+                  {isAwaitingRevisionProcessing(topic) && (
+                    <span className="inline-flex items-center gap-1 shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-700">
+                      <CheckCircle2 className="w-2.5 h-2.5" /> Đã nộp lại — chờ xử lý
+                    </span>
+                  )}
                   <div className="flex items-center gap-1 shrink-0">
                     {visibleReviews.map(r => (
                       <span key={r.id}
@@ -1096,20 +1120,12 @@ function ReviewTab({
                       <td className="px-3 py-3">
                         {topic.code && <span className="font-mono text-[11px] text-slate-400 block">{topic.code}</span>}
                         <p className="font-medium text-slate-800 dark:text-white line-clamp-2 max-w-xs leading-snug">{topic.title}</p>
-                        {(topic.principalInvestigatorName || topic.reviewAssignment?.delegatedName) && (
+                        {topic.principalInvestigatorName && (
                           <div className="flex items-center gap-2 mt-1 flex-wrap">
-                            {topic.principalInvestigatorName && (
-                              <div className="flex items-center gap-1">
-                                <AvatarBubble name={topic.principalInvestigatorName} size={16} />
-                                <span className="text-[10px] text-slate-400 truncate max-w-[100px]">{topic.principalInvestigatorName}</span>
-                              </div>
-                            )}
-                            {topic.reviewAssignment?.delegatedName && (
-                              <div className="flex items-center gap-1 text-[10px] text-slate-400">
-                                <AvatarBubble name={topic.reviewAssignment.delegatedName} size={14} />
-                                <span className="truncate max-w-[90px]">{topic.reviewAssignment.delegatedName}</span>
-                              </div>
-                            )}
+                            <div className="flex items-center gap-1">
+                              <AvatarBubble name={topic.principalInvestigatorName} size={16} />
+                              <span className="text-[10px] text-slate-400 truncate max-w-[100px]">{topic.principalInvestigatorName}</span>
+                            </div>
                           </div>
                         )}
                       </td>
@@ -1250,29 +1266,36 @@ function CouncilTab({
   const [tokenModal, setTokenModal] = useState<{ topicId: string; sessionId: string; tokens: { name: string; email?: string; link: string }[] } | null>(null);
   const [sendingTokens, setSendingTokens] = useState<string | null>(null); // sessionId being processed
 
+  // ── Xử lý từng đề tài theo xếp loại tổng hợp: từ chối / yêu cầu sửa (có hoặc không cần PB xác nhận lại) ──
+  type RowAction = "reject" | "revise_no_reconfirm" | "revise_reconfirm";
+  const [rowActionModal, setRowActionModal] = useState<{ topicId: string; action: RowAction } | null>(null);
+  const [rowActionNote, setRowActionNote] = useState("");
+  const [rowActioning, setRowActioning] = useState(false);
+
   const isCouncilMember = (currentUser?.researchDesignations ?? []).some(d =>
     ["councilMember", "councilChair", "councilSecretary"].includes(d)
   );
 
-  // Steps that are at or beyond council — exclude from synthesis tab
-  const PAST_REVIEW_STEPS = new Set<ResearchStepKey>([
-    "p_council", "p_ethics", "p_agree",
-    "exec_start", "exec_midterm", "exec_submit",
-    "r_intake", "r_review", "r_council", "r_recognize",
-  ]);
 
-  // Sub-tab 1: proposals where both reviews passed, not yet at council
+  // Sub-tab 1: đề tài (GĐ1 hoặc GĐ2) đã đủ 2 phiếu thẩm định vòng hiện tại, chưa vào Hội đồng —
+  // chờ người phụ trách xếp loại & xử lý (Đạt / Không đạt / Đạt cần sửa...).
   const synthesisTopics = useMemo(() => {
     const base = topics.filter(t => {
-      if (PAST_REVIEW_STEPS.has(t.currentStep)) return false;
-      const reviews = (t.reviews ?? []).filter(r => r.stage === "proposal" && r.status === "submitted");
-      return reviews.length >= 2 && reviews.every(r => r.verdict === "pass" || r.verdict === "pass_if_revised");
+      const stage: "proposal" | "recognition" | null =
+        t.currentStep === "p_review" ? "proposal" : t.currentStep === "r_review" ? "recognition" : null;
+      if (!stage) return false;
+      const reviews = activeReviews(t, stage).filter(r => r.status === "submitted");
+      return reviews.length >= 2;
     });
     if (!canManage && !canMonitor) {
       return base.filter(t => t.reviewAssignment?.delegatedTo === currentUser.id);
     }
     return base;
   }, [topics, canManage, canMonitor, currentUser.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function synthesisStageOf(t: ResearchTopic): "proposal" | "recognition" {
+    return t.currentStep === "r_review" ? "recognition" : "proposal";
+  }
 
   const synthesisYears = useMemo(() => {
     const yrs = [...new Set(synthesisTopics.map(t => t.year).filter(Boolean))].sort((a, b) => b! - a!);
@@ -1370,22 +1393,32 @@ function CouncilTab({
     try {
       const { utils, writeFile } = await import("xlsx");
       const rows = topicsToExport.map(t => {
-        const reviews = (t.reviews ?? []).filter(r => r.stage === "proposal" && r.status === "submitted");
+        const stage = synthesisStageOf(t);
+        const reviews = activeReviews(t, stage).filter(r => r.status === "submitted");
+        const outcome = classifySynthesisOutcome(reviews);
+        const OUTCOME_LABEL: Record<SynthesisOutcome, string> = {
+          pass: "Đạt", fail: "Không đạt",
+          revise_no_reconfirm: "Đạt, cần sửa (không cần PB xác nhận)",
+          revise_reconfirm: "Đạt, cần sửa (cần PB xác nhận lại)",
+        };
         const piName = t.principalInvestigatorName ?? users.find(u => u.id === t.principalInvestigatorId)?.name ?? "";
         const monitorName = t.reviewAssignment?.delegatedName ?? users.find(u => u.id === t.reviewAssignment?.delegatedTo)?.name ?? "";
         const lastSubmit = reviews.map(r => r.submittedAt ?? "").filter(Boolean).sort().reverse()[0];
+        const verdictLabel = (r?: ResearchReview) => !r ? "" : r.verdict === "pass" ? "ĐẠT" : r.verdict === "fail" ? "KHÔNG ĐẠT" : "ĐẠT (sửa)";
         return {
           "Mã đề tài":      t.code ?? "",
           "Tên đề tài":     t.title,
+          "Giai đoạn":      stage === "recognition" ? "GĐ2" : "GĐ1",
           "Đơn vị":         t.department ?? "",
           "Năm":            t.year ?? "",
           "Chủ nhiệm":      piName,
           "Người theo dõi": monitorName,
           "Thành viên":     (t.memberNames ?? "").split("\n").filter(Boolean).join("; "),
-          "PB1 kết quả":    reviews[0] ? (reviews[0].verdict === "pass" ? "ĐẠT" : "ĐẠT (sửa)") : "",
+          "PB1 kết quả":    verdictLabel(reviews[0]),
           "PB1 điểm":       reviews[0]?.score ?? "",
-          "PB2 kết quả":    reviews[1] ? (reviews[1].verdict === "pass" ? "ĐẠT" : "ĐẠT (sửa)") : "",
+          "PB2 kết quả":    verdictLabel(reviews[1]),
           "PB2 điểm":       reviews[1]?.score ?? "",
+          "Xếp loại":       outcome ? OUTCOME_LABEL[outcome] : "",
           "Ngày nộp":       lastSubmit ? new Date(lastSubmit).toLocaleDateString("vi-VN") : "",
           "Nhiệm vụ":       t.taskId ?? "",
         };
@@ -1437,7 +1470,7 @@ function CouncilTab({
     } catch { toast.error("Xuất Excel thất bại"); }
   }
 
-  // Batch advance selected to p_council
+  // Batch advance các đề tài đã xếp loại "Đạt" (cả GĐ1 lẫn GĐ2) sang bước Hội đồng thông qua
   async function handleBatchAdvance() {
     if (selected.size === 0) return;
     setAdvancing(true);
@@ -1447,12 +1480,15 @@ function CouncilTab({
       for (const id of selected) {
         const topic = synthesisTopics.find(t => t.id === id);
         if (!topic) continue;
+        const stage = synthesisStageOf(topic);
+        const reviewKey = stage === "recognition" ? "r_review" : "p_review";
+        const councilKey = stage === "recognition" ? "r_council" : "p_council";
         const steps = (topic.steps ?? []).map(s =>
-          s.key === "p_review"    ? { ...s, status: "passed" as const, completedAt: now }
-          : s.key === "p_council" ? { ...s, status: "in_progress" as const }
+          s.key === reviewKey  ? { ...s, status: "passed" as const, completedAt: now }
+          : s.key === councilKey ? { ...s, status: "in_progress" as const }
           : s
         );
-        const updates: Partial<ResearchTopic> = { steps, currentStep: "p_council", updatedAt: now };
+        const updates: Partial<ResearchTopic> = { steps, currentStep: councilKey, updatedAt: now };
         await fetch(`/api/research/${id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -1462,9 +1498,76 @@ function CouncilTab({
         ok++;
       }
       setSelected(new Set());
-      toast.success(`Đã chuyển ${ok} đề cương sang Hội đồng thông qua`);
+      toast.success(`Đã chuyển ${ok} đề tài sang Hội đồng thông qua`);
     } catch { toast.error("Có lỗi khi chuyển bước"); }
     finally { setAdvancing(false); }
+  }
+
+  // Từ chối đề tài (xếp loại "Không đạt")
+  async function handleRowReject(topic: ResearchTopic, reason: string) {
+    const stamp = new Date().toISOString();
+    const updates: Partial<ResearchTopic> = { stage: "rejected", rejectionReason: reason || undefined, updatedAt: stamp };
+    await fetch(`/api/research/${topic.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(updates),
+    });
+    onTopicUpdate(topic.id, updates);
+  }
+
+  // Yêu cầu sửa đổi (reset về bước tổng hợp/tiếp nhận của giai đoạn tương ứng, tăng revisionCount)
+  // — dùng chung cho cả 2 trường hợp "không cần PB xác nhận lại" và "cần PB xác nhận lại". Chỉ
+  // đánh dấu round cần xử lý gì (skipReviewRound / needsReviewerReconfirmRound) — KHÔNG tạo phiếu
+  // xác nhận ngay ở đây, vì tác giả chưa nộp lại nên phản biện chưa có bản mới để xem. Phiếu xác
+  // nhận chỉ được tạo khi người phụ trách bấm "Xác nhận đã nhận" sau khi tác giả nộp lại (xem
+  // RIntakePanel/ProposalTab ở trang chi tiết đề tài).
+  async function handleRowRevise(topic: ResearchTopic, note: string, needsReconfirm: boolean) {
+    const stamp = new Date().toISOString();
+    const stage = synthesisStageOf(topic);
+    const resetTo = stage === "recognition" ? "r_intake" : "p_compile";
+    const loopKeys = stage === "recognition"
+      ? ["r_intake", "r_review", "r_council", "r_recognize"]
+      : ["p_compile", "p_assign", "p_review", "p_council", "p_ethics", "p_agree"];
+    const newRound = (topic.revisionCount ?? 0) + 1;
+    const steps = (topic.steps ?? []).map(s =>
+      s.key === resetTo ? { ...s, status: "in_progress" as const, completedAt: undefined }
+      : loopKeys.includes(s.key) ? { ...s, status: "pending" as const, completedAt: undefined }
+      : s
+    );
+    const updates: Partial<ResearchTopic> = {
+      steps,
+      currentStep: resetTo,
+      revisionNote: note || undefined,
+      revisionCount: newRound,
+      revisionResubmittedAt: null,
+      reconfirmLoopActive: false,
+      updatedAt: stamp,
+      ...(needsReconfirm ? { needsReviewerReconfirmRound: newRound } : { skipReviewRound: newRound }),
+    };
+    await fetch(`/api/research/${topic.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(updates),
+    });
+    onTopicUpdate(topic.id, updates);
+  }
+
+  async function submitRowAction() {
+    if (!rowActionModal) return;
+    const topic = synthesisTopics.find(t => t.id === rowActionModal.topicId);
+    if (!topic) { setRowActionModal(null); return; }
+    setRowActioning(true);
+    try {
+      if (rowActionModal.action === "reject") await handleRowReject(topic, rowActionNote);
+      else await handleRowRevise(topic, rowActionNote, rowActionModal.action === "revise_reconfirm");
+      toast.success(
+        rowActionModal.action === "reject" ? "Đã từ chối đề tài"
+        : rowActionModal.action === "revise_reconfirm" ? "Đã yêu cầu sửa đổi — sẽ gửi lại phản biện xác nhận sau khi nộp lại"
+        : "Đã yêu cầu sửa đổi — chuyển thẳng Hội đồng sau khi nộp lại"
+      );
+      setSelected(prev => { const n = new Set(prev); n.delete(rowActionModal.topicId); return n; });
+    } catch { toast.error("Có lỗi xảy ra"); }
+    finally {
+      setRowActioning(false);
+      setRowActionModal(null);
+      setRowActionNote("");
+    }
   }
 
   // Generate vote tokens + send email for a session
@@ -1527,10 +1630,10 @@ function CouncilTab({
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
-                Đề cương chờ chuyển Hội đồng
+                Tổng hợp kết quả thẩm định (GĐ1 · GĐ2)
               </p>
               <p className="text-xs text-slate-400 mt-0.5">
-                Đã có đủ 2 phiếu phản biện đạt — chọn và chuyển sang Hội đồng thông qua. Hội đồng chỉ thấy sau khi được chuyển.
+                Đã đủ 2 phiếu phản biện — xếp loại Đạt / Không đạt / Đạt cần sửa cho từng đề tài. Đề tài "Đạt" có thể chọn nhiều để chuyển thẳng sang Hội đồng thông qua.
               </p>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
@@ -1580,11 +1683,11 @@ function CouncilTab({
           {synthesisTopics.length === 0 ? (
             <div className="text-center py-16 text-slate-400">
               <CheckCircle2 className="w-8 h-8 mx-auto mb-2 text-slate-300" />
-              <p className="text-sm">Không có đề cương nào đang chờ tổng hợp.</p>
+              <p className="text-sm">Không có đề tài nào đang chờ tổng hợp.</p>
             </div>
           ) : filteredSynthesis.length === 0 ? (
             <div className="text-center py-10 text-slate-400">
-              <p className="text-sm">Không có đề cương nào khớp bộ lọc.</p>
+              <p className="text-sm">Không có đề tài nào khớp bộ lọc.</p>
             </div>
           ) : (
             <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
@@ -1593,39 +1696,55 @@ function CouncilTab({
                   <tr className="bg-slate-50 dark:bg-slate-800/60 text-left">
                     <th className="px-3 py-2.5 w-8">
                       <input type="checkbox"
-                        checked={selected.size === filteredSynthesis.length && filteredSynthesis.length > 0}
-                        onChange={e => setSelected(e.target.checked ? new Set(filteredSynthesis.map(t => t.id)) : new Set())}
+                        checked={(() => {
+                          const selectable = filteredSynthesis.filter(t => classifySynthesisOutcome(activeReviews(t, synthesisStageOf(t)).filter(r => r.status === "submitted")) === "pass");
+                          return selectable.length > 0 && selectable.every(t => selected.has(t.id));
+                        })()}
+                        onChange={e => {
+                          const selectable = filteredSynthesis.filter(t => classifySynthesisOutcome(activeReviews(t, synthesisStageOf(t)).filter(r => r.status === "submitted")) === "pass");
+                          setSelected(e.target.checked ? new Set(selectable.map(t => t.id)) : new Set());
+                        }}
                         className="rounded"
                       />
                     </th>
                     <th className="px-3 py-2.5 text-xs font-semibold text-slate-500">Đề tài</th>
-                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Đơn vị</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-20">Giai đoạn</th>
                     <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Chủ nhiệm</th>
                     <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Theo dõi</th>
-                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-32">Thành viên</th>
                     <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-24">PB1</th>
                     <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-24">PB2</th>
-                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-16">Năm</th>
-                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Ngày nộp</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-32">Xếp loại</th>
+                    <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-40">Xử lý</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
                   {filteredSynthesis.map(topic => {
-                    const reviews = (topic.reviews ?? []).filter(r => r.stage === "proposal" && r.status === "submitted");
+                    const stage = synthesisStageOf(topic);
+                    const reviews = activeReviews(topic, stage).filter(r => r.status === "submitted");
+                    const outcome = classifySynthesisOutcome(reviews);
                     const isChecked = selected.has(topic.id);
                     const lastSubmit = reviews.map(r => r.submittedAt ?? "").sort().reverse()[0];
                     const piName = topic.principalInvestigatorName ?? users.find(u => u.id === topic.principalInvestigatorId)?.name;
                     const monitorName = topic.reviewAssignment?.delegatedName ?? users.find(u => u.id === topic.reviewAssignment?.delegatedTo)?.name;
-                    const fileUrl = topic.proposalFileUrl ? researchFileUrl(topic.proposalFileUrl) : "";
+                    const fileUrl = stage === "recognition"
+                      ? (topic.finalReportFileUrl ? researchFileUrl(topic.finalReportFileUrl) : "")
+                      : (topic.proposalFileUrl ? researchFileUrl(topic.proposalFileUrl) : "");
+                    const canSelect = outcome === "pass";
+                    const OUTCOME_META: Record<SynthesisOutcome, { label: string; cls: string }> = {
+                      pass:                 { label: "Đạt",                                cls: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" },
+                      fail:                 { label: "Không đạt",                          cls: "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400" },
+                      revise_no_reconfirm:  { label: "Đạt, cần sửa (không cần PB xác nhận)", cls: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300" },
+                      revise_reconfirm:     { label: "Đạt, cần sửa (cần PB xác nhận lại)",   cls: "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300" },
+                    };
                     return (
                       <tr key={topic.id}
-                        className={cn("transition cursor-pointer", isChecked ? "bg-violet-50/60 dark:bg-violet-900/10" : "hover:bg-slate-50 dark:hover:bg-slate-800/40")}
-                        onClick={() => setSelected(prev => { const n = new Set(prev); n.has(topic.id) ? n.delete(topic.id) : n.add(topic.id); return n; })}
+                        className={cn("transition", canSelect && "cursor-pointer", isChecked ? "bg-violet-50/60 dark:bg-violet-900/10" : "hover:bg-slate-50 dark:hover:bg-slate-800/40")}
+                        onClick={() => { if (canSelect) setSelected(prev => { const n = new Set(prev); n.has(topic.id) ? n.delete(topic.id) : n.add(topic.id); return n; }); }}
                       >
                         <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
-                          <input type="checkbox" checked={isChecked}
+                          <input type="checkbox" checked={isChecked} disabled={!canSelect}
                             onChange={e => setSelected(prev => { const n = new Set(prev); e.target.checked ? n.add(topic.id) : n.delete(topic.id); return n; })}
-                            className="rounded" />
+                            className="rounded disabled:opacity-30" />
                         </td>
                         <td className="px-3 py-3">
                           <div className="flex items-center gap-1.5 mb-0.5">
@@ -1634,14 +1753,19 @@ function CouncilTab({
                               <a href={fileUrl} target="_blank" rel="noopener noreferrer"
                                 onClick={e => e.stopPropagation()}
                                 className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 hover:bg-blue-100 font-medium border border-blue-100 flex items-center gap-0.5">
-                                <ExternalLink className="w-2.5 h-2.5" /> Đề cương
+                                <ExternalLink className="w-2.5 h-2.5" /> {stage === "recognition" ? "Đề tài" : "Đề cương"}
                               </a>
                             )}
                           </div>
                           <p className="font-medium text-slate-800 dark:text-white leading-snug">{topic.title}</p>
                           {topic.field && <p className="text-[11px] text-slate-400">{topic.field}</p>}
                         </td>
-                        <td className="px-3 py-3 text-[11px] text-slate-500">{topic.department ?? "—"}</td>
+                        <td className="px-3 py-3">
+                          <span className={cn("text-[11px] px-2 py-0.5 rounded-full font-semibold",
+                            stage === "recognition" ? "bg-violet-100 text-violet-700" : "bg-blue-100 text-blue-700")}>
+                            {stage === "recognition" ? "GĐ2" : "GĐ1"}
+                          </span>
+                        </td>
                         <td className="px-3 py-3">
                           {piName && (
                             <div className="flex items-center gap-1.5">
@@ -1658,32 +1782,57 @@ function CouncilTab({
                             </div>
                           )}
                         </td>
+                        {[0, 1].map(i => {
+                          const r = reviews[i];
+                          return (
+                            <td key={i} className="px-3 py-3">
+                              {r && (
+                                <>
+                                  <span className={cn("text-[11px] px-1.5 py-0.5 rounded-full font-semibold block w-fit",
+                                    r.verdict === "pass" ? "bg-green-100 text-green-700"
+                                    : r.verdict === "fail" ? "bg-red-100 text-red-600"
+                                    : "bg-amber-100 text-amber-700"
+                                  )}>
+                                    {r.verdict === "pass" ? "ĐẠT" : r.verdict === "fail" ? "KHÔNG ĐẠT" : "ĐẠT (sửa)"}
+                                  </span>
+                                  {typeof r.score === "number" && (
+                                    <span className="text-[11px] text-slate-400 mt-0.5 block">{r.score}/35</span>
+                                  )}
+                                  {r.verdict === "pass_if_revised" && (
+                                    <span className="text-[10px] text-slate-400 block">{r.needResubmit ? "Cần PB xác nhận" : "Không cần xác nhận"}</span>
+                                  )}
+                                </>
+                              )}
+                            </td>
+                          );
+                        })}
                         <td className="px-3 py-3">
-                          <div className="flex flex-col gap-0.5">
-                            {(topic.memberNames ?? "").split("\n").filter(Boolean).map((name, i) => (
-                              <div key={i} className="flex items-center gap-1">
-                                <AvatarBubble name={name.trim()} size={16} />
-                                <span className="text-[10px] text-slate-400 truncate max-w-[80px]">{name.trim()}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </td>
-                        {reviews.slice(0, 2).map((r, i) => (
-                          <td key={i} className="px-3 py-3">
-                            <span className={cn("text-[11px] px-1.5 py-0.5 rounded-full font-semibold block w-fit",
-                              r.verdict === "pass" ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
-                            )}>
-                              {r.verdict === "pass" ? "ĐẠT" : "ĐẠT (sửa)"}
+                          {outcome && (
+                            <span className={cn("text-[11px] px-2 py-0.5 rounded-full font-semibold block w-fit", OUTCOME_META[outcome].cls)}>
+                              {OUTCOME_META[outcome].label}
                             </span>
-                            {typeof r.score === "number" && (
-                              <span className="text-[11px] text-slate-400 mt-0.5 block">{r.score}/35</span>
-                            )}
-                          </td>
-                        ))}
-                        {reviews.length < 2 && <td colSpan={2 - reviews.length} />}
-                        <td className="px-3 py-3 text-xs text-slate-500 font-mono">{topic.year ?? "—"}</td>
-                        <td className="px-3 py-3 text-xs text-slate-400">
-                          {lastSubmit ? new Date(lastSubmit).toLocaleDateString("vi-VN") : "—"}
+                          )}
+                        </td>
+                        <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                          {outcome === "fail" && (
+                            <button onClick={() => setRowActionModal({ topicId: topic.id, action: "reject" })}
+                              className="text-[11px] px-2.5 py-1 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg font-medium transition">
+                              Từ chối đề tài
+                            </button>
+                          )}
+                          {outcome === "revise_no_reconfirm" && (
+                            <button onClick={() => setRowActionModal({ topicId: topic.id, action: "revise_no_reconfirm" })}
+                              className="text-[11px] px-2.5 py-1 bg-amber-100 hover:bg-amber-200 text-amber-700 rounded-lg font-medium transition">
+                              Yêu cầu sửa đổi
+                            </button>
+                          )}
+                          {outcome === "revise_reconfirm" && (
+                            <button onClick={() => setRowActionModal({ topicId: topic.id, action: "revise_reconfirm" })}
+                              className="text-[11px] px-2.5 py-1 bg-orange-100 hover:bg-orange-200 text-orange-700 rounded-lg font-medium transition">
+                              Yêu cầu sửa (cần PB xác nhận)
+                            </button>
+                          )}
+                          {lastSubmit && <p className="text-[10px] text-slate-400 mt-1">Nộp: {new Date(lastSubmit).toLocaleDateString("vi-VN")}</p>}
                         </td>
                       </tr>
                     );
@@ -1694,6 +1843,43 @@ function CouncilTab({
           )}
         </div>
       )}
+
+      {/* ── Modal: từ chối / yêu cầu sửa đổi cho 1 đề tài ── */}
+      {rowActionModal && (() => {
+        const topic = synthesisTopics.find(t => t.id === rowActionModal.topicId);
+        if (!topic) return null;
+        const isReject = rowActionModal.action === "reject";
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+            <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-md p-5 space-y-3">
+              <h3 className="text-sm font-bold text-slate-800 dark:text-white">
+                {isReject ? "Từ chối đề tài" : "Yêu cầu sửa đổi"}
+              </h3>
+              <p className="text-sm text-slate-500 line-clamp-2">{topic.title}</p>
+              {rowActionModal.action === "revise_reconfirm" && (
+                <p className="text-xs text-orange-600 bg-orange-50 dark:bg-orange-900/10 border border-orange-200 dark:border-orange-800 rounded-lg p-2">
+                  Sau khi tác giả nộp lại, hệ thống sẽ tự gửi lại đúng phản biện cũ một phiếu xác nhận rút gọn (Đồng ý/Không đồng ý) trước khi được chuyển Hội đồng.
+                </p>
+              )}
+              <textarea
+                value={rowActionNote} onChange={e => setRowActionNote(e.target.value)} rows={3}
+                placeholder={isReject ? "Lý do từ chối đề tài..." : "Ghi chú yêu cầu sửa đổi cho tác giả..."}
+                className="w-full border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-violet-500 resize-none"
+              />
+              <div className="flex justify-end gap-2">
+                <button onClick={() => { setRowActionModal(null); setRowActionNote(""); }}
+                  className="px-3 py-1.5 text-sm text-slate-500 hover:text-slate-700">Hủy</button>
+                <button onClick={submitRowAction} disabled={rowActioning}
+                  className={cn("px-4 py-1.5 text-white text-sm font-medium rounded-lg flex items-center gap-2 disabled:opacity-60 transition",
+                    isReject ? "bg-red-600 hover:bg-red-700" : "bg-amber-500 hover:bg-amber-600")}>
+                  {rowActioning && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  Xác nhận
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── Sub-tab 2: Hội đồng thông qua ── */}
       {subTab === "vote" && canSeeCouncil && (
