@@ -292,6 +292,21 @@ export interface IntakeLog {
 export interface ResearchReview {
   id: string;
   stage: "proposal" | "recognition";
+  /**
+   * Vòng thẩm định — mặc định 0 (chưa qua yêu cầu sửa đổi nào). Khi quản lý bấm "Yêu cầu sửa
+   * đổi" (topic.revisionCount tăng lên), phiếu chỉ định MỚI cho vòng thẩm định lại sẽ mang round
+   * = revisionCount tại thời điểm đó. Dùng để tách phiếu vòng cũ (giữ lại làm lịch sử) khỏi phiếu
+   * vòng hiện tại khi đếm "đã đủ 2 phiếu chưa" — tránh phiếu cũ trước khi sửa đổi bị tính nhầm là
+   * đã thẩm định xong cho bản đã chỉnh sửa lại.
+   */
+  round?: number;
+  /**
+   * "confirm" — phiếu xác nhận rút gọn (Đồng ý/Không đồng ý bản đã chỉnh sửa), gửi lại cho phản
+   * biện cũ sau khi tổng hợp kết quả xếp loại "Đạt, cần chỉnh sửa, cần phản biện xác nhận lại".
+   * Không chấm lại 7 tiêu chí — chỉ verdict "pass" (đồng ý) / "fail" (không đồng ý) + ghi chú.
+   * Mặc định "full" (phiếu thẩm định đầy đủ) khi không có giá trị.
+   */
+  mode?: "full" | "confirm";
   reviewerType: "internal" | "external";
   reviewerId?: string;      // nếu nội bộ
   reviewerName?: string;    // nếu ngoài (hoặc hiển thị)
@@ -511,6 +526,36 @@ export interface ResearchTopic {
   approvedToExecute?: boolean;
   revisionCount?: number;              // số lần yêu cầu sửa đổi
   revisionNote?: string;              // ghi chú lần sửa đổi gần nhất
+  /**
+   * Mốc thời gian tác giả đã nộp lại bản chỉnh sửa cho vòng sửa đổi HIỆN TẠI (revisionCount) —
+   * phân biệt trạng thái "đang chờ tác giả nộp lại" (chưa có giá trị) với "đã nộp lại, chờ quản
+   * lý xử lý tiếp" (đã có giá trị). Bị xoá (undefined) mỗi khi có yêu cầu sửa đổi MỚI.
+   */
+  revisionResubmittedAt?: string | null;
+  /**
+   * Khi tổng hợp kết quả thẩm định xếp loại "Đạt, cần chỉnh sửa, KHÔNG cần phản biện xác nhận
+   * lại" — đánh dấu round (= revisionCount SAU khi tăng) mà tác giả không cần thẩm định lại,
+   * chỉ cần nộp lại bản đã sửa là được chuyển thẳng sang Hội đồng thông qua (bỏ qua bước
+   * p_review/r_review của vòng đó).
+   */
+  skipReviewRound?: number;
+  /**
+   * Khi tổng hợp kết quả thẩm định xếp loại "Đạt, cần chỉnh sửa, CÓ cần phản biện xác nhận lại"
+   * — đánh dấu round (= revisionCount SAU khi tăng) cần gửi lại đúng phản biện cũ 1 phiếu xác
+   * nhận rút gọn sau khi tác giả nộp lại. Phiếu xác nhận (mode "confirm") chỉ được TẠO khi người
+   * phụ trách bấm xác nhận đã nhận bản chỉnh sửa (không tạo ngay lúc xếp loại — lúc đó tác giả
+   * chưa nộp lại, phản biện chưa có gì để xem).
+   */
+  needsReviewerReconfirmRound?: number;
+  /**
+   * True kể từ khi người phụ trách bấm "Xác nhận đã nhận — gửi lại phản biện xác nhận" LẦN ĐẦU
+   * cho round hiện tại — đánh dấu vòng lặp tác giả↔phản biện đang chạy. Khi đang true, các lần
+   * tác giả nộp lại TIẾP THEO trong cùng vòng lặp (do phản biện "Không đồng ý") tự động gửi lại
+   * cho đúng phản biện đó mà KHÔNG cần người phụ trách xác nhận lại mỗi lần — chỉ dừng khi phản
+   * biện đồng ý (chuyển Hội đồng, xoá cờ) hoặc khi có 1 đợt xếp loại MỚI hoàn toàn từ tab Tổng hợp
+   * kết quả (xoá cờ, coi là quyết định mới).
+   */
+  reconfirmLoopActive?: boolean;
   rejectionReason?: string;           // lý do từ chối
 
   // Registration form fields (from Google Form / Import)

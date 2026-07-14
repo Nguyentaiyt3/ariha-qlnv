@@ -52,6 +52,20 @@ export function isTopicAuthor(
   return false;
 }
 
+/**
+ * Xung đột lợi ích: người dùng có đang là 1 trong các phản biện của đề tài không (bất kể giai
+ * đoạn nào, đã nộp hay chưa). Dùng để chặn chính phản biện tự chỉ định thêm phản biện khác /
+ * được giao phụ trách chỉ định phản biện cho đề tài mình đang phản biện — nếu không chặn, họ sẽ
+ * biết trước danh tính người được chỉ định (bắt buộc phải thấy để chọn đúng người), phá vỡ
+ * nguyên tắc phản biện kín dù giao diện xem sau đó vẫn ẩn đúng.
+ */
+export function isTopicReviewer(
+  topic: Pick<ResearchTopic, "reviews">,
+  userId: string,
+): boolean {
+  return (topic.reviews ?? []).some(r => r.reviewerId === userId);
+}
+
 export type DupPair = {
   a: ResearchTopic;
   b: ResearchTopic;

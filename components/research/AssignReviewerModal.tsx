@@ -19,6 +19,8 @@ interface Props {
   slotsLeft: number;
   /** Giai đoạn phản biện (proposal = thẩm định đề cương, recognition = nghiệm thu). */
   stage?: "proposal" | "recognition";
+  /** Id người đang thực hiện chỉ định — loại khỏi danh sách chọn, không được tự chọn bản thân. */
+  currentUserId?: string;
   onAssign: (review: ResearchReview) => Promise<void>;
   onClose: () => void;
 }
@@ -48,7 +50,7 @@ function MiniAvatar({ user }: { user: User }) {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export function AssignReviewerModal({ users, existingReviews, slotsLeft, stage = "proposal", onAssign, onClose }: Props) {
+export function AssignReviewerModal({ users, existingReviews, slotsLeft, stage = "proposal", currentUserId, onAssign, onClose }: Props) {
   const abbr = useUnitAbbr();
   const [tab, setTab] = useState<Tab>("internal");
   const [search, setSearch] = useState("");
@@ -64,14 +66,16 @@ export function AssignReviewerModal({ users, existingReviews, slotsLeft, stage =
 
   const assignedIds = new Set(existingReviews.map(r => r.reviewerId).filter(Boolean) as string[]);
 
-  // Lọc: chỉ user có designation "reviewer", chưa được gán
+  // Lọc: chỉ user có designation "reviewer", chưa được gán, và không phải chính người đang thực
+  // hiện chỉ định (không được tự chọn bản thân làm phản biện đề tài mình đang phân công).
   const eligible = useMemo(() =>
     users.filter(u =>
       u.isActive &&
       u.researchDesignations?.includes("reviewer") &&
-      !assignedIds.has(u.id)
+      !assignedIds.has(u.id) &&
+      u.id !== currentUserId
     ),
-    [users, assignedIds],
+    [users, assignedIds, currentUserId],
   );
 
   const filtered = useMemo(() => {

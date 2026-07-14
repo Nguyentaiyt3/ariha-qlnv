@@ -40,6 +40,15 @@ export const STAGE_LABEL: Record<ResearchStage, string> = {
   rejected:    "Đã từ chối",
 };
 
+/**
+ * Các bước thuộc quy trình quản lý/nhiệm vụ nội bộ (không phải mốc thẩm định) — ẩn khỏi timeline
+ * khi người xem chỉ là phản biện (không phải quản lý/tác giả), để họ chỉ thấy đúng các mốc thẩm
+ * định liên quan đến việc đánh giá của mình, không cần biết chi tiết vận hành nội bộ đề tài.
+ */
+export const TASK_ONLY_STEP_KEYS = new Set<ResearchStepKey>([
+  "create", "approve_task", "notify", "p_compile", "p_assign", "exec_start",
+]);
+
 export function stepMeta(key: ResearchStepKey) {
   return RESEARCH_STEPS.find((s) => s.key === key)!;
 }
@@ -56,9 +65,107 @@ export function buildInitialSteps(): ResearchStepState[] {
   }));
 }
 
-/** Số phản biện đã nộp của một giai đoạn. */
-export function submittedReviewCount(reviews: ResearchReview[], stage: "proposal" | "recognition"): number {
-  return reviews.filter((r) => r.stage === stage && r.status === "submitted").length;
+/**
+ * Phiếu phản biện thuộc VÒNG THẨM ĐỊNH HIỆN TẠI của 1 giai đoạn — loại các phiếu vòng trước khi
+ * đề tài đã bị yêu cầu sửa đổi (revisionCount tăng) và nộp lại. Phiếu vòng cũ vẫn còn nguyên
+ * trong topic.reviews để xem lại lịch sử, chỉ không được tính vào "đã đủ 2 phiếu chưa"/điểm
+ * trung bình của vòng hiện tại nữa — tránh phiếu thẩm định bản CŨ (trước khi sửa) bị tính nhầm
+ * là đã thẩm định xong cho bản đã chỉnh sửa lại.
+ */
+export function activeReviews(
+  topic: Pick<ResearchTopic, "reviews" | "revisionCount">,
+  stage: "proposal" | "recognition",
+): ResearchReview[] {
+  const round = topic.revisionCount ?? 0;
+  return (topic.reviews ?? []).filter((r) => r.stage === stage && (r.round ?? 0) === round);
+}
+
+/** Số phản biện đã nộp của vòng thẩm định hiện tại (giai đoạn tương ứng). */
+export function submittedReviewCount(
+  topic: Pick<ResearchTopic, "reviews" | "revisionCount">,
+  stage: "proposal" | "recognition",
+): number {
+  return activeReviews(topic, stage).filter((r) => r.status === "submitted").length;
+}
+
+/**
+ * 4 kết quả tổng hợp có thể xếp loại cho 1 đề tài đã đủ 2 phiếu thẩm định (vòng hiện tại):
+ *  - "pass"                 : cả 2 phiếu ĐẠT — chuyển thẳng Hội đồng.
+ *  - "fail"                 : có phiếu KHÔNG ĐẠT — từ chối đề tài.
+ *  - "revise_no_reconfirm"  : có phiếu ĐẠT nếu chỉnh sửa, không phiếu nào yêu cầu nộp lại
+ *                             cho phản biện xem lại (needResubmit=false) — sửa xong chuyển
+ *                             thẳng Hội đồng, không cần thẩm định lại.
+ *  - "revise_reconfirm"     : có phiếu ĐẠT nếu chỉnh sửa VÀ yêu cầu nộp lại cho phản biện xác
+ *                             nhận (needResubmit=true) — sửa xong phải gửi lại đúng phản biện
+ *                             đó xác nhận trước khi chuyển Hội đồng.
+ * Trả về null nếu chưa đủ 2 phiếu đã nộp.
+ */
+export type SynthesisOutcome = "pass" | "fail" | "revise_no_reconfirm" | "revise_reconfirm";
+
+export function classifySynthesisOutcome(reviews: ResearchReview[]): SynthesisOutcome | null {
+  const submitted = reviews.filter((r) => r.status === "submitted");
+  if (submitted.length < 2) return null;
+  if (submitted.some((r) => r.verdict === "fail")) return "fail";
+  if (submitted.some((r) => r.verdict === "pass_if_revised")) {
+    return submitted.some((r) => r.verdict === "pass_if_revised" && r.needResubmit)
+      ? "revise_reconfirm"
+      : "revise_no_reconfirm";
+  }
+  return "pass";
+}
+
+/**
+ * Trong 1 danh sách phiếu đã nộp, lọc ra đúng (các) phản biện đã yêu cầu xem lại bản chỉnh sửa
+ * (verdict "ĐẠT nếu chỉnh sửa" + đã tick "cần nộp lại") — CHỈ những người này mới nhận phiếu xác
+ * nhận rút gọn, không phải toàn bộ phản biện của vòng đó.
+ */
+export function reviewersRequiringReconfirm(reviews: ResearchReview[]): ResearchReview[] {
+  return reviews.filter((r) => r.status === "submitted" && r.verdict === "pass_if_revised" && r.needResubmit);
+}
+
+/**
+ * Xác định (các) phản biện cần gửi lại phiếu xác nhận rút gọn cho 1 round cụ thể (round =
+ * revisionCount hiện tại - 1, tức vòng vừa được đánh giá) — dùng chung cho cả 2 trường hợp:
+ *  - Vòng vừa rồi là phiếu thẩm định ĐẦY ĐỦ (mode "full", lần đầu tiên xếp loại "cần PB xác
+ *    nhận" ở Tổng hợp kết quả) → theo verdict + needResubmit (reviewersRequiringReconfirm).
+ *  - Vòng vừa rồi đã LÀ 1 vòng xác nhận rút gọn (mode "confirm", vòng lặp tác giả↔phản biện đang
+ *    chạy) → chỉ gửi lại cho (các) phản biện đã "Không đồng ý" ở vòng đó (verdict "fail") — người
+ *    đã "Đồng ý" thì không cần hỏi lại.
+ */
+export function reviewersToResendForReconfirm(priorRoundReviews: ResearchReview[]): ResearchReview[] {
+  const confirmReviews = priorRoundReviews.filter((r) => r.mode === "confirm");
+  if (confirmReviews.length > 0) {
+    return confirmReviews.filter((r) => r.status === "submitted" && r.verdict === "fail");
+  }
+  return reviewersRequiringReconfirm(priorRoundReviews);
+}
+
+/**
+ * Đề tài đang ở trạng thái "yêu cầu sửa đổi, chờ tác giả nộp lại" sau khi phản biện — khác với
+ * intakeStatus="revision_needed" (chỉ áp dụng cho bước tiếp nhận ban đầu). True khi đã có ít
+ * nhất 1 lần "Yêu cầu sửa đổi" (revisionCount > 0) và đề tài đang đứng lại đúng bước ngay trước
+ * thẩm định của vòng hiện tại (p_compile cho GĐ1, r_intake cho GĐ2) — nghĩa là tác giả chưa
+ * nộp lại bản chỉnh sửa cho vòng này.
+ */
+export function isAwaitingRevisionResubmit(
+  topic: Pick<ResearchTopic, "revisionCount" | "currentStep" | "revisionResubmittedAt">,
+): boolean {
+  return (topic.revisionCount ?? 0) > 0 &&
+    (topic.currentStep === "p_compile" || topic.currentStep === "r_intake") &&
+    !topic.revisionResubmittedAt;
+}
+
+/**
+ * Đề tài đã được tác giả nộp lại bản chỉnh sửa cho vòng sửa đổi hiện tại, nhưng vẫn đang đứng ở
+ * bước ngay trước thẩm định (p_compile/r_intake) chờ quản lý xử lý tiếp (phê duyệt/tiếp nhận) —
+ * giai đoạn 2 của cùng 1 chu trình "yêu cầu sửa đổi", tiếp theo isAwaitingRevisionResubmit.
+ */
+export function isAwaitingRevisionProcessing(
+  topic: Pick<ResearchTopic, "revisionCount" | "currentStep" | "revisionResubmittedAt">,
+): boolean {
+  return (topic.revisionCount ?? 0) > 0 &&
+    (topic.currentStep === "p_compile" || topic.currentStep === "r_intake") &&
+    !!topic.revisionResubmittedAt;
 }
 
 /** % tiến độ chung = số bước passed / tổng bước. */
@@ -122,25 +229,55 @@ export function redactReviewer(r: ResearchReview): ResearchReview {
  * 1 người xem cụ thể:
  *  - Tác giả/đồng tác giả KHÔNG được biết danh tính bất kỳ phản biện nào của đề tài mình —
  *    kể cả khi họ đồng thời có quyền quản lý (director/hrAdmin/Quản lý NCKH tự đăng ký đề tài).
- *  - 1 phản biện KHÔNG được biết danh tính phản biện còn lại CÙNG giai đoạn — kể cả khi họ
- *    đồng thời có quyền quản lý.
+ *  - 1 phản biện (bất kể đang phản biện giai đoạn nào) KHÔNG được biết danh tính bất kỳ phản
+ *    biện nào khác của CẢ ĐỀ TÀI — kể cả phản biện ở giai đoạn khác (GĐ1 và GĐ2 không được biết
+ *    nhau), kể cả khi họ đồng thời có quyền quản lý.
  *  - Phiếu của chính người xem luôn hiển thị đầy đủ.
- *  - Quản lý THUẦN (không phải tác giả, không phải 1 trong 2 phản biện của đề tài đó) vẫn thấy
- *    đầy đủ danh tính để điều phối/phân công.
+ *  - Chỉ "Quản lý NCKH" thật (isNckhManager — hrAdmin hoặc được gán chỉ định "researchManager")
+ *    mới thấy đầy đủ danh tính để điều phối/phân công khi không phải tác giả/phản biện của đề
+ *    tài đó. Người khác có quyền `research:manage` qua cấu hình phân quyền chung (vd. toàn bộ
+ *    vai trò "staff" trong 1 số tổ chức) nhưng KHÔNG phải Quản lý NCKH thật thì vẫn bị ẩn — quyền
+ *    quản lý khác không đồng nghĩa được xem danh tính phản biện.
  */
 export function redactTopicReviewsForViewer(
   reviews: ResearchReview[] | undefined,
   viewerId: string,
   viewerIsAuthor: boolean,
+  viewerIsNckhManager: boolean,
 ): ResearchReview[] {
   const list = reviews ?? [];
+  const viewerIsReviewer = list.some((rr) => rr.reviewerId === viewerId);
   return list.map((r) => {
     if (r.reviewerId === viewerId) return r;
-    if (viewerIsAuthor) return redactReviewer(r);
-    const viewerIsReviewerSameStage = list.some((rr) => rr.reviewerId === viewerId && rr.stage === r.stage);
-    if (viewerIsReviewerSameStage) return redactReviewer(r);
+    if (viewerIsAuthor || viewerIsReviewer || !viewerIsNckhManager) return redactReviewer(r);
     return r;
   });
+}
+
+/**
+ * Ẩn danh tính tác giả/nhóm thực hiện đề tài — chiều còn lại của phản biện kín 2 chiều: phản
+ * biện không được biết mình đang chấm đề tài của ai. Áp dụng khi người xem là 1 phản biện của đề
+ * tài, ngay cả khi họ đồng thời có quyền quản lý — đã là phản biện của đề tài này thì không còn
+ * là "Quản lý NCKH thuần" cho riêng đề tài đó nữa. Các field bắt buộc kiểu string
+ * (principalInvestigatorId, createdBy) trả về "" thay vì undefined để giữ đúng kiểu ResearchTopic.
+ */
+export function redactAuthorForReviewer(topic: ResearchTopic): ResearchTopic {
+  return {
+    ...topic,
+    principalInvestigatorId: "",
+    principalInvestigatorName: undefined,
+    mainPerformerId: undefined,
+    supervisorId: undefined,
+    contributors: undefined,
+    memberIds: undefined,
+    memberNames: undefined,
+    memberDepartments: undefined,
+    submitterName: undefined,
+    submitterEmail: undefined,
+    submitterPhone: undefined,
+    createdBy: "",
+    createdByName: undefined,
+  };
 }
 
 /**
@@ -157,10 +294,14 @@ export function isProposalFileLocked(topic: Pick<ResearchTopic, "stage" | "curre
 }
 
 /**
- * File đề tài/báo cáo tổng kết chỉ được sửa/xoá/thay thế TRƯỚC khi nộp thẩm định GĐ2 (chưa bước
- * vào giai đoạn Nghiệm thu). Một khi đã nộp, file bị khoá vì phản biện GĐ2 có thể đã/đang đánh
- * giá đúng file này.
+ * File đề tài/báo cáo tổng kết chỉ được sửa/xoá/thay thế TRƯỚC khi nộp thẩm định GĐ2, hoặc khi
+ * đang ở bước tiếp nhận (r_intake) — kể cả sau khi bị "Yêu cầu sửa đổi" (currentStep quay lại
+ * r_intake nhưng stage vẫn là "recognition") để tác giả có thể nộp lại file đã chỉnh sửa. Một khi
+ * đã qua r_intake (đã nộp thẩm định), file bị khoá vì phản biện GĐ2 có thể đã/đang đánh giá đúng
+ * file này.
  */
-export function isFinalReportFileLocked(topic: Pick<ResearchTopic, "stage">): boolean {
-  return topic.stage === "recognition" || topic.stage === "completed";
+export function isFinalReportFileLocked(topic: Pick<ResearchTopic, "stage" | "currentStep">): boolean {
+  if (topic.stage === "completed") return true;
+  if (topic.stage !== "recognition") return false;
+  return topic.currentStep !== "r_intake";
 }

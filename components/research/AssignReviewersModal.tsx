@@ -32,8 +32,14 @@ interface ReviewerSlot {
 
 // ─── Helpers ───────────────────────────────────────────────────
 
+// Chỉ tính phiếu của vòng thẩm định hiện tại — sau "Yêu cầu sửa đổi" (revisionCount tăng), phiếu
+// vòng trước không tính vào đây nữa, cho phép chỉ định lại đủ 2 phản biện cho vòng thẩm định lại.
+function currentRoundProposalReviews(topic: ResearchTopic): ResearchReview[] {
+  const round = topic.revisionCount ?? 0;
+  return (topic.reviews ?? []).filter(r => r.stage === "proposal" && (r.round ?? 0) === round);
+}
 function proposalReviewCount(topic: ResearchTopic): number {
-  return (topic.reviews ?? []).filter(r => r.stage === "proposal").length;
+  return currentRoundProposalReviews(topic).length;
 }
 
 function hasDesignation(user: User, des: ResearchDesignation): boolean {
@@ -68,8 +74,11 @@ function ReviewerPicker({
       : [],
   [users, excludeIds, q]);
 
+  // Danh sách kết quả hiển thị TRONG luồng bình thường (không dùng absolute overlay) — vì ô tìm
+  // kiếm này nằm trong modal có overflow-y-auto, nếu đặt absolute thì khi input ở gần đáy vùng
+  // cuộn, dropdown bị vùng overflow của cha cắt mất, không thấy được dù đã render.
   return (
-    <div className="relative">
+    <div>
       <div className="flex items-center gap-2 px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 focus-within:ring-2 focus-within:ring-violet-400">
         <Search className="w-3.5 h-3.5 text-slate-400 shrink-0" />
         <input
@@ -82,7 +91,7 @@ function ReviewerPicker({
         />
       </div>
       {open && filtered.length > 0 && (
-        <div className="absolute z-50 left-0 right-0 top-full mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg overflow-hidden">
+        <div className="mt-1 max-h-56 overflow-y-auto bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg">
           {filtered.map(u => (
             <button
               key={u.id}
@@ -102,7 +111,7 @@ function ReviewerPicker({
         </div>
       )}
       {open && q.trim() && filtered.length === 0 && (
-        <div className="absolute z-50 left-0 right-0 top-full mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg px-3 py-3 text-sm text-slate-400">
+        <div className="mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-lg px-3 py-3 text-sm text-slate-400">
           {emptyMsg}
         </div>
       )}
@@ -491,7 +500,7 @@ export function AssignReviewersModal({
               </div>
 
               {assignableTopics.map(topic => {
-                const existing = (topic.reviews ?? []).filter(r => r.stage === "proposal");
+                const existing = currentRoundProposalReviews(topic);
                 const entries = pending[topic.id] ?? [];
                 const total = existing.length + entries.length;
                 const full = total >= 2;

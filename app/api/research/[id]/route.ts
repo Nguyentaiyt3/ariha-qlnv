@@ -3,8 +3,8 @@ import { verifyToken, getUser } from "@/lib/mongodb/auth";
 import { getResearchTopic, updateResearchTopic, deleteResearchTopic, getDepartmentTeamLeads, createNotification } from "@/lib/mongodb/firestore";
 import { hasPermission, canDoResearchAction, canUserAssignReviewer } from "@/lib/rbac/permissions";
 import { sameUnit } from "@/lib/rbac/scope";
-import { redactTopicReviewsForViewer, isProposalFileLocked, isFinalReportFileLocked } from "@/lib/research";
-import { isTopicAuthor, isNckhManager } from "@/lib/researchUtils";
+import { redactTopicReviewsForViewer, redactAuthorForReviewer, isProposalFileLocked, isFinalReportFileLocked } from "@/lib/research";
+import { isTopicAuthor, isTopicReviewer, isNckhManager } from "@/lib/researchUtils";
 import { logAudit } from "@/lib/mongodb/auditLog";
 import type { ResearchTopic, User, RecordChangeRequest } from "@/types";
 
@@ -51,7 +51,12 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   if (!topic) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   const me = await getUser(u.userId);
-  const isManager = !!me && (hasPermission(me.role, "research:manage") || isNckhManager(me));
+  const isNckhMgr = !!me && isNckhManager(me);
+  const isManager = !!me && (hasPermission(me.role, "research:manage") || isNckhMgr);
+  const isTeamLeadOwnUnit =
+    !!me && me.role === "teamLead" &&
+    hasPermission(me.role, "research:monitor") &&
+    sameUnit(topic.department, me.department);
 
   // Non-managers may only view topics they are part of (hoặc, với trưởng nhóm, cùng đơn vị)
   if (!isManager) {
@@ -62,20 +67,27 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       (topic.reviews ?? []).some((r) => r.reviewerId === u.userId) ||
       (topic.councilSessions ?? []).some((s) => (s.memberIds ?? []).includes(u.userId));
 
-    const isTeamLeadOwnUnit =
-      !!me && me.role === "teamLead" &&
-      hasPermission(me.role, "research:monitor") &&
-      sameUnit(topic.department, me.department);
-
     if (!isMember && !isTeamLeadOwnUnit) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   // Phản biện kín 2 chiều: tác giả không được biết phản biện, 2 phản biện cùng giai đoạn không
   // được biết nhau — áp dụng cho MỌI người xem, kể cả khi họ đồng thời có quyền quản lý (vd.
   // hrAdmin/Quản lý NCKH tự đăng ký đề tài, hoặc 1 phản biện cũng đang giữ vai trò quản lý khác).
+  // Chỉ Quản lý NCKH thật (isNckhMgr) mới được xem đầy đủ khi không phải tác giả/phản biện —
+  // quyền research:manage nói chung (vd. toàn bộ "staff" trong 1 số tổ chức) không đủ.
   const viewerIsAuthor = isTopicAuthor({ id: u.userId, email: me?.email }, topic);
-  topic.reviews = redactTopicReviewsForViewer(topic.reviews, u.userId, viewerIsAuthor);
-  return NextResponse.json({ topic });
+  topic.reviews = redactTopicReviewsForViewer(topic.reviews, u.userId, viewerIsAuthor, isNckhMgr);
+
+  // Chiều còn lại: phản biện không được biết danh tính tác giả/nhóm thực hiện — áp dụng ngay cả
+  // khi họ đồng thời có quyền quản lý (cùng logic với redactTopicReviewsForViewer ở trên: 1 khi
+  // đã là phản biện của đề tài này thì không còn là "quản lý thuần" nữa, dù vai trò/permission có
+  // cấp research:manage). Chỉ "quản lý thuần" — KHÔNG đồng thời là phản biện của đề tài này — mới
+  // thấy đầy đủ danh tính để điều phối.
+  let responseTopic = topic;
+  if (isTopicReviewer(topic, u.userId)) {
+    responseTopic = redactAuthorForReviewer(topic);
+  }
+  return NextResponse.json({ topic: responseTopic });
 }
 
 export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
@@ -89,6 +101,17 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   if (!me) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const updates = await req.json();
+
+  // Không bao giờ nhận nguyên mảng `reviews` qua route chung này — client chỉ giữ bản đã bị ẩn
+  // danh tính phản biện khác (phản biện kín ở GET), ghi đè cả mảng sẽ xoá vĩnh viễn danh tính
+  // thật của người khác trong DB. Mọi thay đổi cho reviews phải qua POST/PATCH/DELETE
+  // /api/research/[id]/reviews (thao tác đúng 1 phần tử, không đụng phần tử khác).
+  if (Object.prototype.hasOwnProperty.call(updates, "reviews")) {
+    return NextResponse.json(
+      { error: "Không thể sửa mảng reviews qua route này — dùng /api/research/[id]/reviews" },
+      { status: 400 },
+    );
+  }
 
   // Chặn hoàn toàn người ngoài cuộc — trước đây route này không kiểm tra quyền gì cả, ai đăng
   // nhập cũng PATCH được bất kỳ đề tài nào (kể cả đổi `stage` GĐ1→GĐ5, gán mình làm chủ nhiệm...).
@@ -141,11 +164,17 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   // TRỪ 1 ngoại lệ: tác giả/thực hiện chính được tự nộp báo cáo kết quả để đề nghị thẩm định GĐ2
   // (đây là hành động NỘP của họ, không phải hành động quản lý tuỳ ý chuyển giai đoạn — khớp với
   // canAct = canManage || isPI || isPerformer đã cho phép ở nút "Nộp báo cáo kết quả"/"Nộp thẩm
-  // định" phía client).
+  // định" phía client). Bao gồm cả trường hợp NỘP LẠI sau khi phản biện "Yêu cầu sửa đổi" —
+  // lúc đó topic.stage đã là "recognition" từ trước (không đổi khi yêu cầu sửa), currentStep bị
+  // reset về "r_intake" chờ nộp lại, nên không thể chỉ dựa vào topic.stage khác "recognition" để
+  // nhận diện lượt nộp đầu tiên như cũ — phải cho phép cả khi đang đứng đúng ở r_intake.
   const isPIOrPerformer = topic.principalInvestigatorId === me.id || topic.mainPerformerId === me.id;
   const isSubmitFinalReportTransition =
     updates.stage === "recognition" && updates.currentStep === "r_intake" &&
-    !["recognition", "completed", "rejected"].includes(topic.stage);
+    (
+      !["recognition", "completed", "rejected"].includes(topic.stage) ||
+      (topic.stage === "recognition" && topic.currentStep === "r_intake")
+    );
   if ("stage" in updates && !canManage && !(isSubmitFinalReportTransition && isPIOrPerformer)) {
     return NextResponse.json({ error: "Bạn không có quyền chuyển giai đoạn đề tài" }, { status: 403 });
   }
