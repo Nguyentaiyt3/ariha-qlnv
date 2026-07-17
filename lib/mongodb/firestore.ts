@@ -2,6 +2,7 @@ import { connectDB } from "./config";
 import {
   UserModel, TaskModel, NotificationModel, MessageModel,
   WorkflowModel, MilestoneConfigModel, KPIFrameworkModel, EvaluationConfigModel,
+  NckhReviewCriteriaConfigModel, RiskFlagConfigModel,
   EvaluationModel, CalendarEventModel, RequestTemplateModel, WorkRequestModel,
   DocFolderModel, WorkDocumentModel, AnnouncementModel, AnnouncementCommentModel,
   ChannelModel, ChannelMessageModel,
@@ -15,8 +16,11 @@ import type {
   RequestTemplate, WorkRequest, DocFolder, WorkDocument,
   Announcement, AnnouncementComment, Channel, ChannelMessage,
   FinancialTransaction, AdvanceRequest, ReimbursementRequest, TaskFinancialSummary,
-  WorkNode, UnitPlan, ResearchTopic, ResearchGroup, ClinicalTrial,
+  WorkNode, UnitPlan, ResearchTopic, ResearchGroup, ClinicalTrial, NckhReviewCriteriaConfig,
+  RiskFlagConfig,
 } from "@/types";
+import { DEFAULT_NCKH_REVIEW_CRITERIA } from "@/lib/research";
+import { DEFAULT_RISK_FLAG_CONFIG } from "@/lib/risk-flag";
 import { generateId } from "@/lib/utils";
 import { sameUnit } from "@/lib/rbac/scope";
 import { encryptField, decryptField } from "./fieldCrypto";
@@ -456,16 +460,28 @@ export async function getResearchTopics(
   }
 
   if (userId) {
+    // Khớp đúng định nghĩa "thành viên đề tài" đã dùng ở isTopicMember (app/api/research/[id]/route.ts)
+    // — thiếu mainPerformerId/reviews.reviewerId/councilSessions.memberIds ở đây từng khiến phản biện
+    // (không đồng thời là PI/thành viên đề tài) bị trả về danh sách rỗng ở endpoint list này, dù vẫn
+    // xem được đề tài qua link chi tiết trực tiếp (route đó có đủ 3 điều kiện, route này thì thiếu).
     const userCondition: Record<string, unknown>[] = [
       { principalInvestigatorId: userId },
+      { mainPerformerId: userId },
       { memberIds: userId },
       { createdBy: userId },
+      { "reviews.reviewerId": userId },
+      { "councilSessions.memberIds": userId },
     ];
-    // Also surface public submissions whose submitterEmail matches this user.
-    // These will have been auto-claimed by claimPublicTopicsByEmail, but include
-    // as a fallback for topics that arrive in the same request before the claim runs.
+    // Also surface public submissions whose submitterEmail matches this user. So sánh không phân
+    // biệt hoa/thường — người điền form public có thể gõ email khác cách viết hoa so với tài
+    // khoản thật (vd. Name@Gmail.com vs name@gmail.com), so khớp phân biệt hoa/thường sẽ bỏ sót.
+    // Các bản ghi này sẽ được claimPublicTopicsByEmail gán vĩnh viễn, đây chỉ là fallback cho
+    // trường hợp bản ghi vừa tạo cùng lúc request này chạy (claim chưa kịp xong).
     if (userEmail) {
-      userCondition.push({ principalInvestigatorId: "public", submitterEmail: userEmail });
+      userCondition.push({
+        principalInvestigatorId: "public",
+        $expr: { $eq: [{ $toLower: "$submitterEmail" }, userEmail.trim().toLowerCase()] },
+      });
     }
     if (filter.$or) {
       // Combine with existing $or via $and
@@ -484,11 +500,18 @@ export async function getResearchTopics(
   });
 }
 
-/** Permanently claim any public-form submissions whose submitterEmail matches this user. */
+/**
+ * Permanently claim any public-form submissions whose submitterEmail matches this user.
+ * So sánh không phân biệt hoa/thường (xem giải thích ở getResearchTopics phía trên).
+ */
 export async function claimPublicTopicsByEmail(userId: string, email: string): Promise<number> {
   await connectDB();
+  const normalizedEmail = email.trim().toLowerCase();
   const result = await ResearchTopicModel.updateMany(
-    { principalInvestigatorId: "public", submitterEmail: email },
+    {
+      principalInvestigatorId: "public",
+      $expr: { $eq: [{ $toLower: "$submitterEmail" }, normalizedEmail] },
+    },
     {
       $set: {
         principalInvestigatorId: userId,
@@ -869,6 +892,42 @@ export async function getEvaluationConfig(): Promise<EvaluationConfig> {
 export async function saveEvaluationConfig(config: Partial<EvaluationConfig>): Promise<void> {
   await connectDB();
   await EvaluationConfigModel.findByIdAndUpdate(
+    "singleton",
+    { ...config, updatedAt: now() },
+    { upsert: true }
+  );
+}
+
+// ─── NCKH REVIEW CRITERIA CONFIG ────────────────────────────────
+
+export async function getNckhReviewCriteria(): Promise<NckhReviewCriteriaConfig> {
+  await connectDB();
+  const config = await NckhReviewCriteriaConfigModel.findById("singleton").lean();
+  if (!config || !config.proposal?.length || !config.recognition?.length) return DEFAULT_NCKH_REVIEW_CRITERIA;
+  return config as unknown as NckhReviewCriteriaConfig;
+}
+
+export async function saveNckhReviewCriteria(config: Partial<NckhReviewCriteriaConfig>): Promise<void> {
+  await connectDB();
+  await NckhReviewCriteriaConfigModel.findByIdAndUpdate(
+    "singleton",
+    { ...config, updatedAt: now() },
+    { upsert: true }
+  );
+}
+
+// ─── RISK FLAG CONFIG ────────────────────────────────────────
+
+export async function getRiskFlagConfig(): Promise<RiskFlagConfig> {
+  await connectDB();
+  const config = await RiskFlagConfigModel.findById("singleton").lean();
+  if (!config || !config.thresholdDays || !config.progressThreshold) return DEFAULT_RISK_FLAG_CONFIG;
+  return config as unknown as RiskFlagConfig;
+}
+
+export async function saveRiskFlagConfig(config: Partial<RiskFlagConfig>): Promise<void> {
+  await connectDB();
+  await RiskFlagConfigModel.findByIdAndUpdate(
     "singleton",
     { ...config, updatedAt: now() },
     { upsert: true }

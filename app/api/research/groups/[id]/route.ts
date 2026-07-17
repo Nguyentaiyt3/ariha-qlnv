@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyToken, getUser } from "@/lib/mongodb/auth";
 import { getResearchGroup, updateResearchGroup, deleteResearchGroup } from "@/lib/mongodb/firestore";
-import { hasPermission } from "@/lib/rbac/permissions";
+import { isNckhFullManager } from "@/lib/researchUtils";
 
 async function auth(req: NextRequest) {
   const token = req.cookies.get("auth-token")?.value;
@@ -20,7 +20,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   const u = await auth(req);
   if (!u) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const me = await getUser(u.userId);
-  if (!me || !hasPermission(me.role, "research:manage")) {
+  if (!me || !isNckhFullManager(me)) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
   const body = await req.json();
@@ -32,7 +32,7 @@ export async function DELETE(req: NextRequest, { params }: { params: { id: strin
   const u = await auth(req);
   if (!u) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const me = await getUser(u.userId);
-  if (!me || !hasPermission(me.role, "research:manage")) {
+  if (!me || !isNckhFullManager(me)) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
   await deleteResearchGroup(params.id);

@@ -111,8 +111,11 @@ export default function MyTasksWidget() {
       return t.deadlineBase >= range.start.slice(0, 10) && t.deadlineBase <= range.end.slice(0, 10);
     };
 
-    const mainTasks    = tasks.filter((t) => t.mainPerformerId === uid && inRange(t));
-    const supportTasks = tasks.filter(
+    // Bỏ qua Task hub đồng bộ ngầm (vd. Task thực thi liên kết per-đề-tài NCKH) — tác giả theo dõi
+    // tiến độ ngay tại nguồn gốc sinh ra nó, không cần thấy thêm 1 mục Nhiệm vụ riêng ở đây.
+    const visibleTasks = tasks.filter((t) => !t.hiddenFromTaskList);
+    const mainTasks    = visibleTasks.filter((t) => t.mainPerformerId === uid && inRange(t));
+    const supportTasks = visibleTasks.filter(
       (t) => t.mainPerformerId !== uid && (t.stakeholders ?? []).some((s) => s.userId === uid) && inRange(t),
     );
     const seen = new Set<string>();

@@ -3,6 +3,8 @@ import { verifyToken as verifyAuthToken, getUser } from "@/lib/mongodb/auth";
 import { connectDB } from "@/lib/mongodb/config";
 import { ResearchTopicModel } from "@/lib/mongodb/models";
 import type { ResearchTopic, ResearchReview, ReviewScores, ReviewVerdict, ReviewGrade, ResearchAnnotation } from "@/types";
+import { maybeAdvanceToReviewStep } from "@/lib/research";
+import { getNckhReviewCriteria } from "@/lib/mongodb/firestore";
 
 function s(v: unknown, max = 4000): string | undefined {
   return typeof v === "string" ? v.slice(0, max) : undefined;
@@ -58,7 +60,8 @@ export async function GET(req: NextRequest, { params }: { params: { token: strin
   }
   // Phản biện ngoài: token = credential (nhận qua mail), không cần đăng nhập
 
-  // Phản biện kín: ẩn tên tác giả, email, thành viên, các phản biện khác
+  // Phản biện kín: ẩn tên tác giả, email, thành viên, các phản biện khác. Vẫn phải trả đúng file
+  // theo giai đoạn phiếu — GĐ2 (recognition) chấm file báo cáo kết quả, không phải file đề cương.
   const blindedTopic = {
     id: topic.id,
     title: topic.title,
@@ -66,11 +69,18 @@ export async function GET(req: NextRequest, { params }: { params: { token: strin
     year: topic.year,
     abstract: topic.abstract,
     proposalFileUrl: topic.proposalFileUrl,
+    finalReportFileUrl: topic.finalReportFileUrl,
     completionTimeline: topic.completionTimeline,
+    // Minh chứng đính kèm — không trả addedBy/addedByName vì đó là danh tính người nộp (chủ nhiệm/
+    // thành viên), phải giữ ẩn danh theo nguyên tắc phản biện kín.
+    documents: (topic.documents ?? []).map(d => ({ id: d.id, name: d.name, url: d.url, type: d.type })),
   };
+
+  const criteriaConfig = await getNckhReviewCriteria();
 
   return NextResponse.json({
     topic: blindedTopic,
+    criteria: criteriaConfig[review.stage],
     review: {
       id: review.id,
       stage: review.stage,
@@ -171,6 +181,17 @@ export async function PATCH(req: NextRequest, { params }: { params: { token: str
     ...(reviewerAnnotations ? { "reviews.$[r].reviewerAnnotations": reviewerAnnotations } : {}),
     updatedAt: now,
   };
+
+  // Xem giải thích ở app/api/research/[id]/reviews/route.ts — phản biện có thể đã được chỉ định
+  // trước khi chủ nhiệm nộp thẩm định, nên cần tự đẩy currentStep khi vừa đủ 2 phiếu.
+  const reviewsAfterSubmit = (topic.reviews ?? []).map((r) =>
+    r.token === token ? { ...r, status: "submitted" as const } : r
+  );
+  const advance = maybeAdvanceToReviewStep(topic, reviewsAfterSubmit, review.stage, review.round ?? 0);
+  if (advance) {
+    set.steps = advance.steps;
+    set.currentStep = advance.currentStep;
+  }
 
   await ResearchTopicModel.updateOne(
     { _id: String(doc._id) },

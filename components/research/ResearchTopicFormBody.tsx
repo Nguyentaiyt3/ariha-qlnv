@@ -588,7 +588,11 @@ export const ResearchTopicFormBody = forwardRef<ResearchTopicFormBodyHandle, Res
     /* ── NCKH task matching (internal mode) ──────────────────────── */
     const nckhTasks = useMemo<Task[]>(() => {
       if (mode !== "internal" || !sessionUser) return [];
+      // Loại Task tự sinh làm hub đồng bộ ngầm cho từng đề tài (hiddenFromTaskList) — Task này có
+      // tên "[NCKH] <tên đề tài>" nên khớp nhầm regex /NCKH/i, khiến đề tài MỚI tự gán nhầm vào
+      // Task của MỘT đề tài KHÁC đã có từ trước thay vì đúng Task "ô" chung theo quý.
       return availableTasks.filter(t =>
+        !t.hiddenFromTaskList &&
         (/NCKH/i.test(t.name) || /NCKH/i.test(t.workflowName ?? "")) &&
         (t.mainPerformerId === sessionUser.id || t.creatorId === sessionUser.id ||
           (t.stakeholders ?? []).some(s => s.userId === sessionUser.id))

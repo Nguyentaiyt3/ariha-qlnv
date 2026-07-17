@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyToken, getUser } from "@/lib/mongodb/auth";
 import { connectDB } from "@/lib/mongodb/config";
 import { ResearchTopicModel } from "@/lib/mongodb/models";
-import { hasPermission } from "@/lib/rbac/permissions";
+import { canUserAssignReviewer } from "@/lib/rbac/permissions";
 import { isTopicAuthor } from "@/lib/researchUtils";
+import { maybeAdvanceToReviewStep } from "@/lib/research";
 import type { ResearchReview, ResearchTopic, ReviewScores, ReviewVerdict, ReviewGrade, ResearchAnnotation } from "@/types";
 
 async function auth(req: NextRequest) {
@@ -38,9 +39,11 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 
   const topic = { ...doc, id: String(doc._id) } as ResearchTopic;
 
-  // Quyền: manager, người có quyền assignReviewer, hoặc nhân viên được giao
-  const isManager = hasPermission(me.role, "research:manage");
-  const canAssign = isManager || hasPermission(me.role, "research:assignReviewer");
+  // Quyền chỉ định trực tiếp: CHỈ Director/hrAdmin hoặc "Trưởng nhóm Quản lý NCKH" (canUserAssignReviewer
+  // đã bao gồm cả 2 trường hợp qua ROLE_RANK). KHÔNG dùng isNckhFullManager ở đây — người chỉ có
+  // chỉ định "Quản lý NCKH" nhưng không phải Trưởng nhóm (teamLead) phải giao qua "Giao nhân viên
+  // phụ trách" (reviewAssignment.delegatedTo), không được tự chỉ định trực tiếp.
+  const canAssign = canUserAssignReviewer(me, topic.department);
   const isDelegated = topic.reviewAssignment?.delegatedTo === me.id;
   if (!canAssign && !isDelegated) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
@@ -86,12 +89,64 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 
   const token = genToken();
   const now = new Date().toISOString();
+  const isConfirm = body.mode === "confirm";
+
+  // Phiếu xác nhận rút gọn (mode "confirm") gửi lại cho ĐÚNG phản biện đã yêu cầu xem lại bản
+  // chỉnh sửa — cập nhật NGAY TRÊN phiếu cũ của chính người đó (không tạo phần tử mới trong mảng
+  // reviews, tránh hiện nhầm thành "phản biện mới" PB3/PB4... dù cùng 1 người). Đồng thời, phiếu
+  // ĐÃ NỘP của (các) phản biện KHÔNG cần xác nhận lại (verdict "pass" ngay từ đầu) được "mang
+  // theo" sang vòng mới (round tăng theo) để activeReviews đếm đúng đủ 2 phiếu của vòng hiện tại
+  // — trước đây phiếu này bị kẹt lại ở round cũ vĩnh viễn vì không ai gửi lại cho họ, khiến đề tài
+  // không bao giờ đủ điều kiện quay lại "Tổng hợp kết quả" dù phản biện kia đã xác nhận xong.
+  if (isConfirm && reviewerId) {
+    const existing = (topic.reviews ?? [])
+      .filter(r => r.stage === stage && r.reviewerId === reviewerId)
+      .sort((a, b) => (b.round ?? 0) - (a.round ?? 0))[0];
+    if (existing) {
+      const priorRounds = [
+        ...(existing.priorRounds ?? []),
+        { round: existing.round ?? 0, verdict: existing.verdict, submittedAt: existing.submittedAt },
+      ];
+      await ResearchTopicModel.updateOne(
+        { _id: params.id },
+        {
+          $set: {
+            "reviews.$[target].status": "assigned",
+            "reviews.$[target].round": round,
+            "reviews.$[target].mode": "confirm",
+            "reviews.$[target].token": token,
+            "reviews.$[target].assignedAt": now,
+            "reviews.$[target].assignedBy": me.id,
+            "reviews.$[target].assignedByName": me.name,
+            "reviews.$[target].dueAt": s(body.dueAt) ?? null,
+            "reviews.$[target].submittedAt": null,
+            "reviews.$[target].verdict": null,
+            "reviews.$[target].grade": null,
+            "reviews.$[target].scores": null,
+            "reviews.$[target].needResubmit": null,
+            "reviews.$[target].revisionPoints": null,
+            "reviews.$[target].additionalComments": null,
+            "reviews.$[target].priorRounds": priorRounds,
+            "reviews.$[others].round": round,
+            updatedAt: now,
+          },
+        },
+        {
+          arrayFilters: [
+            { "target.id": existing.id },
+            { "others.stage": stage, "others.status": "submitted", "others.round": (existing.round ?? 0), "others.id": { $ne: existing.id } },
+          ],
+        },
+      );
+      return NextResponse.json({ review: { ...existing, status: "assigned", round, token }, token });
+    }
+  }
 
   const review: ResearchReview = {
     id: genId(),
     stage,
     round,
-    mode: body.mode === "confirm" ? "confirm" : "full",
+    mode: isConfirm ? "confirm" : "full",
     reviewerType: body.reviewerType === "external" ? "external" : "internal",
     reviewerId: reviewerId ?? undefined,
     reviewerName: s(body.reviewerName) ?? undefined,
@@ -176,6 +231,18 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     updatedAt: now,
   };
 
+  // Phản biện có thể đã được chỉ định TRƯỚC khi chủ nhiệm bấm "Nộp thẩm định" (Hàng chờ phân biện
+  // không đòi hỏi currentStep) — nếu phiếu này vừa đủ 2 phiếu nộp mà currentStep vẫn chưa tới
+  // bước thẩm định, tự đẩy currentStep để đề tài không bị kẹt, xuất hiện đúng ở Tổng hợp kết quả.
+  const reviewsAfterSubmit = (topic.reviews ?? []).map((r) =>
+    r.id === reviewId ? { ...r, status: "submitted" as const } : r
+  );
+  const advance = maybeAdvanceToReviewStep(topic, reviewsAfterSubmit, review.stage, review.round ?? 0);
+  if (advance) {
+    set.steps = advance.steps;
+    set.currentStep = advance.currentStep;
+  }
+
   await ResearchTopicModel.updateOne(
     { _id: params.id },
     { $set: set },
@@ -193,13 +260,18 @@ export async function DELETE(req: NextRequest, { params }: { params: { id: strin
   const me = await getUser(u.userId);
   if (!me) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const isManager = hasPermission(me.role, "research:manage");
-  if (!isManager) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  await connectDB();
+  const doc = await ResearchTopicModel.findById(params.id).lean() as ResearchTopic & { _id: string } | null;
+  if (!doc) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  const topic = { ...doc, id: String(doc._id) } as ResearchTopic;
+
+  // Cùng thẩm quyền như chỉ định trực tiếp (xem giải thích ở POST bên trên).
+  const canAssign = canUserAssignReviewer(me, topic.department);
+  if (!canAssign) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const reviewId = req.nextUrl.searchParams.get("reviewId");
   if (!reviewId) return NextResponse.json({ error: "Thiếu reviewId" }, { status: 400 });
 
-  await connectDB();
   const res = await ResearchTopicModel.updateOne(
     { _id: params.id },
     {

@@ -3,7 +3,7 @@ import { verifyToken, getUser } from "@/lib/mongodb/auth";
 import { getResearchTopics, createResearchTopic, claimPublicTopicsByEmail } from "@/lib/mongodb/firestore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { sameUnit } from "@/lib/rbac/scope";
-import { isNckhManager, isTopicAuthor, isTopicReviewer } from "@/lib/researchUtils";
+import { isNckhManager, isNckhFullManager, isTopicAuthor, isTopicReviewer } from "@/lib/researchUtils";
 import { redactTopicReviewsForViewer, redactAuthorForReviewer } from "@/lib/research";
 import { generateId } from "@/lib/utils";
 import { connectDB } from "@/lib/mongodb/config";
@@ -51,9 +51,10 @@ export async function GET(req: NextRequest) {
   // vai trò/chỉ định quản lý NCKH).
   const me = await getUser(session.userId);
   const isNckhMgr = !!me && isNckhManager(me);
-  const isFullManager = !!me && hasPermission(me.role, "research:manage");
+  // Không dựa vào permission "research:manage" đơn thuần — có thể bị tổ chức cấp rộng cho vai
+  // trò thấp hơn qua trang Phân quyền. Nguồn thẩm quyền thật: hrAdmin / "Quản lý NCKH" / director.
+  const canSeeAll = !!me && isNckhFullManager(me);
   const isTeamLeadMonitor = !!me && me.role === "teamLead" && hasPermission(me.role, "research:monitor");
-  const canSeeAll = isFullManager || isNckhMgr;
 
   let topics: ResearchTopic[];
   if (canSeeAll) {
@@ -64,7 +65,8 @@ export async function GET(req: NextRequest) {
       t.principalInvestigatorId === session.userId ||
       (t.memberIds ?? []).includes(session.userId) ||
       t.createdBy === session.userId ||
-      (me!.email && t.principalInvestigatorId === "public" && t.submitterEmail === me!.email) ||
+      (me!.email && t.principalInvestigatorId === "public" &&
+        (t.submitterEmail ?? "").trim().toLowerCase() === me!.email.trim().toLowerCase()) ||
       sameUnit(t.department, me!.department)
     );
   } else {
@@ -116,7 +118,11 @@ export async function POST(req: NextRequest) {
         ? quarterFromTimeline(String(body.completionTimeline))
         : null;
 
-      // Tasks where this user is creator, main performer, or stakeholder AND it's NCKH-related
+      // Tasks where this user is creator, main performer, or stakeholder AND it's NCKH-related.
+      // Loại các Task tự sinh làm hub đồng bộ ngầm cho từng đề tài (hiddenFromTaskList) — bản thân
+      // các Task này CÓ tên "[NCKH] <tên đề tài>" + workflowName "NCKH cấp cơ sở" nên khớp nhầm
+      // với query này, khiến việc tạo đề tài MỚI tự gán nhầm vào Task của MỘT đề tài KHÁC đã có
+      // từ trước, thay vì đúng Task "ô" chung theo quý (vd. "NCKH CS Q3-2026").
       const candidates = await (TaskModel as any).find({
         $and: [
           {
@@ -132,6 +138,7 @@ export async function POST(req: NextRequest) {
               { name: /NCKH/i },
             ],
           },
+          { hiddenFromTaskList: { $ne: true } },
         ],
       }).lean();
 

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyToken, getUser } from "@/lib/mongodb/auth";
 import { getResearchTopic, updateResearchTopic, getTask, createTask } from "@/lib/mongodb/firestore";
-import { hasPermission } from "@/lib/rbac/permissions";
+import { isNckhFullManager } from "@/lib/researchUtils";
 import { buildResearchTaskSteps } from "@/lib/research";
 import { calcPhaseDeadlines, DEFAULT_MILESTONE_CONFIG } from "@/lib/deadline-calc";
 import { generateId } from "@/lib/utils";
@@ -41,7 +41,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   if (!topic) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   // Chỉ quản lý / chủ nhiệm / người thực hiện được sinh task
-  const isManager = !!me && hasPermission(me.role, "research:manage");
+  const isManager = !!me && isNckhFullManager(me);
   const isParticipant =
     topic.principalInvestigatorId === u.userId || topic.mainPerformerId === u.userId;
   if (!isManager && !isParticipant) {
@@ -94,6 +94,10 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     stakeholders,
     dependencies: [],
     workflowName: "NCKH cấp cơ sở",
+    // Ẩn khỏi trang Nhiệm vụ/"Nhiệm vụ của tôi" — task này chỉ là hub đồng bộ ngầm tiến độ đề tài
+    // (đã có bảng Giai đoạn Triển khai riêng cho tác giả), không cần tác giả thao tác trực tiếp.
+    // Vẫn tính đủ ở Heatmap/Hiệu suất/Kế hoạch vì các nơi đó đọc thẳng danh sách Task, không lọc.
+    hiddenFromTaskList: true,
     steps: buildResearchTaskSteps(topic),
     subtasks: [],
     kpi: { type: "custom", target: 1, current: 0, unit: "đề tài" },

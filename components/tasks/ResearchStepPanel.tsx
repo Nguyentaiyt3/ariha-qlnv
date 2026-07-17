@@ -11,6 +11,9 @@ import { toast } from "sonner";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { IntakeReviewModal } from "@/components/research/IntakeReviewModal";
 import { AssignReviewersModal } from "@/components/research/AssignReviewersModal";
+import { canUserAssignReviewer } from "@/lib/rbac/permissions";
+import { isNckhFullManager } from "@/lib/researchUtils";
+import { scoreOn10 } from "@/lib/research";
 import type { Task, TaskStep, User, ResearchTopic, ResearchStepStatus, ResearchReview } from "@/types";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -581,7 +584,7 @@ function proposalReviews(topic: ResearchTopic): ResearchReview[] {
   return (topic.reviews ?? []).filter(r => r.stage === "proposal");
 }
 
-function B03ReviewPanel({ task, users, currentUser, canView, canUpdate }: Props) {
+function B03ReviewPanel({ task, users, currentUser, canView }: Props) {
   const [topics, setTopics]           = useState<ResearchTopic[]>([]);
   const [loading, setLoading]         = useState(true);
   const [search, setSearch]           = useState("");
@@ -589,6 +592,13 @@ function B03ReviewPanel({ task, users, currentUser, canView, canUpdate }: Props)
   const [showAssign, setShowAssign]   = useState(false);
   const [expandedId, setExpandedId]   = useState<string | null>(null);
   const allSystemUsers = useTaskStore(s => s.users);
+
+  // Phân công phản biện là thẩm quyền NCKH (Director/hrAdmin/Trưởng nhóm Quản lý NCKH), KHÔNG
+  // phải quyền "là người thực hiện chính của bước task" (canUpdate) — là 1 việc khác hoàn toàn.
+  // Khớp đúng quy tắc dùng ở trang /research (canUserAssignReviewer / isNckhFullManager).
+  const canAssignReviewerNckh = canUserAssignReviewer(currentUser);
+  const canManageNckh = isNckhFullManager(currentUser);
+  const canSeeAssignUI = canAssignReviewerNckh || canManageNckh;
 
   const fetchTopics = useCallback(async () => {
     setLoading(true);
@@ -634,6 +644,14 @@ function B03ReviewPanel({ task, users, currentUser, canView, canUpdate }: Props)
     setTopics(prev => prev.map(t => t.id === id ? { ...t, ...updates } : t));
   }
 
+  // Nút "Phân công (N)" hàng loạt: chỉ bật khi được phép chỉ định trực tiếp, hoặc TẤT CẢ đề tài
+  // đã chọn đều đang được giao riêng cho chính mình (reviewAssignment.delegatedTo).
+  const canBulkAssignSelected = useMemo(() => {
+    if (canAssignReviewerNckh) return true;
+    const sel = topics.filter(t => selected.has(t.id));
+    return sel.length > 0 && sel.every(t => t.reviewAssignment?.delegatedTo === currentUser.id);
+  }, [canAssignReviewerNckh, topics, selected, currentUser.id]);
+
   function toggleSelect(id: string) {
     setSelected(prev => { const s = new Set(prev); if (s.has(id)) s.delete(id); else s.add(id); return s; });
   }
@@ -650,10 +668,12 @@ function B03ReviewPanel({ task, users, currentUser, canView, canUpdate }: Props)
             <ShieldCheck className="w-4 h-4 shrink-0" />
             Gửi thẩm định đề cương ({topics.length} đề tài đã tiếp nhận)
           </div>
-          {canUpdate && selected.size > 0 && (
+          {canSeeAssignUI && selected.size > 0 && (
             <button
               onClick={() => setShowAssign(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-violet-600 hover:bg-violet-700 text-white transition"
+              disabled={!canBulkAssignSelected}
+              title={!canBulkAssignSelected ? "Bạn không có quyền chỉ định phản biện cho (một số) đề tài đã chọn" : undefined}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-violet-600 hover:bg-violet-700 text-white transition disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-violet-600"
             >
               <UserPlus className="w-3.5 h-3.5" />
               Phân công ({selected.size})
@@ -702,7 +722,7 @@ function B03ReviewPanel({ task, users, currentUser, canView, canUpdate }: Props)
         {/* Search + select-all */}
         {topics.length > 0 && (
           <div className="flex items-center gap-2">
-            {canUpdate && (
+            {canSeeAssignUI && (
               <label className="flex items-center gap-1.5 cursor-pointer shrink-0">
                 <input
                   type="checkbox"
@@ -742,7 +762,7 @@ function B03ReviewPanel({ task, users, currentUser, canView, canUpdate }: Props)
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-slate-100 dark:bg-slate-800/60 text-xs text-slate-500 dark:text-slate-400">
-                  {canUpdate && <th className="w-8 px-3 py-2" />}
+                  {canSeeAssignUI && <th className="w-8 px-3 py-2" />}
                   <th className="text-left px-3 py-2 font-medium">Đề tài</th>
                   <th className="text-left px-3 py-2 font-medium hidden sm:table-cell">Chủ nhiệm</th>
                   <th className="text-center px-3 py-2 font-medium">Phản biện 1</th>
@@ -765,7 +785,7 @@ function B03ReviewPanel({ task, users, currentUser, canView, canUpdate }: Props)
                           isSelected ? "bg-violet-50 dark:bg-violet-900/10" : "bg-white dark:bg-slate-900/40 hover:bg-slate-50 dark:hover:bg-slate-800/40"
                         )}
                       >
-                        {canUpdate && (
+                        {canSeeAssignUI && (
                           <td className="px-3 py-2.5">
                             <input
                               type="checkbox"
@@ -812,10 +832,12 @@ function B03ReviewPanel({ task, users, currentUser, canView, canUpdate }: Props)
 
                         <td className="px-3 py-2.5 text-center">
                           <div className="flex items-center justify-center gap-1">
-                            {canUpdate && (
+                            {canSeeAssignUI && (
                               <button
                                 onClick={() => { setSelected(new Set([topic.id])); setShowAssign(true); }}
-                                className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold rounded-lg border border-violet-200 dark:border-violet-800 text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/20 bg-white dark:bg-slate-800 transition"
+                                disabled={reviews.length < 2 && !canAssignReviewerNckh && topic.reviewAssignment?.delegatedTo !== currentUser.id}
+                                title={reviews.length < 2 && !canAssignReviewerNckh && topic.reviewAssignment?.delegatedTo !== currentUser.id ? "Bạn không có quyền chỉ định phản biện cho đề tài này" : undefined}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold rounded-lg border border-violet-200 dark:border-violet-800 text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/20 bg-white dark:bg-slate-800 transition disabled:opacity-40 disabled:cursor-not-allowed"
                               >
                                 <UserPlus className="w-3 h-3" />
                                 {reviews.length >= 2 ? "Xem PB" : "Phân công"}
@@ -837,13 +859,14 @@ function B03ReviewPanel({ task, users, currentUser, canView, canUpdate }: Props)
                       {/* Expanded row — review details */}
                       {isExpanded && reviews.length > 0 && (
                         <tr key={`${topic.id}-expand`} className="bg-slate-50 dark:bg-slate-800/40">
-                          <td colSpan={canUpdate ? 6 : 5} className="px-4 py-3">
+                          <td colSpan={canSeeAssignUI ? 6 : 5} className="px-4 py-3">
                             <div className="space-y-2">
                               {reviews.map((r, i) => {
                                 const scores = r.scores;
                                 const total = scores
                                   ? Object.values(scores).reduce((s, v) => s + (v ?? 0), 0)
                                   : null;
+                                const maxTotal = scores ? Object.keys(scores).length * 5 : null;
                                 return (
                                   <div key={r.id} className="rounded-lg border border-slate-200 dark:border-slate-700 p-3 space-y-1.5 bg-white dark:bg-slate-900/60">
                                     <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -867,9 +890,9 @@ function B03ReviewPanel({ task, users, currentUser, canView, canUpdate }: Props)
 
                                     {r.status === "submitted" && (
                                       <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs mt-1">
-                                        {total !== null && (
+                                        {total !== null && maxTotal !== null && (
                                           <p className="text-slate-600 dark:text-slate-300">
-                                            Tổng điểm: <span className="font-bold text-violet-600">{total}/35</span>
+                                            Tổng điểm: <span className="font-bold text-violet-600">{scoreOn10(total, maxTotal).toFixed(1)}/10</span>
                                           </p>
                                         )}
                                         {r.verdict && (
@@ -888,8 +911,8 @@ function B03ReviewPanel({ task, users, currentUser, canView, canUpdate }: Props)
                                       </div>
                                     )}
 
-                                    {/* Email / link info (chỉ hiện với canUpdate) */}
-                                    {canUpdate && r.token && r.status === "assigned" && (
+                                    {/* Email / link info (chỉ hiện với người có quyền phân công) */}
+                                    {canSeeAssignUI && r.token && r.status === "assigned" && (
                                       <div className="flex items-center gap-2 mt-1">
                                         <span className="text-[10px] text-slate-400 truncate flex-1">
                                           Link: {typeof window !== "undefined" ? `${window.location.origin}/review/${r.token}` : `/review/${r.token}`}
@@ -921,8 +944,8 @@ function B03ReviewPanel({ task, users, currentUser, canView, canUpdate }: Props)
           </div>
         )}
 
-        {!canUpdate && topics.length > 0 && (
-          <p className="text-xs text-slate-400 italic">Chỉ người thực hiện chính mới có thể phân công phản biện.</p>
+        {!canSeeAssignUI && topics.length > 0 && (
+          <p className="text-xs text-slate-400 italic">Chỉ Giám đốc/hrAdmin hoặc Trưởng nhóm Quản lý NCKH mới có thể phân công phản biện.</p>
         )}
       </div>
 
@@ -932,8 +955,8 @@ function B03ReviewPanel({ task, users, currentUser, canView, canUpdate }: Props)
           topics={topics.filter(t => selected.has(t.id))}
           users={allSystemUsers as User[]}
           currentUser={currentUser}
-          canManage={canUpdate}
-          canAssignReviewer={canUpdate}
+          canManage={canManageNckh}
+          canAssignReviewer={canAssignReviewerNckh}
           onClose={() => { setShowAssign(false); setSelected(new Set()); }}
           onTopicUpdate={handleTopicUpdate}
         />

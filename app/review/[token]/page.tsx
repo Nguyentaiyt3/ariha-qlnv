@@ -9,19 +9,23 @@ import {
 import { toast } from "sonner";
 import { cn, generateId } from "@/lib/utils";
 import { DocxAnnotator } from "@/components/research/DocxAnnotator";
-import type { ReviewScores, ReviewVerdict, ReviewGrade, ResearchAnnotation } from "@/types";
+import { scoreOn10 } from "@/lib/research";
+import type { ReviewScores, ReviewVerdict, ReviewGrade, ResearchAnnotation, NckhReviewCriterionItem, ResearchStage } from "@/types";
+
+interface ReviewDoc { id: string; name: string; url: string; type: "file" | "link" }
+
+/** Gợi ý xếp loại dựa trên điểm trung bình quy đổi thang 10 — chỉ là gợi ý, phản biện viên vẫn
+    chọn thủ công ở mục E. */
+function suggestGrade(scoreRatio: number): ReviewGrade {
+  if (scoreRatio >= 0.8) return "excellent";
+  if (scoreRatio >= 0.6) return "good";
+  if (scoreRatio >= 0.4) return "average";
+  return "fail";
+}
 
 // ─── Criteria ──────────────────────────────────────────────────────────────────
-
-const CRITERIA: { key: keyof ReviewScores; label: string; desc: string }[] = [
-  { key: "datvande",        label: "1. Đặt vấn đề",            desc: "Giới thiệu vấn đề hoặc khoảng cách giữa mong muốn và thực tế" },
-  { key: "muctieu",         label: "2. Mục tiêu",               desc: "Đưa ra mục tiêu rõ ràng liên quan đến chủ đề nghiên cứu" },
-  { key: "ppThietke",       label: "3a. Phương pháp — Thiết kế",desc: "Thiết kế và đối tượng nghiên cứu được mô tả rõ ràng, phù hợp với nội dung" },
-  { key: "ppQuytrinh",      label: "3b. Phương pháp — Quy trình",desc: "Quy trình triển khai thu thập thông tin và phân tích dữ liệu được mô tả rõ ràng" },
-  { key: "ketqua",          label: "4. Kết quả",                desc: "Kết quả nghiên cứu được trình bày khoa học, đáp ứng được mục tiêu nghiên cứu" },
-  { key: "ketluanBandluan", label: "5. Kết luận — Bàn luận",   desc: "Kết luận - bàn luận được đưa ra phù hợp với kết quả và đúng theo các mục tiêu" },
-  { key: "cachTrinhbay",    label: "6. Cách trình bày",         desc: "Văn phong, bố cục, tài liệu tham khảo khoa học và phù hợp" },
-];
+// Bộ tiêu chí chấm điểm được nạp động từ GET /api/review/[token] (Admin cấu hình được),
+// không còn hardcode — vì phiếu GĐ1 (đề cương) và GĐ2 (nghiệm thu) dùng bộ tiêu chí khác nhau.
 
 const QUALITATIVE: { key: string; label: string; placeholder: string }[] = [
   { key: "urgency",      label: "Tính cấp thiết của chủ đề",          placeholder: "Nhận xét về tính cấp thiết, ý nghĩa thực tiễn..." },
@@ -29,11 +33,6 @@ const QUALITATIVE: { key: string; label: string; placeholder: string }[] = [
   { key: "novelty",      label: "Tính mới của kết quả dự kiến",        placeholder: "Nhận xét về điểm mới, đóng góp học thuật..." },
   { key: "significance", label: "Ý nghĩa khoa học & ứng dụng",         placeholder: "Đánh giá giá trị thực tiễn, ứng dụng lâm sàng..." },
 ];
-
-const EMPTY_SCORES: ReviewScores = {
-  datvande: 0, muctieu: 0, ppThietke: 0, ppQuytrinh: 0,
-  ketqua: 0, ketluanBandluan: 0, cachTrinhbay: 0,
-};
 
 // ─── StarRating ────────────────────────────────────────────────────────────────
 
@@ -113,20 +112,28 @@ export default function PublicReviewPage({ params }: { params: { token: string }
   const [topicYear, setTopicYear]               = useState(0);
   const [topicAbstract, setTopicAbstract]       = useState("");
   const [topicFileUrl, setTopicFileUrl]         = useState("");
+  const [topicDocuments, setTopicDocuments]     = useState<ReviewDoc[]>([]);
+  const [reviewStage, setReviewStage]           = useState<ResearchStage>("proposal");
   const [completionTimeline, setCompletionTimeline] = useState("");
   const [dueAt, setDueAt]                       = useState<string | null>(null);
+
+  // Bộ tiêu chí chấm điểm — nạp động theo giai đoạn phiếu (proposal/recognition) từ API
+  const [criteria, setCriteria] = useState<NckhReviewCriterionItem[]>([]);
+
+  // Tab xem file: null = file chính (đề cương/báo cáo kết quả), khác null = minh chứng đính kèm
+  const [activeDocId, setActiveDocId] = useState<string | null>(null);
 
   // Layout
   const [fullscreen, setFullscreen] = useState(false);
   const [showInfo, setShowInfo]     = useState(true);
-  const [showNotes, setShowNotes]   = useState(true);
+  const [showNotes, setShowNotes]   = useState(false);
   const [showForm, setShowForm]     = useState(true);
 
   // Reviewer-local annotations (private to this reviewer, stored in memory)
   const [annotations, setAnnotations] = useState<ResearchAnnotation[]>([]);
 
   // Form state
-  const [scores, setScores]                     = useState<ReviewScores>({ ...EMPTY_SCORES });
+  const [scores, setScores]                     = useState<ReviewScores>({});
   const [urgency, setUrgency]                   = useState("");
   const [methodFit, setMethodFit]               = useState("");
   const [novelty, setNovelty]                   = useState("");
@@ -193,15 +200,18 @@ export default function PublicReviewPage({ params }: { params: { token: string }
         setTopicField(t.field ?? "");
         setTopicYear(t.year ?? 0);
         setTopicAbstract(t.abstract ?? "");
-        setTopicFileUrl(t.proposalFileUrl ?? "");
         setCompletionTimeline(t.completionTimeline ?? "");
 
         const r = data.review;
+        setReviewStage(r.stage ?? "proposal");
+        setTopicFileUrl((r.stage === "recognition" ? t.finalReportFileUrl : t.proposalFileUrl) || t.proposalFileUrl || "");
+        if (Array.isArray(t.documents)) setTopicDocuments(t.documents);
+        if (Array.isArray(data.criteria)) setCriteria(data.criteria);
         setDueAt(r.dueAt ?? null);
 
         if (r.status === "submitted") {
           setAlreadySubmitted(true);
-          setScores(r.scores ?? { ...EMPTY_SCORES });
+          setScores(r.scores ?? {});
           setUrgency(r.urgency ?? "");
           setMethodFit(r.methodFit ?? "");
           setNovelty(r.novelty ?? "");
@@ -245,13 +255,22 @@ export default function PublicReviewPage({ params }: { params: { token: string }
   }, []);
 
   // ── Submit ────────────────────────────────────────────────────────────────────
-  const totalScore = Object.values(scores).reduce((s, v) => s + (v ?? 0), 0);
-  const maxScore = CRITERIA.length * 5;
+  const totalScore = criteria.reduce((s, c) => s + (scores[c.key] ?? 0), 0);
+  const maxScore = criteria.length * 5;
+  const scoreRatio = maxScore > 0 ? totalScore / maxScore : 0;
+  const filledCriteria = criteria.filter(c => (scores[c.key] ?? 0) > 0).length;
+  const suggestedGrade = filledCriteria > 0 ? suggestGrade(scoreRatio) : null;
+
+  // File chính đúng theo giai đoạn phiếu (đề cương GĐ1 / báo cáo kết quả GĐ2), hoặc tab minh chứng
+  const mainFileLabel = reviewStage === "recognition" ? "File báo cáo kết quả" : "File đề cương";
+  const activeDoc = activeDocId ? topicDocuments.find(d => d.id === activeDocId) : undefined;
+  const activeFileUrl = activeDoc?.url ?? topicFileUrl;
+  const activeFileLabel = activeDoc?.name ?? mainFileLabel;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!verdict) { toast.error("Vui lòng chọn kết luận (ĐẠT / KHÔNG ĐẠT)"); return; }
-    if (Object.values(scores).some(v => !v)) { toast.error("Vui lòng chấm điểm đầy đủ 6 tiêu chí"); return; }
+    if (filledCriteria !== criteria.length) { toast.error(`Vui lòng chấm điểm đầy đủ ${criteria.length} tiêu chí`); return; }
     setSubmitting(true);
     try {
       const res = await fetch(`/api/review/${token}`, {
@@ -363,7 +382,7 @@ export default function PublicReviewPage({ params }: { params: { token: string }
             <p className="text-sm text-slate-800 dark:text-white">Kết luận: <span className="font-medium">
               {verdict === "pass" ? "ĐẠT" : verdict === "pass_if_revised" ? "ĐẠT (nếu chỉnh sửa)" : "KHÔNG ĐẠT"}
             </span></p>
-            <p className="text-sm text-slate-800 dark:text-white">Tổng điểm: <span className="font-medium">{totalScore}/{maxScore}</span></p>
+            <p className="text-sm text-slate-800 dark:text-white">Tổng điểm: <span className="font-medium">{scoreOn10(totalScore, maxScore).toFixed(1)}/10</span></p>
           </div>
         )}
         <p className="text-xs text-slate-400 pt-2">ARiHA WorkHub · Phản biện kín NCKH cấp cơ sở</p>
@@ -424,19 +443,51 @@ export default function PublicReviewPage({ params }: { params: { token: string }
 
         {/* ── LEFT 2/3 — File preview + annotations ── */}
         <div className="flex flex-col overflow-hidden bg-slate-100 dark:bg-slate-950">
-          <div className="px-4 py-2 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex items-center gap-3 shrink-0">
+          <div className="px-4 py-2 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex items-center gap-2 shrink-0">
             <FileText className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-            <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">File đề cương</p>
+            <div className="flex items-center gap-1 overflow-x-auto">
+              {topicFileUrl && (
+                <button
+                  type="button"
+                  onClick={() => setActiveDocId(null)}
+                  className={cn(
+                    "shrink-0 text-[11px] font-semibold px-2.5 py-1 rounded-full transition uppercase tracking-wide",
+                    activeDocId === null
+                      ? "bg-violet-600 text-white"
+                      : "bg-slate-100 dark:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300",
+                  )}
+                >
+                  {mainFileLabel}
+                </button>
+              )}
+              {topicDocuments.map(doc => (
+                <button
+                  type="button"
+                  key={doc.id}
+                  onClick={() => setActiveDocId(doc.id)}
+                  title={doc.name}
+                  className={cn(
+                    "shrink-0 max-w-[140px] truncate text-[11px] font-semibold px-2.5 py-1 rounded-full transition",
+                    activeDocId === doc.id
+                      ? "bg-violet-600 text-white"
+                      : "bg-slate-100 dark:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300",
+                  )}
+                >
+                  {doc.name}
+                </button>
+              ))}
+            </div>
             {!isReadOnly && annotations.length > 0 && (
-              <span className="ml-auto text-[10px] text-violet-500 font-medium">{annotations.length} ghi chú</span>
+              <span className="ml-auto shrink-0 text-[10px] text-violet-500 font-medium">{annotations.length} ghi chú</span>
             )}
           </div>
           <div className="flex-1 overflow-hidden">
-            {topicFileUrl ? (
+            {activeFileUrl ? (
               <DocxAnnotator
-                fileUrl={topicFileUrl}
-                annotations={annotations}
-                canAnnotate={!isReadOnly}
+                key={activeFileUrl}
+                fileUrl={activeFileUrl}
+                annotations={activeDocId === null ? annotations : []}
+                canAnnotate={!isReadOnly && activeDocId === null}
                 canManageAll={false}
                 currentUserId="reviewer"
                 onAdd={handleAddAnnotation}
@@ -446,7 +497,7 @@ export default function PublicReviewPage({ params }: { params: { token: string }
             ) : (
               <div className="flex flex-col items-center justify-center h-full gap-4 text-slate-400 dark:text-slate-600">
                 <FileText className="w-16 h-16 opacity-20" />
-                <p className="text-sm">Chưa có file đề cương</p>
+                <p className="text-sm">Chưa có {activeFileLabel.toLowerCase()}</p>
               </div>
             )}
           </div>
@@ -546,26 +597,26 @@ export default function PublicReviewPage({ params }: { params: { token: string }
                 </p>
                 <span className={cn(
                   "text-xs font-bold tabular-nums",
-                  totalScore >= 28 ? "text-green-600 dark:text-green-400"
-                  : totalScore >= 21 ? "text-amber-600 dark:text-amber-400"
+                  scoreRatio >= 0.8 ? "text-green-600 dark:text-green-400"
+                  : scoreRatio >= 0.6 ? "text-amber-600 dark:text-amber-400"
                   : "text-slate-500",
                 )}>
-                  {totalScore}/{maxScore}
+                  {scoreOn10(totalScore, maxScore).toFixed(1)}/10
                 </span>
               </div>
 
               {/* Progress bar */}
               <div className="h-1.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
                 <div
-                  className={cn("h-full rounded-full transition-all", totalScore >= 28 ? "bg-green-500" : totalScore >= 21 ? "bg-amber-400" : "bg-slate-300")}
-                  style={{ width: `${(totalScore / maxScore) * 100}%` }}
+                  className={cn("h-full rounded-full transition-all", scoreRatio >= 0.8 ? "bg-green-500" : scoreRatio >= 0.6 ? "bg-amber-400" : "bg-slate-300")}
+                  style={{ width: `${scoreRatio * 100}%` }}
                 />
               </div>
 
-              {CRITERIA.map(({ key, label, desc }) => (
+              {criteria.map(({ key, label, desc }) => (
                 <div key={key} className="space-y-1 py-2 border-b border-slate-100 dark:border-slate-800 last:border-0">
                   <p className="text-xs font-medium text-slate-700 dark:text-slate-200">{label}</p>
-                  <p className="text-[10px] text-slate-400 leading-snug">{desc}</p>
+                  {desc && <p className="text-[10px] text-slate-400 leading-snug">{desc}</p>}
                   <StarRating
                     value={scores[key] ?? 0}
                     onChange={isReadOnly ? undefined : v => setScores(prev => ({ ...prev, [key]: v }))}
@@ -656,6 +707,21 @@ export default function PublicReviewPage({ params }: { params: { token: string }
                   );
                 })}
               </div>
+              {!isReadOnly && suggestedGrade && suggestedGrade !== grade && (
+                <p className="text-[10px] text-slate-400 flex items-center gap-1.5">
+                  Gợi ý theo điểm trung bình:{" "}
+                  <strong className="text-violet-600 dark:text-violet-400">
+                    {{ excellent: "Giỏi", good: "Khá", average: "Trung bình", fail: "Không đạt" }[suggestedGrade]}
+                  </strong>
+                  <button
+                    type="button"
+                    onClick={() => setGrade(suggestedGrade)}
+                    className="text-violet-600 dark:text-violet-400 underline underline-offset-2 hover:text-violet-800"
+                  >
+                    Dùng gợi ý
+                  </button>
+                </p>
+              )}
             </div>
 
             {/* F — Kết luận */}
@@ -715,14 +781,14 @@ export default function PublicReviewPage({ params }: { params: { token: string }
                   <AlertCircle className="w-3 h-3 shrink-0" /> Chọn kết luận để nộp phiếu
                 </p>
               )}
-              {Object.values(scores).some(v => !v) && (
+              {filledCriteria !== criteria.length && (
                 <p className="text-[11px] text-amber-500 flex items-center gap-1">
-                  <AlertCircle className="w-3 h-3 shrink-0" /> Chấm điểm đủ 6 tiêu chí
+                  <AlertCircle className="w-3 h-3 shrink-0" /> Chấm điểm đủ {criteria.length} tiêu chí
                 </p>
               )}
               <button
                 type="submit"
-                disabled={submitting || !verdict || Object.values(scores).some(v => !v)}
+                disabled={submitting || !verdict || filledCriteria !== criteria.length}
                 className="w-full py-2.5 bg-violet-600 hover:bg-violet-700 text-white text-sm font-semibold rounded-xl transition flex items-center justify-center gap-2 disabled:opacity-50"
               >
                 {submitting

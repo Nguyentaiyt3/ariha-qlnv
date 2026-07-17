@@ -1,5 +1,5 @@
 import mongoose, { Schema, Document } from "mongoose";
-import type { KPIFramework, EvaluationConfig } from "@/types";
+import type { KPIFramework, EvaluationConfig, NckhReviewCriteriaConfig, RiskFlagConfig } from "@/types";
 
 export interface IKPIFramework extends Omit<KPIFramework, "id">, Document {}
 
@@ -38,3 +38,39 @@ const evalConfigSchema = new Schema(
 export const EvaluationConfigModel =
   (mongoose.models.EvaluationConfig as mongoose.Model<IEvaluationConfig>) ||
   mongoose.model<IEvaluationConfig>("EvaluationConfig", evalConfigSchema, "evaluationConfig");
+
+// NckhReviewCriteriaConfig — singleton, bộ tiêu chí chấm điểm phản biện NCKH (GĐ1/GĐ2)
+export interface INckhReviewCriteriaConfig extends NckhReviewCriteriaConfig, Document {}
+
+const nckhReviewCriteriaSchema = new Schema(
+  {
+    _id: { type: String, default: "singleton" },
+    proposal: { type: Schema.Types.Mixed, default: [] },
+    recognition: { type: Schema.Types.Mixed, default: [] },
+    updatedAt: String,
+    updatedBy: String,
+  },
+  { _id: false }
+);
+
+export const NckhReviewCriteriaConfigModel =
+  (mongoose.models.NckhReviewCriteriaConfig as mongoose.Model<INckhReviewCriteriaConfig>) ||
+  mongoose.model<INckhReviewCriteriaConfig>("NckhReviewCriteriaConfig", nckhReviewCriteriaSchema, "nckhReviewCriteria");
+
+// RiskFlagConfig — singleton, ngưỡng cờ rủi ro (số ngày gần deadline + % tiến độ tối thiểu)
+export interface IRiskFlagConfig extends RiskFlagConfig, Document {}
+
+const riskFlagConfigSchema = new Schema(
+  {
+    _id: { type: String, default: "singleton" },
+    thresholdDays: Number,
+    progressThreshold: Number,
+    updatedAt: String,
+    updatedBy: String,
+  },
+  { _id: false }
+);
+
+export const RiskFlagConfigModel =
+  (mongoose.models.RiskFlagConfig as mongoose.Model<IRiskFlagConfig>) ||
+  mongoose.model<IRiskFlagConfig>("RiskFlagConfig", riskFlagConfigSchema, "riskFlagConfig");

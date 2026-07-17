@@ -5,20 +5,9 @@ import { CheckCircle2, Loader2, FileText, Star, AlertCircle } from "lucide-react
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { researchFileUrl } from "@/lib/researchFileUrl";
+import { scoreOn10 } from "@/lib/research";
 import { DocxAnnotator } from "@/components/research/DocxAnnotator";
-import type { ResearchReview, ResearchTopic, ReviewScores, ReviewVerdict, ReviewGrade } from "@/types";
-
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-const CRITERIA: { key: keyof ReviewScores; label: string; desc: string }[] = [
-  { key: "datvande",        label: "1. Đặt vấn đề",           desc: "Tính cấp thiết, lý do chọn đề tài, bối cảnh thực tiễn" },
-  { key: "muctieu",         label: "2. Mục tiêu nghiên cứu",  desc: "Rõ ràng, đo lường được, phù hợp phạm vi đề tài" },
-  { key: "ppThietke",       label: "3a. Thiết kế & đối tượng", desc: "Phương pháp nghiên cứu, đối tượng, cỡ mẫu hợp lý" },
-  { key: "ppQuytrinh",      label: "3b. Thu thập & phân tích", desc: "Quy trình thu thập số liệu, công cụ phân tích phù hợp" },
-  { key: "ketqua",          label: "4. Kết quả dự kiến",       desc: "Khả thi, đóng góp rõ ràng cho lĩnh vực" },
-  { key: "ketluanBandluan", label: "5. Kết luận — Bàn luận",  desc: "Logic, liên kết với kết quả và mục tiêu đã đặt ra" },
-  { key: "cachTrinhbay",    label: "6. Cách trình bày",        desc: "Cấu trúc, văn phong, tài liệu tham khảo" },
-];
+import type { ResearchReview, ResearchTopic, ReviewScores, ReviewVerdict, ReviewGrade, NckhReviewCriterionItem } from "@/types";
 
 const QUALITATIVE: { key: keyof ResearchReview; label: string; placeholder: string }[] = [
   { key: "urgency",      label: "Tính cấp thiết",             placeholder: "Nhận xét về tính cấp thiết của vấn đề nghiên cứu..." },
@@ -39,11 +28,6 @@ const GRADE_OPTS: { value: ReviewGrade; label: string }[] = [
   { value: "average",   label: "Trung bình" },
   { value: "fail",      label: "Không đạt" },
 ];
-
-const EMPTY_SCORES: ReviewScores = {
-  datvande: 0, muctieu: 0, ppThietke: 0, ppQuytrinh: 0,
-  ketqua: 0, ketluanBandluan: 0, cachTrinhbay: 0,
-};
 
 // ─── Star rating ─────────────────────────────────────────────────────────────
 
@@ -82,6 +66,9 @@ function StarRating({ value, onChange }: { value: number; onChange: (v: number) 
 interface Props {
   review: ResearchReview;
   topic: ResearchTopic;
+  /** Bộ tiêu chí chấm điểm đúng giai đoạn của phiếu (GĐ1/GĐ2) — Admin cấu hình được, không còn
+      hardcode trong component (xem lib/research.ts DEFAULT_NCKH_REVIEW_CRITERIA). */
+  criteria: NckhReviewCriterionItem[];
   onSubmit: (data: Partial<ResearchReview>) => Promise<void>;
   onCancel: () => void;
 }
@@ -91,7 +78,7 @@ const STAGE_META = {
   recognition: { badge: "Báo cáo kết quả nghiên cứu", title: "Thẩm định đề tài — GĐ2", fileLabel: "File báo cáo kết quả" },
 } as const;
 
-export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
+export function ReviewFormPanel({ review, topic, criteria, onSubmit, onCancel }: Props) {
   const stageMeta = STAGE_META[review.stage];
   const fileUrl = review.topicFileUrl ?? (review.stage === "recognition" ? topic.finalReportFileUrl : topic.proposalFileUrl);
   // Xem file chính (đề cương/báo cáo kết quả) hoặc chuyển qua từng minh chứng đính kèm — cùng 1
@@ -101,7 +88,9 @@ export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
   const activeFileUrl = activeDoc?.url ?? fileUrl;
   const activeFileLabel = activeDoc?.name ?? stageMeta.fileLabel;
   // Pre-fill if already partially filled
-  const [scores, setScores] = useState<ReviewScores>(review.scores ?? { ...EMPTY_SCORES });
+  const [scores, setScores] = useState<ReviewScores>(
+    review.scores ?? Object.fromEntries(criteria.map(c => [c.key, 0]))
+  );
   const [urgency,       setUrgency]       = useState(review.urgency       ?? "");
   const [methodFit,     setMethodFit]     = useState(review.methodFit     ?? "");
   const [novelty,       setNovelty]       = useState(review.novelty       ?? "");
@@ -117,14 +106,17 @@ export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
     review.verdict === "pass" || review.verdict === "fail" ? review.verdict : ""
   );
 
-  const totalScore = Object.values(scores).reduce((a, b) => a + b, 0);
-  const maxScore   = CRITERIA.length * 5; // 35
+  const totalScore = criteria.reduce((sum, c) => sum + (scores[c.key] ?? 0), 0);
+  const maxScore   = criteria.length * 5;
+  // Ngưỡng màu theo tỉ lệ % (thay vì số điểm cố định 28/21 giả định max=35) — để đúng khi Admin
+  // cấu hình số tiêu chí khác 7 (max điểm thay đổi theo).
+  const scoreRatio = maxScore > 0 ? totalScore / maxScore : 0;
 
-  const filledCriteria = Object.values(scores).filter(v => v > 0).length;
+  const filledCriteria = criteria.filter(c => (scores[c.key] ?? 0) > 0).length;
   // "Không đồng ý" bắt buộc phải nêu lý do — để tác giả biết cụ thể cần sửa gì thêm.
   const canSubmit = isConfirmMode
     ? confirmVerdict !== "" && (confirmVerdict === "pass" || addComments.trim() !== "")
-    : filledCriteria === CRITERIA.length && verdict !== "";
+    : filledCriteria === criteria.length && verdict !== "";
 
   async function handleSubmit() {
     if (!canSubmit) {
@@ -132,7 +124,7 @@ export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
         if (confirmVerdict === "") toast.warning("Hãy chọn Đồng ý hoặc Không đồng ý");
         else toast.warning("Hãy nêu lý do vì sao chưa đạt yêu cầu");
       }
-      else if (filledCriteria < CRITERIA.length) toast.warning("Hãy chấm điểm tất cả 7 tiêu chí");
+      else if (filledCriteria < criteria.length) toast.warning(`Hãy chấm điểm tất cả ${criteria.length} tiêu chí`);
       else toast.warning("Hãy chọn kết luận (ĐẠT / KHÔNG ĐẠT)");
       return;
     }
@@ -293,16 +285,16 @@ export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
                 <p className="text-xs text-slate-500">Tổng điểm hiện tại</p>
                 <span className={cn(
                   "text-lg font-bold",
-                  totalScore >= 28 ? "text-green-600" : totalScore >= 21 ? "text-amber-600" : "text-red-500",
+                  scoreRatio >= 0.8 ? "text-green-600" : scoreRatio >= 0.6 ? "text-amber-600" : "text-red-500",
                 )}>
-                  {totalScore} / {maxScore}
+                  {scoreOn10(totalScore, maxScore).toFixed(1)}/10
                 </span>
               </div>
               <div className="mt-1 h-2 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
                 <div
                   className={cn(
                     "h-full rounded-full transition-all",
-                    totalScore >= 28 ? "bg-green-500" : totalScore >= 21 ? "bg-amber-500" : "bg-red-500",
+                    scoreRatio >= 0.8 ? "bg-green-500" : scoreRatio >= 0.6 ? "bg-amber-500" : "bg-red-500",
                   )}
                   style={{ width: `${(totalScore / maxScore) * 100}%` }}
                 />
@@ -389,7 +381,7 @@ export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
                 <span className="text-xs text-slate-400">Mỗi tiêu chí: 1–5 điểm · Tổng tối đa: {maxScore}</span>
               </div>
               <div className="space-y-3">
-                {CRITERIA.map(c => (
+                {criteria.map(c => (
                   <div key={c.key} className="p-3 rounded-xl border border-slate-100 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/30">
                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                       <div className="min-w-0">
@@ -412,13 +404,13 @@ export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
                 <div className="flex-1 h-2 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
                   <div
                     className={cn("h-full rounded-full transition-all",
-                      totalScore >= 28 ? "bg-green-500" : totalScore >= 21 ? "bg-amber-500" : "bg-red-500")}
+                      scoreRatio >= 0.8 ? "bg-green-500" : scoreRatio >= 0.6 ? "bg-amber-500" : "bg-red-500")}
                     style={{ width: `${(totalScore / maxScore) * 100}%` }}
                   />
                 </div>
                 <span className={cn("text-sm font-bold tabular-nums shrink-0",
-                  totalScore >= 28 ? "text-green-600" : totalScore >= 21 ? "text-amber-600" : "text-red-500")}>
-                  {totalScore}/{maxScore}
+                  scoreRatio >= 0.8 ? "text-green-600" : scoreRatio >= 0.6 ? "text-amber-600" : "text-red-500")}>
+                  {scoreOn10(totalScore, maxScore).toFixed(1)}/10
                 </span>
               </div>
             </section>
@@ -547,8 +539,8 @@ export function ReviewFormPanel({ review, topic, onSubmit, onCancel }: Props) {
             <p className="text-xs text-slate-400">
               {isConfirmMode
                 ? (confirmVerdict === "" ? <span className="text-amber-600">⚠ Chưa xác nhận</span> : <span className="text-green-600">✓ Sẵn sàng nộp</span>)
-                : filledCriteria < CRITERIA.length
-                ? <span className="text-amber-600">⚠ Còn {CRITERIA.length - filledCriteria} tiêu chí chưa chấm điểm</span>
+                : filledCriteria < criteria.length
+                ? <span className="text-amber-600">⚠ Còn {criteria.length - filledCriteria} tiêu chí chưa chấm điểm</span>
                 : verdict === ""
                 ? <span className="text-amber-600">⚠ Chưa chọn kết luận</span>
                 : <span className="text-green-600">✓ Sẵn sàng nộp</span>

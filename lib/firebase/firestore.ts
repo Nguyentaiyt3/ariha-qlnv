@@ -568,6 +568,26 @@ export async function saveEvaluationConfig(config: unknown): Promise<void> {
   await api("/api/evaluations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "saveConfig", config }) });
 }
 
+// ─── NCKH REVIEW CRITERIA CONFIG ──────────────────────────────
+
+export async function getNckhReviewCriteria(): Promise<import("@/types").NckhReviewCriteriaConfig | null> {
+  const data = await api<{ config: import("@/types").NckhReviewCriteriaConfig }>("/api/research/review-criteria");
+  return data?.config ?? null;
+}
+export async function saveNckhReviewCriteria(config: import("@/types").NckhReviewCriteriaConfig): Promise<void> {
+  await api("/api/research/review-criteria", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(config) });
+}
+
+// ─── RISK FLAG CONFIG ──────────────────────────────────────────
+
+export async function getRiskFlagConfig(): Promise<import("@/types").RiskFlagConfig | null> {
+  const data = await api<{ config: import("@/types").RiskFlagConfig }>("/api/config/risk-flag");
+  return data?.config ?? null;
+}
+export async function saveRiskFlagConfig(config: import("@/types").RiskFlagConfig): Promise<void> {
+  await api("/api/config/risk-flag", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(config) });
+}
+
 // ─── PERMISSION CONFIG ────────────────────────────────────────
 
 export async function getPermissionConfig() {

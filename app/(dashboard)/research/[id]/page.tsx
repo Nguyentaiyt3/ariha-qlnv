@@ -11,15 +11,16 @@ import Link from "next/link";
 import { cn, generateId } from "@/lib/utils";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useTaskStore } from "@/stores/useTaskStore";
-import { hasPermission, canDoResearchAction, canUserAssignReviewer, getEffectiveRole, ROLE_RANK } from "@/lib/rbac/permissions";
+import { canDoResearchAction, canUserAssignReviewer, getEffectiveRole, ROLE_RANK } from "@/lib/rbac/permissions";
 import { sameUnit } from "@/lib/rbac/scope";
-import { isNckhManager } from "@/lib/researchUtils";
+import { isNckhFullManager, isNckhTeamLead } from "@/lib/researchUtils";
 import {
   getResearchTopic, updateResearchTopic, addNotification,
   getResearchGroups, createResearchGroup, updateResearchGroup,
   generateResearchTask, updateTask,
 } from "@/lib/firebase/firestore";
 import { ReviewFormPanel } from "@/components/research/ReviewFormPanel";
+import { useNckhReviewCriteria } from "@/hooks/useNckhReviewCriteria";
 import { AssignReviewerModal } from "@/components/research/AssignReviewerModal";
 import { DocxAnnotator } from "@/components/research/DocxAnnotator";
 import { PendingChangeRequestPanel } from "@/components/shared/PendingChangeRequestPanel";
@@ -27,7 +28,7 @@ import {
   RESEARCH_STEPS, STAGE_LABEL, researchProgress, stepMeta, researchTaskSync,
   isProposalFileLocked, isFinalReportFileLocked, TASK_ONLY_STEP_KEYS,
   activeReviews, submittedReviewCount, isAwaitingRevisionResubmit, isAwaitingRevisionProcessing,
-  reviewersToResendForReconfirm,
+  reviewersToResendForReconfirm, scoreOn10, grade3TFromAvg, finalReviewsForStage,
 } from "@/lib/research";
 import type {
   ResearchTopic, ResearchStage, ResearchStepStatus, ResearchStepKey, ResearchGroup,
@@ -110,17 +111,30 @@ function stepResultDetail(topic: ResearchTopic, key: ResearchStepKey, stepComple
     case "p_ethics": {
       const cert = topic.certificates.find(c => c.type === "ethics");
       if (!cert) return null;
-      if (cert.number) return `Số: ${cert.number}`;
-      const date = fmtDate(cert.issuedAt);
-      return date ? `Cấp ngày: ${date}` : "Đã cấp";
+      const parts = [
+        cert.number && `Số: ${cert.number}`,
+        fmtDate(cert.issuedAt) && `Cấp ngày: ${fmtDate(cert.issuedAt)}`,
+      ].filter((v): v is string => !!v);
+      return parts.length ? parts.join(" · ") : "Đã cấp";
+    }
+    case "p_agree": {
+      const cert = topic.certificates.find(c => c.type === "agreement");
+      const date = fmtDate(stepCompletedAt);
+      const parts = [
+        cert?.number && `Số: ${cert.number}`,
+        date && `Ngày: ${date}`,
+      ].filter((v): v is string => !!v);
+      return parts.length ? parts.join(" · ") : null;
     }
     case "r_recognize": {
       const cert = topic.certificates.find(c => c.type === "recognition");
       if (!cert) return null;
-      if (cert.scope) return `Phạm vi: ${cert.scope}`;
-      if (cert.number) return `Số: ${cert.number}`;
-      const date = fmtDate(cert.issuedAt);
-      return date ? `Cấp ngày: ${date}` : "Đã công nhận";
+      const parts = [
+        cert.scope && `Phạm vi: ${cert.scope}`,
+        cert.number && `Số: ${cert.number}`,
+        fmtDate(cert.issuedAt) && `Cấp ngày: ${fmtDate(cert.issuedAt)}`,
+      ].filter((v): v is string => !!v);
+      return parts.length ? parts.join(" · ") : "Đã công nhận";
     }
     default: {
       const date = fmtDate(stepCompletedAt);
@@ -223,22 +237,20 @@ export default function ResearchDetailPage() {
   const [showRejectModal, setShowRejectModal] = useState(false);
   const [activeTab, setActiveTab] = useState<"process" | "proposal" | "topic">("process");
 
-  // Quyền quản lý toàn bộ quy trình (tiếp nhận, chuyển bước, từ chối...)
-  // director/hrAdmin: luôn true; teamLead: chỉ true nếu đề tài thuộc đơn vị mình.
-  // KHÔNG chỉ dựa vào permission "research:manage" đơn thuần — một số tổ chức đã cấp permission
-  // này rộng cho cả vai trò "staff" qua cấu hình phân quyền chung, khiến chính tác giả (nếu vai
-  // trò của họ có permission đó) thấy nhầm các nút hành động quản lý (vd. "Đã tiếp nhận kết quả")
-  // ngay trên đề tài của chính mình. Chỉ coi là quản lý thật khi có cấp bậc quản lý thực sự
-  // (teamLead trở lên) HOẶC được chỉ định "Quản lý NCKH" rõ ràng.
-  const canManage = !!currentUser && (
-    isNckhManager(currentUser) ||
-    (ROLE_RANK[getEffectiveRole(currentUser)] >= ROLE_RANK.teamLead &&
-      canDoResearchAction(currentUser, "research:manage", topic?.department))
-  );
-  // Quyền chỉ định phản biện — chỉ Trưởng VP (Văn phòng) hoặc Director/hrAdmin
+  // Quyền quản lý toàn bộ quy trình (tiếp nhận, chuyển bước, từ chối...) — dùng nguồn thẩm quyền
+  // chuẩn isNckhFullManager (hrAdmin / "Quản lý NCKH" / director), KHÔNG dựa vào permission
+  // "research:manage" đơn thuần — permission này có thể bị tổ chức cấp rộng cho vai trò thấp hơn
+  // qua trang Phân quyền, khiến chính tác giả thấy nhầm các nút hành động quản lý trên đề tài của
+  // chính mình.
+  const canManage = !!currentUser && isNckhFullManager(currentUser);
+  // Quyền chỉ định phản biện — chỉ Director/hrAdmin hoặc "Trưởng nhóm Quản lý NCKH"
   const canAssignReviewer = !!currentUser && canUserAssignReviewer(currentUser, topic?.department);
-  // Quyền thành lập hội đồng — scoped theo đơn vị
-  const canAssignCouncil = !!currentUser && canDoResearchAction(currentUser, "research:assignCouncil", topic?.department);
+  // Thành lập Hội đồng KHCN: chỉ Director/hrAdmin được thành lập trực tiếp (chính thức ngay).
+  // "Trưởng nhóm Quản lý NCKH" chỉ được ĐỀ XUẤT — chờ Director/hrAdmin xác nhận mới có hiệu lực.
+  // Trưởng nhóm thường (không có chỉ định) không còn quyền này nữa.
+  const canFormCouncilDirectly = !!currentUser && ROLE_RANK[getEffectiveRole(currentUser)] >= ROLE_RANK.director;
+  const canProposeCouncil = !!currentUser && isNckhTeamLead(currentUser);
+  const canAssignCouncil = canFormCouncilDirectly || canProposeCouncil;
   // Quyền thêm tác giả/thành viên — scoped theo đơn vị
   const canAddContributor = !!currentUser && canDoResearchAction(currentUser, "research:addContributor", topic?.department);
   const isPI = topic?.principalInvestigatorId === currentUser?.id;
@@ -263,7 +275,13 @@ export default function ResearchDetailPage() {
     try {
       const res = await updateResearchTopic(topic.id, updates);
       if (res?.pending) {
-        toast.success("Đã gửi yêu cầu sửa — chờ trưởng nhóm cùng đơn vị duyệt");
+        const isFileUnlockRequest =
+          "proposalFileUrl" in updates || "finalReportFileUrl" in updates || "documents" in updates;
+        toast.success(
+          isFileUnlockRequest
+            ? "Đã gửi đề nghị thay đổi file — chờ Trưởng nhóm Quản lý NCKH duyệt"
+            : "Đã gửi yêu cầu sửa — chờ trưởng nhóm cùng đơn vị duyệt"
+        );
         reload();
         return;
       }
@@ -384,8 +402,18 @@ export default function ResearchDetailPage() {
   const pct = researchProgress(topic);
   const stepStatus = (key: string) => topic.steps.find(s => s.key === key)?.status ?? "pending";
 
+  // KHÔNG dùng canManage (isNckhFullManager) — nó cũng đúng với chính người chỉ có chỉ định
+  // "Quản lý NCKH" (có thể là người vừa gửi yêu cầu này), sẽ khiến người xin duyệt thấy luôn được
+  // nút Đồng ý/Từ chối cho yêu cầu của chính mình. Khớp đúng thẩm quyền server-side (approve/
+  // reject-change-request route): mặc định chỉ Director/hrAdmin hoặc trưởng nhóm cùng đơn vị —
+  // RIÊNG yêu cầu đổi file đã khoá do chính chủ nhiệm đề tài gửi thì chỉ Trưởng nhóm Quản lý
+  // NCKH (isNckhTeamLead) hoặc Director/hrAdmin mới được duyệt.
+  const isFileUnlockRequest = topic.pendingChangeRequest?.requestedByUserId === topic.principalInvestigatorId;
   const canReviewChangeRequest =
-    canManage || (currentUser?.role === "teamLead" && sameUnit(topic.department, currentUser.department));
+    (!!currentUser && ROLE_RANK[getEffectiveRole(currentUser)] >= ROLE_RANK.director) ||
+    (isFileUnlockRequest
+      ? isNckhTeamLead(currentUser)
+      : (currentUser?.role === "teamLead" && sameUnit(topic.department, currentUser.department)));
   const isChangeRequester = topic.pendingChangeRequest?.requestedByUserId === currentUser?.id;
 
   return (
@@ -447,12 +475,10 @@ export default function ResearchDetailPage() {
           <div className="h-2 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
             <div className="h-full bg-violet-500 rounded-full transition-all" style={{ width: `${pct}%` }} />
           </div>
-          {topic.executionTaskId && (
-            <Link href={`/tasks/${topic.executionTaskId}`}
-              className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-violet-600 dark:text-violet-400 hover:underline">
-              <ListChecks className="w-3.5 h-3.5" /> Nhiệm vụ thực thi liên kết — theo dõi tiến độ & đánh giá 3T
-            </Link>
-          )}
+          {/* Không hiện link "Nhiệm vụ thực thi liên kết" nữa — tác giả chỉ cần báo cáo tiến độ
+              ngay tại các bước Giai đoạn Triển khai bên dưới; Task ẩn (executionTaskId) vẫn được
+              tự tạo/đồng bộ ngầm để Heatmap/Hiệu suất/Kế hoạch tiếp tục nhận đủ dữ liệu, chỉ không
+              còn là 1 mục riêng tác giả phải vào xem/quản lý. */}
         </div>
       </div>
 
@@ -478,10 +504,13 @@ export default function ResearchDetailPage() {
         ))}
       </div>
 
+      {/* Upload/sửa file, dán link, thêm minh chứng, nộp thẩm định: CHỈ chủ nhiệm đề tài (isPI) —
+          kể cả quản lý (canManage) hay người thực hiện chính (isPerformer) cũng chỉ được xem/
+          download/ghi chú, không được sửa nội dung do tác giả khác nộp. */}
       {activeTab === "proposal" && (
         <ProposalTab
           topic={topic}
-          canEdit={canManage || isPI || isPerformer}
+          canEdit={isPI}
           canManage={canManage}
           onUpdate={handleUpdate}
           onReload={reload}
@@ -491,7 +520,7 @@ export default function ResearchDetailPage() {
       {activeTab === "topic" && (
         <FinalTopicTab
           topic={topic}
-          canEdit={canManage || isPI || isPerformer}
+          canEdit={isPI}
           canManage={canManage}
           onUpdate={handleUpdate}
           onReload={reload}
@@ -547,6 +576,7 @@ export default function ResearchDetailPage() {
           canManage={canManage}
           canAssignReviewer={canAssignReviewer}
           canAssignCouncil={canAssignCouncil}
+          canFormCouncilDirectly={canFormCouncilDirectly}
           isPI={isPI}
           isPerformer={isPerformer}
           onUpdate={handleUpdate}
@@ -561,10 +591,10 @@ export default function ResearchDetailPage() {
       {topic.stage === "executing" && (
         <ExecutingPanel
           topic={topic}
-          canManage={canManage}
           isPI={isPI}
           isPerformer={isPerformer}
           onUpdate={handleUpdate}
+          onGoToTopicTab={() => setActiveTab("topic")}
         />
       )}
 
@@ -578,6 +608,7 @@ export default function ResearchDetailPage() {
           canManage={canManage}
           canAssignReviewer={canAssignReviewer}
           canAssignCouncil={canAssignCouncil}
+          canFormCouncilDirectly={canFormCouncilDirectly}
           isPI={isPI}
           isPerformer={isPerformer}
           onUpdate={handleUpdate}
@@ -661,7 +692,11 @@ export default function ResearchDetailPage() {
           { icon: <Users className="w-4 h-4" />, label: "Phản biện kín", count: topic.reviews.length },
           { icon: <Gavel className="w-4 h-4" />, label: "Hội đồng KHCN", count: topic.councilSessions.length },
           { icon: <Award className="w-4 h-4" />, label: "Chứng nhận", count: topic.certificates.length },
-          { icon: <FileText className="w-4 h-4" />, label: "Tài liệu", count: topic.documents.length },
+          {
+            icon: <FileText className="w-4 h-4" />, label: "Tài liệu",
+            // Đề tài (báo cáo kết quả) + đề cương + minh chứng đính kèm — không chỉ minh chứng.
+            count: (topic.proposalFileUrl ? 1 : 0) + (topic.finalReportFileUrl ? 1 : 0) + topic.documents.length,
+          },
         ].map((s, i) => (
           <div key={i} className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 text-center">
             <div className="flex justify-center text-violet-500 mb-1">{s.icon}</div>
@@ -678,17 +713,20 @@ export default function ResearchDetailPage() {
 
 // ─── Executing Panel ─────────────────────────────────────────────────────────
 
-function ExecutingPanel({ topic, canManage, isPI, isPerformer, onUpdate }: {
+function ExecutingPanel({ topic, isPI, isPerformer, onUpdate, onGoToTopicTab }: {
   topic: ResearchTopic;
-  canManage: boolean;
   isPI: boolean;
   isPerformer: boolean;
   onUpdate: (updates: Partial<ResearchTopic>, msg: string) => Promise<void>;
+  onGoToTopicTab: () => void;
 }) {
   const [saving, setSaving] = useState(false);
   const [midtermNote, setMidtermNote] = useState("");
   const [showMidterm, setShowMidterm] = useState(false);
-  const canAct = canManage || isPI || isPerformer;
+  // Các mốc "Bắt đầu triển khai/Báo cáo giữa kỳ/Nộp kết quả" là tự khai báo tiến độ của CHÍNH tác
+  // giả — không phải hành động quản lý hộ, nên KHÔNG dựa vào canManage (Quản lý NCKH chỉ xem/theo
+  // dõi, không tự ý xác nhận thay tác giả).
+  const canAct = isPI || isPerformer;
 
   const execSteps = ["exec_start", "exec_midterm", "exec_submit"] as const;
   const stepStatus = (key: string) => topic.steps.find(s => s.key === key)?.status ?? "pending";
@@ -765,21 +803,23 @@ function ExecutingPanel({ topic, canManage, isPI, isPerformer, onUpdate }: {
           </div>
         )}
 
-        {/* exec_submit → GĐ2 */}
+        {/* exec_submit → GĐ2 — KHÔNG tự chuyển bước ở đây nữa, chỉ điều hướng sang tab Đề tài để
+            tác giả upload file đề tài/minh chứng rồi bấm "Nộp thẩm định" (đã kiểm tra bắt buộc có
+            file mới cho nộp — nút cũ ở đây trước kia chuyển thẳng sang GĐ2 mà không đòi hỏi file,
+            bỏ qua bước upload). */}
         {stepStatus("exec_start") === "passed" && (
           <div className="flex items-center justify-between gap-3 p-3 bg-white dark:bg-slate-800 rounded-xl border border-amber-100 dark:border-amber-800">
             <div>
-              <p className="text-sm font-medium text-slate-700 dark:text-slate-200">Nộp báo cáo kết quả</p>
-              <p className="text-xs text-slate-400">Kết thúc triển khai — chuyển sang GĐ2 Nghiệm thu</p>
+              <p className="text-sm font-medium text-slate-700 dark:text-slate-200">Yêu cầu thẩm định đề tài</p>
+              <p className="text-xs text-slate-400">Sang tab Đề tài để upload file đề tài/minh chứng & nộp thẩm định</p>
             </div>
             {stepStatus("exec_submit") === "passed"
               ? <span className="text-xs text-green-600 font-medium">✓ Đã nộp</span>
               : canAct && (
                 <button
-                  onClick={() => handleAdvanceExec("exec_submit", "r_intake", "recognition")}
-                  disabled={saving}
-                  className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-violet-600 hover:bg-violet-700 text-white transition disabled:opacity-50">
-                  Nộp kết quả → GĐ2
+                  onClick={onGoToTopicTab}
+                  className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-violet-600 hover:bg-violet-700 text-white transition">
+                  Yêu cầu thẩm định đề tài
                 </button>
               )
             }
@@ -798,8 +838,9 @@ interface GD1Props {
   users: { id: string; name: string; role?: string; department?: string; academicTitle?: string }[];
   groups: ResearchGroup[];
   canManage: boolean;
-  canAssignReviewer: boolean;  // research:assignReviewer scoped theo đơn vị
-  canAssignCouncil: boolean;   // research:assignCouncil scoped theo đơn vị
+  canAssignReviewer: boolean;  // Director/hrAdmin hoặc Trưởng nhóm Quản lý NCKH
+  canAssignCouncil: boolean;   // được đề xuất HOẶC thành lập trực tiếp Hội đồng KHCN
+  canFormCouncilDirectly: boolean; // Director/hrAdmin — thành lập ngay, không cần chờ xác nhận
   isPI: boolean;
   isPerformer: boolean;
   onUpdate: (updates: Partial<ResearchTopic>, msg: string) => Promise<void>;
@@ -879,16 +920,25 @@ function PCompilePanel({ topic, currentUser, canManage, isPI, isPerformer, onUpd
       ["teamLead", "director", "hrAdmin"].includes(u.role ?? "") && u.id !== currentUser?.id
     );
     try {
+      // "Phê duyệt thực hiện & gán người" (p_assign) không còn là cổng duyệt thủ công riêng —
+      // tự động bỏ qua, chuyển thẳng sang thẩm định (p_review). Xem PAgreePanel để biết chỗ
+      // người thực hiện chính/nhóm được tự gán (mặc định = chủ nhiệm).
+      const stamp = new Date().toISOString();
+      const stepsSkipAssign = topic.steps.map(s =>
+        (s.key === "p_compile" || s.key === "p_assign") ? { ...s, status: "passed" as const, completedAt: stamp }
+        : s.key === "p_review" ? { ...s, status: "in_progress" as const }
+        : s
+      );
       await onUpdate(
-        { compileNote: note.trim(), ...advanceStep(topic, "p_compile", "p_assign") },
-        "Đã nộp đề cương — chờ phê duyệt thực hiện"
+        { compileNote: note.trim(), steps: stepsSkipAssign, currentStep: "p_review" },
+        "Đã nộp đề cương — chuyển sang thẩm định"
       );
       await Promise.all(managers.map(u =>
         addNotification({
-          userId: u.id, type: "approval_request", title: "Đề cương chờ phê duyệt",
-          body: `Đề tài "${topic.title}" đã nộp đề cương — cần phê duyệt thực hiện & gán người.`,
+          userId: u.id, type: "approval_request", title: "Đề cương chờ phân công phản biện",
+          body: `Đề tài "${topic.title}" đã nộp đề cương — cần chỉ định phản biện kín.`,
           link: `/research/${topic.id}`, read: false, priority: "normal",
-          createdAt: new Date().toISOString(),
+          createdAt: stamp,
         }).catch(() => {})
       ));
     } finally { setSaving(false); }
@@ -1078,6 +1128,7 @@ function PAssignPanel({ topic, currentUser, canManage, users, groups, onUpdate, 
 // ── p_review ─────────────────────────────────────────────────────────────────
 function PReviewPanel({ topic, currentUser, canAssignReviewer, users, onUpdate, onReload }: GD1Props) {
   const [showAdd, setShowAdd] = useState(false);
+  const reviewCriteria = useNckhReviewCriteria();
 
   // Which review's full form is open
   const [submitReviewId, setSubmitReviewId] = useState<string | null>(null);
@@ -1173,7 +1224,9 @@ function PReviewPanel({ topic, currentUser, canAssignReviewer, users, onUpdate, 
                 <div className="text-xs text-slate-500 pl-1 space-y-0.5">
                   <div className="flex flex-wrap gap-3">
                     {r.score !== undefined && (
-                      <span>Tổng điểm: <strong className="text-[var(--foreground)]">{r.score}/35</strong></span>
+                      <span>Tổng điểm: <strong className="text-[var(--foreground)]">
+                        {r.scores ? `${scoreOn10(r.score, Object.keys(r.scores).length * 5).toFixed(1)}/10` : `${r.score}/?`}
+                      </strong></span>
                     )}
                     {r.verdict && (
                       <span>Kết luận: <strong className={
@@ -1253,6 +1306,7 @@ function PReviewPanel({ topic, currentUser, canAssignReviewer, users, onUpdate, 
           key={submitReviewId}
           review={rev}
           topic={topic}
+          criteria={reviewCriteria[rev.stage]}
           onCancel={() => setSubmitReviewId(null)}
           onSubmit={data => handleSubmitReview(submitReviewId, data)}
         />
@@ -1263,7 +1317,7 @@ function PReviewPanel({ topic, currentUser, canAssignReviewer, users, onUpdate, 
 }
 
 // ── p_council ─────────────────────────────────────────────────────────────────
-function PCouncilPanel({ topic, currentUser, canManage, canAssignCouncil, users, onUpdate, onRevise, onReject }: GD1Props) {
+function PCouncilPanel({ topic, currentUser, canManage, canAssignCouncil, canFormCouncilDirectly, users, onUpdate, onRevise, onReject }: GD1Props) {
   const [mode, setMode] = useState<"in_person" | "online">("in_person");
   const [scheduledAt, setScheduledAt] = useState("");
   const [location, setLocation] = useState("");
@@ -1299,13 +1353,41 @@ function PCouncilPanel({ topic, currentUser, canManage, canAssignCouncil, users,
       conclusion: conclusion || undefined,
       createdAt: new Date().toISOString(),
       votes: mode === "online" ? members.map(m => ({ memberId: m.userId ?? "", vote: "abstain" as const, votedAt: "" })) : undefined,
+      // Trưởng nhóm Quản lý NCKH chỉ được ĐỀ XUẤT — chưa có hiệu lực, chưa chuyển bước, chờ
+      // Director/hrAdmin xác nhận (xem handleConfirmProposal). Director/hrAdmin thành lập trực
+      // tiếp thì có hiệu lực ngay như trước.
+      status: canFormCouncilDirectly ? "active" : "proposed",
+      ...(canFormCouncilDirectly ? {} : { proposedBy: currentUser?.id, proposedByName: currentUser?.name }),
     };
     const updates: Partial<ResearchTopic> = { councilSessions: [...topic.councilSessions, session] };
-    if (mode === "in_person" && decision !== "revise") {
+    if (canFormCouncilDirectly && mode === "in_person" && decision !== "revise") {
       Object.assign(updates, advanceStep(topic, councilKey, nextKey));
     }
-    await onUpdate(updates, mode === "in_person" ? "Đã ghi nhận kết luận Hội đồng" : "Đã tạo phiên bỏ phiếu online");
+    await onUpdate(
+      updates,
+      !canFormCouncilDirectly ? "Đã đề xuất thành lập Hội đồng — chờ Giám đốc/hrAdmin xác nhận"
+      : mode === "in_person" ? "Đã ghi nhận kết luận Hội đồng" : "Đã tạo phiên bỏ phiếu online"
+    );
     setShowForm(false);
+    setSaving(false);
+  }
+
+  /** Director/hrAdmin xác nhận 1 đề xuất thành lập Hội đồng của Trưởng nhóm Quản lý NCKH — sau
+   * khi xác nhận mới thật sự có hiệu lực (chuyển bước nếu là họp trực tiếp có kết luận). */
+  async function handleConfirmProposal() {
+    if (!proposalSession || proposalSession.status !== "proposed") return;
+    setSaving(true);
+    const now = new Date().toISOString();
+    const sessions = topic.councilSessions.map(s =>
+      s.id === proposalSession.id
+        ? { ...s, status: "active" as const, confirmedBy: currentUser?.id, confirmedByName: currentUser?.name, confirmedAt: now }
+        : s
+    );
+    const updates: Partial<ResearchTopic> = { councilSessions: sessions };
+    if (proposalSession.mode === "in_person" && proposalSession.decision && proposalSession.decision !== "revise") {
+      Object.assign(updates, advanceStep(topic, councilKey, nextKey));
+    }
+    await onUpdate(updates, "Đã xác nhận thành lập Hội đồng KHCN");
     setSaving(false);
   }
 
@@ -1352,6 +1434,24 @@ function PCouncilPanel({ topic, currentUser, canManage, canAssignCouncil, users,
           </div>
           {proposalSession.conclusion && <p className="text-xs text-slate-500 italic">"{proposalSession.conclusion}"</p>}
 
+          {proposalSession.status === "proposed" && (
+            <div className="flex items-start gap-2 bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800 rounded-xl p-3">
+              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-amber-700 dark:text-amber-400 font-medium">
+                  Đề xuất bởi {proposalSession.proposedByName ?? "Trưởng nhóm Quản lý NCKH"} — chờ Giám đốc/hrAdmin xác nhận thành lập.
+                </p>
+                {canFormCouncilDirectly && (
+                  <button onClick={handleConfirmProposal} disabled={saving}
+                    className="mt-2 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 transition disabled:opacity-60">
+                    {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                    Xác nhận thành lập
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Members with roles */}
           {proposalSession.members && proposalSession.members.length > 0 && (
             <div className="flex flex-wrap gap-1 mt-1">
@@ -1363,8 +1463,8 @@ function PCouncilPanel({ topic, currentUser, canManage, canAssignCouncil, users,
             </div>
           )}
 
-          {/* Online voting */}
-          {proposalSession.mode === "online" && !proposalSession.decision && (
+          {/* Online voting — chỉ khi phiên đã chính thức (không phải đang chờ xác nhận) */}
+          {proposalSession.mode === "online" && !proposalSession.decision && proposalSession.status !== "proposed" && (
             <div className="space-y-1.5 border-t border-slate-100 dark:border-slate-700 pt-2">
               {proposalSession.votes?.map(v => {
                 const member = users.find(u => u.id === v.memberId);
@@ -1399,7 +1499,7 @@ function PCouncilPanel({ topic, currentUser, canManage, canAssignCouncil, users,
           )}
 
           {/* Action buttons for revise/failed decisions */}
-          {canManage && proposalSession.decision && proposalSession.decision !== "passed" && (
+          {canManage && proposalSession.status !== "proposed" && proposalSession.decision && proposalSession.decision !== "passed" && (
             <div className="pt-2 border-t border-blue-200 dark:border-blue-700 space-y-2">
               {councilActionMode ? (
                 <div className="space-y-2">
@@ -1619,6 +1719,9 @@ function PEthicsPanel({ topic, canManage, onUpdate }: GD1Props) {
 
 // ── p_agree ──────────────────────────────────────────────────────────────────
 function PAgreePanel({ topic, currentUser, canManage, users, onUpdate }: GD1Props) {
+  const [certNo, setCertNo] = useState("");
+  const [issuedAt, setIssuedAt] = useState("");
+  const [issuedBy, setIssuedBy] = useState("");
   const [saving, setSaving] = useState(false);
 
   async function handle() {
@@ -1629,20 +1732,30 @@ function PAgreePanel({ topic, currentUser, canManage, users, onUpdate }: GD1Prop
       : s.key === "exec_start" ? { ...s, status: "in_progress" as const }
       : s
     );
-    const updates: Partial<ResearchTopic> = { steps, stage: "executing", currentStep: "exec_start" };
+    // Tự gán người thực hiện chính (mặc định = chủ nhiệm) nếu chưa từng được gán thủ công ở GĐ1
+    // — thay cho bước "Phê duyệt thực hiện & gán người" đã bỏ, đúng lúc hệ thống cần để sinh Task.
+    const mainPerformerId = topic.mainPerformerId || topic.principalInvestigatorId;
+    const cert = certNo.trim()
+      ? [{ type: "agreement" as const, number: certNo.trim(), issuedAt: issuedAt || undefined, issuedBy: issuedBy || undefined }]
+      : [];
+    const updates: Partial<ResearchTopic> = {
+      steps, stage: "executing", currentStep: "exec_start", mainPerformerId,
+      certificates: [...topic.certificates, ...cert],
+    };
     await onUpdate(updates, "Đã đồng ý thực hiện — chuyển sang Giai đoạn Triển khai");
 
-    // Tự sinh Task per-đề-tài (hub theo dõi tiến độ/risk/3T/plan)
+    // Tự sinh Task per-đề-tài (hub theo dõi tiến độ/risk/3T/plan) — generate-task route đã tự lưu
+    // executionTaskId thẳng vào DB (server-side), không cần PATCH lại lần nữa ở đây. Gọi thêm
+    // updateResearchTopic qua route chung trước đây là dư thừa VÀ có thể bị chặn bởi cổng duyệt
+    // sửa/xoá chung (needsApprovalGate) nếu người bấm chỉ có chỉ định Quản lý NCKH nhưng không
+    // phải thành viên đề tài này — khiến executionTaskId kẹt lại vĩnh viễn ở pendingChangeRequest.
     try {
       const res = await generateResearchTask(topic.id);
-      if (res?.taskId) {
-        await updateResearchTopic(topic.id, { executionTaskId: res.taskId });
-        onUpdate({ executionTaskId: res.taskId }, "Đã tạo nhiệm vụ thực thi liên kết");
-      }
+      if (res?.taskId) onUpdate({ executionTaskId: res.taskId }, "Đã tạo nhiệm vụ thực thi liên kết");
     } catch { /* sinh task không thành công — không chặn luồng nghiệp vụ */ }
 
-    // Notify PI and performer
-    const notifyIds = [topic.principalInvestigatorId, topic.mainPerformerId].filter(Boolean) as string[];
+    // Notify PI and performer (dedupe — thường trùng nhau khi mainPerformerId vừa tự gán = PI)
+    const notifyIds = [...new Set([topic.principalInvestigatorId, mainPerformerId].filter(Boolean))] as string[];
     await Promise.all(notifyIds.filter(uid => uid !== currentUser?.id).map(uid =>
       addNotification({
         userId: uid, type: "request_approved", title: "Đề tài bắt đầu triển khai",
@@ -1656,15 +1769,34 @@ function PAgreePanel({ topic, currentUser, canManage, users, onUpdate }: GD1Prop
   return (
     <PanelWrap title="GĐ1 · Đồng ý cho thực hiện" icon={<FlaskConical className="w-4 h-4" />}>
       {canManage ? (
-        <div className="flex items-center gap-3">
-          <p className="text-sm text-slate-600 dark:text-slate-300 flex-1">
+        <div className="space-y-3">
+          <p className="text-sm text-slate-600 dark:text-slate-300">
             Tất cả điều kiện GĐ1 đã hoàn thành. Xác nhận đồng ý cho thực hiện đề tài nghiên cứu — chuyển sang Giai đoạn 2.
           </p>
-          <button onClick={handle} disabled={saving}
-            className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition disabled:opacity-60 flex items-center gap-2 whitespace-nowrap">
-            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-            Đồng ý thực hiện
-          </button>
+          <div className="grid grid-cols-3 gap-2">
+            <div className="col-span-3 sm:col-span-1">
+              <label className="block text-xs text-slate-500 mb-0.5">Số quyết định (tuỳ chọn)</label>
+              <input value={certNo} onChange={e => setCertNo(e.target.value)} placeholder="QĐ-2026-001"
+                className="w-full border border-slate-200 dark:border-slate-700 rounded px-2 py-1.5 text-sm bg-white dark:bg-slate-800" />
+            </div>
+            <div>
+              <label className="block text-xs text-slate-500 mb-0.5">Ngày ký</label>
+              <input type="date" value={issuedAt} onChange={e => setIssuedAt(e.target.value)}
+                className="w-full border border-slate-200 dark:border-slate-700 rounded px-2 py-1.5 text-sm bg-white dark:bg-slate-800" />
+            </div>
+            <div>
+              <label className="block text-xs text-slate-500 mb-0.5">Đơn vị ký</label>
+              <input value={issuedBy} onChange={e => setIssuedBy(e.target.value)} placeholder="Ban Giám đốc..."
+                className="w-full border border-slate-200 dark:border-slate-700 rounded px-2 py-1.5 text-sm bg-white dark:bg-slate-800" />
+            </div>
+          </div>
+          <div className="flex justify-end">
+            <button onClick={handle} disabled={saving}
+              className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition disabled:opacity-60 flex items-center gap-2 whitespace-nowrap">
+              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+              Đồng ý thực hiện
+            </button>
+          </div>
         </div>
       ) : (
         <p className="text-sm text-blue-600 dark:text-blue-400">Chờ quản lý ký xác nhận đồng ý thực hiện đề tài.</p>
@@ -1739,6 +1871,9 @@ function RIntakePanel({ topic, canManage, onUpdate, onReload }: GD1Props) {
           <div className="text-sm text-amber-700 dark:text-amber-400">
             <p className="font-medium">Đã yêu cầu sửa đổi (lần {topic.revisionCount}) — đang chờ tác giả nộp lại</p>
             {topic.revisionNote && <p className="text-xs mt-0.5 whitespace-pre-wrap">{topic.revisionNote}</p>}
+            {topic.revisionDueAt && (
+              <p className="text-xs mt-1 font-medium">Hạn nộp lại: {fmtDate(topic.revisionDueAt)}</p>
+            )}
           </div>
         </div>
       )}
@@ -1775,13 +1910,6 @@ function RIntakePanel({ topic, canManage, onUpdate, onReload }: GD1Props) {
 }
 
 // ── r_recognize ─────────────────────────────────────────────────────────────────
-/** Suy ra xếp loại 3T từ điểm trung bình (thang 10). */
-function grade3TFromAvg(avg10: number): "xuatSac" | "hoanThanhTot" | "hoanThanh" | "khongHoanThanh" {
-  if (avg10 >= 9) return "xuatSac";
-  if (avg10 >= 8) return "hoanThanhTot";
-  if (avg10 >= 5) return "hoanThanh";
-  return "khongHoanThanh";
-}
 
 function RRecognizePanel({ topic, currentUser, canManage, onUpdate }: GD1Props) {
   const [certNo, setCertNo] = useState("");
@@ -1789,12 +1917,14 @@ function RRecognizePanel({ topic, currentUser, canManage, onUpdate }: GD1Props) 
   const [issuedAt, setIssuedAt] = useState("");
   const [issuedBy, setIssuedBy] = useState("");
   const [saving, setSaving] = useState(false);
+  const reviewCriteria = useNckhReviewCriteria();
 
   // Điểm trung bình từ phản biện GĐ2 (đã nộp) → quy đổi 3T cho Hiệu suất
   const recReviews = activeReviews(topic, "recognition").filter(r => r.status === "submitted");
   const scores = recReviews.map(r => r.score).filter((s): s is number => typeof s === "number");
+  const maxScore = reviewCriteria.recognition.length * 5;
   const avg35 = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
-  const avg10 = avg35 != null ? Math.round((avg35 / 35) * 100) / 10 : null;
+  const avg10 = avg35 != null ? Math.round((avg35 / maxScore) * 100) / 10 : null;
 
   async function handle() {
     if (!certNo.trim()) { toast.error("Nhập số chứng nhận công nhận"); return; }
@@ -1863,8 +1993,8 @@ function RRecognizePanel({ topic, currentUser, canManage, onUpdate }: GD1Props) 
       <div className="space-y-3">
         {avg10 != null && (
           <p className="text-xs text-slate-500">
-            Điểm trung bình phản biện nghiệm thu: <strong className="text-[var(--foreground)]">{avg35?.toFixed(1)}/35</strong>
-            {" "}(~{avg10}/10) · Dự kiến xếp loại 3T:{" "}
+            Điểm trung bình phản biện nghiệm thu: <strong className="text-[var(--foreground)]">{avg10}/10</strong>
+            {" "}· Dự kiến xếp loại 3T:{" "}
             <strong className="text-violet-600 dark:text-violet-400">
               {{ xuatSac: "Xuất sắc", hoanThanhTot: "Hoàn thành tốt", hoanThanh: "Hoàn thành", khongHoanThanh: "Không hoàn thành" }[grade3TFromAvg(avg10)]}
             </strong>
@@ -1909,13 +2039,16 @@ function RRecognizePanel({ topic, currentUser, canManage, onUpdate }: GD1Props) 
 
 const UPLOAD_ACCEPT = ".pdf,.doc,.docx";
 
-function FileUrlField({ label, url, canEdit, folder, lockedMessage, onSave }: {
+function FileUrlField({ label, url, canEdit, locked = false, folder, lockedMessage, onSave }: {
   label: string;
   url?: string;
   canEdit: boolean;
+  /** File đã khoá (đã nộp thẩm định) — canEdit vẫn true cho chủ nhiệm, nhưng thay đổi sẽ tạo yêu
+   * cầu chờ Trưởng nhóm Quản lý NCKH duyệt thay vì áp dụng ngay (server tự xử lý qua onSave). */
+  locked?: boolean;
   folder: string;
-  /** Hiển thị khi có file nhưng canEdit=false do đã khoá (vd. đã nộp thẩm định) — phân biệt với
-   * trường hợp người xem đơn giản là không có quyền sửa. */
+  /** Hiển thị khi có file nhưng canEdit=false (người xem không phải chủ nhiệm) — phân biệt với
+   * trường hợp chủ nhiệm nhưng file đã khoá (xem `locked`). */
   lockedMessage?: string;
   onSave: (url: string) => Promise<void>;
 }) {
@@ -1955,10 +2088,10 @@ function FileUrlField({ label, url, canEdit, folder, lockedMessage, onSave }: {
           <div className="flex items-center gap-3">
             <button onClick={() => fileInputRef.current?.click()} disabled={uploading}
               className="text-xs text-violet-600 dark:text-violet-400 hover:underline flex items-center gap-1 disabled:opacity-50">
-              {uploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />} Thay file khác
+              {uploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />} {locked ? "Đề nghị đổi file" : "Thay file khác"}
             </button>
             <button onClick={() => setShowUrlInput(v => !v)} className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 flex items-center gap-1">
-              <Pencil className="w-3 h-3" /> Dán link khác
+              <Pencil className="w-3 h-3" /> {locked ? "Đề nghị dán link khác" : "Dán link khác"}
             </button>
           </div>
         )}
@@ -1968,6 +2101,11 @@ function FileUrlField({ label, url, canEdit, folder, lockedMessage, onSave }: {
           </span>
         )}
       </div>
+      {canEdit && locked && url && (
+        <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1 mb-2">
+          <Lock className="w-3 h-3 shrink-0" /> Đã nộp thẩm định — thay đổi file cần Trưởng nhóm Quản lý NCKH duyệt trước khi áp dụng.
+        </p>
+      )}
 
       {canEdit && showUrlInput && (
         <div className="flex items-center gap-2 mb-3">
@@ -1990,7 +2128,7 @@ function FileUrlField({ label, url, canEdit, folder, lockedMessage, onSave }: {
 
       {url ? (
         <div className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden" style={{ height: 560 }}>
-          <DocxAnnotator fileUrl={url} annotations={[]} canAnnotate={false} />
+          <DocxAnnotator fileUrl={url} annotations={[]} canAnnotate={false} notesDefaultOpen={false} />
         </div>
       ) : canEdit ? (
         <div className="space-y-2">
@@ -2046,17 +2184,25 @@ function FileUrlField({ label, url, canEdit, folder, lockedMessage, onSave }: {
 
 // ─── Tóm tắt phản biện theo giai đoạn (dùng chung cho 2 tab) ─────────────────
 
-function ReviewStageSummary({ reviews, stage, currentUserId, onOpenReview }: {
+function ReviewStageSummary({ reviews, stage, currentUserId, onOpenReview, topic }: {
   reviews: ResearchReview[];
   stage: "proposal" | "recognition";
   currentUserId?: string;
   onOpenReview?: (reviewId: string) => void;
+  /** Dùng để biết giai đoạn đã CÓ QUYẾT ĐỊNH chính thức chưa (p_agree cho GĐ1, r_recognize cho
+   * GĐ2) — trước đó dù đã đủ điểm/phiếu vẫn chưa phải kết luận cuối cùng (còn chờ Hội đồng/y đức/
+   * chỉnh sửa lại), không nên hiện như thể đã xong. */
+  topic: Pick<ResearchTopic, "steps">;
 }) {
+  const reviewCriteria = useNckhReviewCriteria();
+  const maxScore = reviewCriteria[stage].length * 5;
   const stageReviews = reviews.filter(r => r.stage === stage);
   const submitted = stageReviews.filter(r => r.status === "submitted");
   const scores = submitted.map(r => r.score).filter((s): s is number => typeof s === "number");
   const avg35 = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
-  const avg10 = avg35 != null ? Math.round((avg35 / 35) * 100) / 10 : null;
+  const avg10 = avg35 != null ? Math.round((avg35 / maxScore) * 100) / 10 : null;
+  const finalStepKey = stage === "recognition" ? "r_recognize" : "p_agree";
+  const isFinalized = topic.steps.find(s => s.key === finalStepKey)?.status === "passed";
 
   if (stageReviews.length === 0) {
     return <p className="text-sm text-slate-400 italic">Chưa có phản biện nào ở giai đoạn này.</p>;
@@ -2065,14 +2211,23 @@ function ReviewStageSummary({ reviews, stage, currentUserId, onOpenReview }: {
   return (
     <div className="space-y-3">
       {avg10 != null && (
-        <div className="flex flex-wrap items-center gap-3 p-3 bg-violet-50 dark:bg-violet-900/10 border border-violet-200 dark:border-violet-800 rounded-xl">
-          <p className="text-sm text-violet-700 dark:text-violet-300">
-            Điểm trung bình: <strong>{avg35?.toFixed(1)}/35</strong> (~{avg10}/10)
-          </p>
-          <span className="text-xs px-2 py-0.5 rounded-full bg-violet-100 dark:bg-violet-800/40 text-violet-700 dark:text-violet-300 font-medium">
-            {{ xuatSac: "Xuất sắc", hoanThanhTot: "Hoàn thành tốt", hoanThanh: "Hoàn thành", khongHoanThanh: "Không hoàn thành" }[grade3TFromAvg(avg10)]}
-          </span>
-        </div>
+        isFinalized ? (
+          <div className="flex flex-wrap items-center gap-3 p-3 bg-violet-50 dark:bg-violet-900/10 border border-violet-200 dark:border-violet-800 rounded-xl">
+            <p className="text-sm text-violet-700 dark:text-violet-300">
+              Điểm trung bình: <strong>{avg10}/10</strong>
+            </p>
+            <span className="text-xs px-2 py-0.5 rounded-full bg-violet-100 dark:bg-violet-800/40 text-violet-700 dark:text-violet-300 font-medium">
+              {{ xuatSac: "Xuất sắc", hoanThanhTot: "Hoàn thành tốt", hoanThanh: "Hoàn thành", khongHoanThanh: "Không hoàn thành" }[grade3TFromAvg(avg10)]}
+            </span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 p-3 bg-blue-50 dark:bg-blue-900/10 border border-blue-200 dark:border-blue-800 rounded-xl">
+            <Clock className="w-4 h-4 text-blue-500 shrink-0" />
+            <p className="text-sm text-blue-700 dark:text-blue-300">
+              Đang thẩm định — chưa có kết luận chính thức (chờ {stage === "recognition" ? "công nhận" : "quyết định cho thực hiện"}).
+            </p>
+          </div>
+        )
       )}
       <div className="space-y-2">
         {stageReviews.map((r, i) => {
@@ -2096,12 +2251,24 @@ function ReviewStageSummary({ reviews, stage, currentUserId, onOpenReview }: {
               </div>
               {r.status === "submitted" && (
                 <div className="flex flex-wrap gap-3 mt-1.5 text-xs text-slate-500">
-                  {r.score !== undefined && <span>Điểm: <strong className="text-[var(--foreground)]">{r.score}/35</strong></span>}
+                  {r.score !== undefined && (
+                    <span>Điểm: <strong className="text-[var(--foreground)]">
+                      {r.scores ? `${scoreOn10(r.score, Object.keys(r.scores).length * 5).toFixed(1)}/10` : `${r.score}/?`}
+                    </strong></span>
+                  )}
                   {r.verdict && (
                     <span>Kết luận: <strong className={
                       r.verdict === "pass" ? "text-green-600" :
                       r.verdict === "pass_if_revised" ? "text-amber-600" : "text-red-600"
                     }>{REVIEW_VERDICT_LABEL[r.verdict]}</strong></span>
+                  )}
+                  {/* "ĐẠT (nếu chỉnh sửa)" — ngay chính phản biện này có yêu cầu xem lại/xác nhận
+                      bản đã chỉnh sửa hay không (r.needResubmit, tick lúc nộp phiếu) — khớp đúng
+                      nhãn đã dùng ở trang danh sách (Tổng hợp kết quả). */}
+                  {r.verdict === "pass_if_revised" && (
+                    <span className={r.needResubmit ? "text-orange-600 dark:text-orange-400" : "text-teal-600 dark:text-teal-400"}>
+                      {r.needResubmit ? "Cần PB xác nhận lại bản sửa" : "Không cần xác nhận lại"}
+                    </span>
                   )}
                   {r.grade && (
                     <span>Xếp loại: <strong className="text-[var(--foreground)]">{REVIEW_GRADE_LABEL[r.grade]}</strong></span>
@@ -2201,28 +2368,26 @@ async function handleConfirmReviewOutcome(
     return;
   }
 
-  // Đồng ý — chỉ chuyển tiếp khi KHÔNG còn phiếu xác nhận nào khác của round này chưa nộp/chưa
-  // đồng ý (trường hợp hiếm gặp nhiều phản biện cùng yêu cầu xác nhận).
+  // Đồng ý — chỉ dừng vòng lặp xác nhận khi KHÔNG còn phiếu xác nhận nào khác của round này chưa
+  // nộp/chưa đồng ý (trường hợp hiếm gặp nhiều phản biện cùng yêu cầu xác nhận).
   const round = topic.revisionCount ?? 0;
   const roundConfirmReviews = topic.reviews.filter(r => r.stage === stage && r.mode === "confirm" && (r.round ?? 0) === round);
   const allAgreed = roundConfirmReviews.every(r => r.id === review.id || (r.status === "submitted" && r.verdict === "pass"));
   if (!allAgreed) return;
 
-  const councilKey = stage === "recognition" ? "r_council" : "p_council";
-  const reviewKey = stage === "recognition" ? "r_review" : "p_review";
-  const steps = topic.steps.map(s =>
-    s.key === reviewKey ? { ...s, status: "passed" as const, completedAt: stamp }
-    : s.key === councilKey ? { ...s, status: "in_progress" as const }
-    : s
-  );
+  // KHÔNG tự động chuyển sang Hội đồng — currentStep vẫn giữ nguyên ở bước thẩm định
+  // (p_review/r_review, vốn đã đứng sẵn ở đó từ lúc tác giả nộp lại), để đề tài quay lại đúng như
+  // 1 vòng thẩm định bình thường vừa đủ 2 phiếu ĐẠT: xuất hiện ở "Tổng hợp kết quả" chờ Quản lý
+  // NCKH tự chọn & bấm "Chuyển vào Hội đồng thông qua" — không bỏ qua bước này chỉ vì đây là vòng
+  // xác nhận lại sau chỉnh sửa.
   await onUpdate(
-    { steps, currentStep: councilKey, reconfirmLoopActive: false },
-    "Phản biện đã đồng ý — chuyển sang Hội đồng thông qua"
+    { reconfirmLoopActive: false },
+    "Phản biện đã đồng ý với bản chỉnh sửa — chờ Quản lý NCKH tổng hợp kết quả"
   );
   await Promise.all(notifyIds.map(uid =>
     addNotification({
       userId: uid, type: "request_approved", title: "Hoàn tất chỉnh sửa",
-      body: `Phản biện đã đồng ý với bản chỉnh sửa của đề tài "${topic.title}" — chuyển sang Hội đồng thông qua.`,
+      body: `Phản biện đã đồng ý với bản chỉnh sửa của đề tài "${topic.title}" — đang chờ Quản lý NCKH tổng hợp kết quả.`,
       link: `/research/${topic.id}`, read: false, priority: "normal", createdAt: stamp,
     }).catch(() => {})
   ));
@@ -2231,16 +2396,16 @@ async function handleConfirmReviewOutcome(
 function ProposalTab({ topic, canEdit, canManage, onUpdate, onReload }: TabProps) {
   const { currentUser } = useAuthStore();
   const { users } = useTaskStore();
+  const reviewCriteria = useNckhReviewCriteria();
   const [note, setNote] = useState(topic.compileNote ?? "");
   const [submitting, setSubmitting] = useState(false);
   const [submitReviewId, setSubmitReviewId] = useState<string | null>(null);
-
-  const fileEditable = canEdit && !isProposalFileLocked(topic);
 
   // Chỉ xuất hiện sau khi đề cương đã thẩm định đạt và đi tiếp các bước sau p_review (dữ liệu
   // của các bước này chỉ tồn tại khi topic đã tiến qua p_review thành công).
   const councilSession = topic.councilSessions.find(s => s.stage === "proposal");
   const ethicsCert = topic.certificates.find(c => c.type === "ethics");
+  const agreementCert = topic.certificates.find(c => c.type === "agreement");
   const agreeStep = topic.steps.find(s => s.key === "p_agree");
   const agreePassed = agreeStep?.status === "passed";
 
@@ -2285,17 +2450,26 @@ function ProposalTab({ topic, canEdit, canManage, onUpdate, onReload }: TabProps
         );
         await notifyResubmission(topic, users, currentUser?.id, "Đề cương");
       } else {
+        // "Phê duyệt thực hiện & gán người" (p_assign) không còn là cổng duyệt thủ công riêng —
+        // tự động bỏ qua ngay khi nộp đề cương, chuyển thẳng sang thẩm định (p_review). Người
+        // thực hiện chính/nhóm sẽ được tự gán (mặc định = chủ nhiệm) ở bước "Đồng ý cho thực
+        // hiện" (p_agree), đúng lúc hệ thống thật sự cần để sinh Task triển khai.
+        const stepsSkipAssign = topic.steps.map(s =>
+          (s.key === "p_compile" || s.key === "p_assign") ? { ...s, status: "passed" as const, completedAt: stamp }
+          : s.key === "p_review" ? { ...s, status: "in_progress" as const }
+          : s
+        );
         const managers = users.filter(u =>
           ["teamLead", "director", "hrAdmin"].includes(u.role ?? "") && u.id !== currentUser?.id
         );
         await onUpdate(
-          { compileNote: note.trim(), ...advanceStep(topic, "p_compile", "p_assign") },
-          "Đã nộp đề cương — chờ phê duyệt thực hiện"
+          { compileNote: note.trim(), steps: stepsSkipAssign, currentStep: "p_review" },
+          "Đã nộp đề cương — chuyển sang thẩm định"
         );
         await Promise.all(managers.map(u =>
           addNotification({
-            userId: u.id, type: "approval_request", title: "Đề cương chờ phê duyệt",
-            body: `Đề tài "${topic.title}" đã nộp đề cương — cần phê duyệt thực hiện & gán người.`,
+            userId: u.id, type: "approval_request", title: "Đề cương chờ phân công phản biện",
+            body: `Đề tài "${topic.title}" đã nộp đề cương — cần chỉ định phản biện kín.`,
             link: `/research/${topic.id}`, read: false, priority: "normal",
             createdAt: stamp,
           }).catch(() => {})
@@ -2355,6 +2529,9 @@ function ProposalTab({ topic, canEdit, canManage, onUpdate, onReload }: TabProps
           <div className="text-sm text-amber-700 dark:text-amber-400">
             <p className="font-medium">Phản biện yêu cầu sửa đổi (lần {topic.revisionCount}) — vui lòng cập nhật file & nộp lại thẩm định</p>
             {topic.revisionNote && <p className="text-xs mt-0.5 whitespace-pre-wrap">{topic.revisionNote}</p>}
+            {topic.revisionDueAt && (
+              <p className="text-xs mt-1 font-medium">Hạn nộp lại: {fmtDate(topic.revisionDueAt)}</p>
+            )}
           </div>
         </div>
       )}
@@ -2389,7 +2566,8 @@ function ProposalTab({ topic, canEdit, canManage, onUpdate, onReload }: TabProps
         <FileUrlField
           label="File đề cương"
           url={topic.proposalFileUrl}
-          canEdit={fileEditable}
+          canEdit={canEdit}
+          locked={isProposalFileLocked(topic)}
           folder="proposals"
           lockedMessage="Đã nộp thẩm định — không thể sửa/xoá/thay thế file"
           onSave={(url) => onUpdate({ proposalFileUrl: url || undefined }, "Đã cập nhật file đề cương")}
@@ -2422,7 +2600,7 @@ function ProposalTab({ topic, canEdit, canManage, onUpdate, onReload }: TabProps
       </div>
       <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5">
         <h2 className="text-sm font-semibold text-[var(--foreground)] mb-3">Điểm đạt Giai đoạn 1 (thẩm định đề cương)</h2>
-        <ReviewStageSummary reviews={activeReviews(topic, "proposal")} stage="proposal" currentUserId={currentUser?.id} onOpenReview={setSubmitReviewId} />
+        <ReviewStageSummary reviews={finalReviewsForStage(topic, "proposal")} stage="proposal" currentUserId={currentUser?.id} onOpenReview={setSubmitReviewId} topic={topic} />
       </div>
 
       {submitReviewId && (() => {
@@ -2433,6 +2611,7 @@ function ProposalTab({ topic, canEdit, canManage, onUpdate, onReload }: TabProps
             key={submitReviewId}
             review={rev}
             topic={topic}
+            criteria={reviewCriteria[rev.stage]}
             onCancel={() => setSubmitReviewId(null)}
             onSubmit={async data => {
               const ok = await submitOwnReview(topic.id, submitReviewId, data);
@@ -2499,10 +2678,15 @@ function ProposalTab({ topic, canEdit, canManage, onUpdate, onReload }: TabProps
           {agreePassed && (
             <div>
               <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Quyết định cho thực hiện</p>
-              <div className="flex items-center gap-2 text-sm text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-900/10 border border-green-200 dark:border-green-800 rounded-xl p-3">
-                <CheckCircle2 className="w-4 h-4 shrink-0" />
-                Đã đồng ý cho thực hiện đề tài
-                {agreeStep?.completedAt && ` — ${new Date(agreeStep.completedAt).toLocaleDateString("vi-VN")}`}
+              <div className="text-sm text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-900/10 border border-green-200 dark:border-green-800 rounded-xl p-3 space-y-1">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  Đã đồng ý cho thực hiện đề tài
+                  {agreeStep?.completedAt && ` — ${new Date(agreeStep.completedAt).toLocaleDateString("vi-VN")}`}
+                </div>
+                {agreementCert?.number && <p>Số quyết định: <strong>{agreementCert.number}</strong></p>}
+                {agreementCert?.issuedAt && <p>Ngày cấp: <strong>{agreementCert.issuedAt}</strong></p>}
+                {agreementCert?.issuedBy && <p>Đơn vị cấp: <strong>{agreementCert.issuedBy}</strong></p>}
               </div>
             </div>
           )}
@@ -2514,9 +2698,12 @@ function ProposalTab({ topic, canEdit, canManage, onUpdate, onReload }: TabProps
 
 // ─── Minh chứng sản phẩm đề tài (nhiều file) — kèm theo khi nộp thẩm định GĐ2 ────
 
-function EvidenceDocsField({ documents, canEdit, onChange }: {
+function EvidenceDocsField({ documents, canEdit, locked = false, onChange }: {
   documents: TaskResource[];
   canEdit: boolean;
+  /** File đề tài đã khoá (đã nộp thẩm định) — thêm/xoá minh chứng sẽ tạo yêu cầu chờ Trưởng nhóm
+   * Quản lý NCKH duyệt thay vì áp dụng ngay (server tự xử lý qua onChange). */
+  locked?: boolean;
   onChange: (docs: TaskResource[]) => Promise<void>;
 }) {
   const { currentUser } = useAuthStore();
@@ -2566,10 +2753,15 @@ function EvidenceDocsField({ documents, canEdit, onChange }: {
         {canEdit && (
           <button onClick={() => fileInputRef.current?.click()} disabled={uploading}
             className="text-xs text-violet-600 dark:text-violet-400 hover:underline flex items-center gap-1 disabled:opacity-50">
-            {uploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />} Thêm minh chứng
+            {uploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />} {locked ? "Đề nghị thêm minh chứng" : "Thêm minh chứng"}
           </button>
         )}
       </div>
+      {canEdit && locked && (
+        <p className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1 mb-1.5">
+          <Lock className="w-3 h-3 shrink-0" /> Đã nộp thẩm định — thay đổi minh chứng cần Trưởng nhóm Quản lý NCKH duyệt trước khi áp dụng.
+        </p>
+      )}
       {documents.length === 0 ? (
         <p className="text-sm text-slate-400 italic">Chưa có minh chứng nào</p>
       ) : (
@@ -2609,11 +2801,11 @@ function EvidenceDocsField({ documents, canEdit, onChange }: {
 function FinalTopicTab({ topic, canEdit, onUpdate, onReload }: TabProps) {
   const { currentUser } = useAuthStore();
   const { users } = useTaskStore();
+  const reviewCriteria = useNckhReviewCriteria();
   const recognitionCert = topic.certificates.find(c => c.type === "recognition");
   const [submitting, setSubmitting] = useState(false);
   const [submitReviewId, setSubmitReviewId] = useState<string | null>(null);
 
-  const fileEditable = canEdit && !isFinalReportFileLocked(topic);
   // Đã có file và chưa bước vào GĐ2 (Nghiệm thu) — cho phép đề nghị thẩm định để bắt đầu GĐ2
   // ngay từ tab này, không bắt buộc phải quay lại tab Quy trình bấm "Bắt đầu triển khai"/
   // "Nộp báo cáo kết quả" tuần tự trước.
@@ -2669,6 +2861,9 @@ function FinalTopicTab({ topic, canEdit, onUpdate, onReload }: TabProps) {
           <div className="text-sm text-amber-700 dark:text-amber-400">
             <p className="font-medium">Phản biện yêu cầu sửa đổi (lần {topic.revisionCount}) — vui lòng cập nhật file & nộp lại thẩm định</p>
             {topic.revisionNote && <p className="text-xs mt-0.5 whitespace-pre-wrap">{topic.revisionNote}</p>}
+            {topic.revisionDueAt && (
+              <p className="text-xs mt-1 font-medium">Hạn nộp lại: {fmtDate(topic.revisionDueAt)}</p>
+            )}
           </div>
         </div>
       )}
@@ -2684,14 +2879,16 @@ function FinalTopicTab({ topic, canEdit, onUpdate, onReload }: TabProps) {
         <FileUrlField
           label="File đề tài / báo cáo tổng kết"
           url={topic.finalReportFileUrl}
-          canEdit={fileEditable}
+          canEdit={canEdit}
+          locked={isFinalReportFileLocked(topic)}
           folder="final-reports"
           lockedMessage="Đã nộp thẩm định — không thể sửa/xoá/thay thế file"
           onSave={(url) => onUpdate({ finalReportFileUrl: url || undefined }, "Đã cập nhật file đề tài")}
         />
         <EvidenceDocsField
           documents={topic.documents}
-          canEdit={fileEditable}
+          canEdit={canEdit}
+          locked={isFinalReportFileLocked(topic)}
           onChange={(docs) => onUpdate({ documents: docs }, "Đã cập nhật minh chứng")}
         />
         {needsSubmission && (
@@ -2717,7 +2914,7 @@ function FinalTopicTab({ topic, canEdit, onUpdate, onReload }: TabProps) {
       </div>
       <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5">
         <h2 className="text-sm font-semibold text-[var(--foreground)] mb-3">Điểm Giai đoạn 2 (nghiệm thu & công nhận)</h2>
-        <ReviewStageSummary reviews={activeReviews(topic, "recognition")} stage="recognition" currentUserId={currentUser?.id} onOpenReview={setSubmitReviewId} />
+        <ReviewStageSummary reviews={finalReviewsForStage(topic, "recognition")} stage="recognition" currentUserId={currentUser?.id} onOpenReview={setSubmitReviewId} topic={topic} />
       </div>
 
       {submitReviewId && (() => {
@@ -2728,6 +2925,7 @@ function FinalTopicTab({ topic, canEdit, onUpdate, onReload }: TabProps) {
             key={submitReviewId}
             review={rev}
             topic={topic}
+            criteria={reviewCriteria[rev.stage]}
             onCancel={() => setSubmitReviewId(null)}
             onSubmit={async data => {
               const ok = await submitOwnReview(topic.id, submitReviewId, data);

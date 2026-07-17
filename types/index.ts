@@ -263,17 +263,25 @@ export interface ResearchStepState {
 }
 
 /**
- * 7 tiêu chí đánh giá đề tài (mỗi tiêu chí 1-5 điểm, tổng tối đa 35).
- * Khớp với cấu trúc "PHIẾU NHẬN XÉT ĐỀ TÀI CẤP CƠ SỞ".
+ * Điểm theo từng tiêu chí (mỗi tiêu chí 1-5 điểm) — key khớp với `NckhReviewCriterionItem.key`
+ * của đúng giai đoạn (GĐ1/GĐ2) đang chấm. Trước đây là 7 field cố định (tổng tối đa 35); giờ linh
+ * hoạt để Admin tự cấu hình bộ tiêu chí riêng cho từng giai đoạn (xem NckhReviewCriteriaConfig).
  */
-export interface ReviewScores {
-  datvande: number;         // 1. Đặt vấn đề
-  muctieu: number;          // 2. Mục tiêu
-  ppThietke: number;        // 3a. Phương pháp — thiết kế & đối tượng
-  ppQuytrinh: number;       // 3b. Phương pháp — quy trình thu thập & phân tích
-  ketqua: number;           // 4. Kết quả
-  ketluanBandluan: number;  // 5. Kết luận - Bàn luận
-  cachTrinhbay: number;     // 6. Cách trình bày
+export type ReviewScores = Record<string, number>;
+
+/** 1 tiêu chí chấm điểm — Admin cấu hình được, không còn hardcode trong component. */
+export interface NckhReviewCriterionItem {
+  key: string;
+  label: string;
+  desc?: string;
+}
+
+/** Bộ tiêu chí chấm điểm phản biện NCKH — cấu hình singleton, tách riêng GĐ1 (đề cương) / GĐ2 (đề tài, kết quả nghiên cứu). */
+export interface NckhReviewCriteriaConfig {
+  proposal: NckhReviewCriterionItem[];
+  recognition: NckhReviewCriterionItem[];
+  updatedAt?: string;
+  updatedBy?: string;
 }
 
 export type ReviewVerdict = "pass" | "pass_if_revised" | "fail";
@@ -335,6 +343,14 @@ export interface ResearchReview {
   verdict?: ReviewVerdict;  // KẾT LUẬN: ĐẠT / KHÔNG ĐẠT / ĐẠT nếu chỉnh sửa
   grade?: ReviewGrade;      // Xếp loại: Giỏi / Khá / Trung bình / KHÔNG ĐẠT
   needResubmit?: boolean;   // Cần nộp lại bài?
+  /**
+   * Lịch sử các lần xác nhận lại trước đó (mode "confirm") — khi phản biện được gửi lại phiếu xác
+   * nhận rút gọn sau khi tác giả nộp bản chỉnh sửa, phiếu được cập nhật NGAY TRÊN chính phần tử
+   * này (round/status/verdict/submittedAt ghi đè), KHÔNG tạo thêm phần tử mới trong mảng reviews
+   * (tránh hiện nhầm thành "phản biện mới" PB3/PB4... dù cùng 1 người). Trạng thái trước khi ghi
+   * đè được lưu lại đây để không mất lịch sử các lần trước.
+   */
+  priorRounds?: { round: number; verdict?: ReviewVerdict; submittedAt?: string }[];
 
   // ── Ghi chú & highlight của phản biện viên (riêng tư, không chia sẻ) ──
   reviewerNotes?: string;                  // Ghi chú văn bản tự do
@@ -397,10 +413,21 @@ export interface ResearchCouncilSession {
   conclusion?: string;
   minutesUrl?: string;                         // biên bản họp
   createdAt: string;
+  /**
+   * "proposed" — do Trưởng nhóm Quản lý NCKH đề xuất, chờ Giám đốc/hrAdmin xác nhận thành lập;
+   * chưa có hiệu lực (chưa tính là đã thành lập, chưa chuyển bước). "active"/không có giá trị —
+   * đã thành lập chính thức (Giám đốc/hrAdmin tạo trực tiếp, hoặc đã xác nhận 1 đề xuất).
+   */
+  status?: "proposed" | "active";
+  proposedBy?: string;
+  proposedByName?: string;
+  confirmedBy?: string;
+  confirmedByName?: string;
+  confirmedAt?: string;
 }
 
 export interface ResearchCertificate {
-  type: "ethics" | "recognition";
+  type: "ethics" | "recognition" | "agreement";
   number?: string;
   issuedAt?: string;
   issuedBy?: string;
@@ -527,6 +554,13 @@ export interface ResearchTopic {
   revisionCount?: number;              // số lần yêu cầu sửa đổi
   revisionNote?: string;              // ghi chú lần sửa đổi gần nhất
   /**
+   * Thời hạn nộp lại bản chỉnh sửa cho vòng sửa đổi HIỆN TẠI (revisionCount) — do người phụ
+   * trách đặt lúc gửi yêu cầu sửa đổi (Tổng hợp kết quả). Cron (research-revision-deadline) dùng
+   * mốc này để tự động từ chối đề tài nếu quá hạn mà tác giả chưa nộp lại (revisionResubmittedAt
+   * vẫn trống). Bị xoá (undefined) mỗi khi có yêu cầu sửa đổi MỚI, giống revisionResubmittedAt.
+   */
+  revisionDueAt?: string;
+  /**
    * Mốc thời gian tác giả đã nộp lại bản chỉnh sửa cho vòng sửa đổi HIỆN TẠI (revisionCount) —
    * phân biệt trạng thái "đang chờ tác giả nộp lại" (chưa có giá trị) với "đã nộp lại, chờ quản
    * lý xử lý tiếp" (đã có giá trị). Bị xoá (undefined) mỗi khi có yêu cầu sửa đổi MỚI.
@@ -588,6 +622,13 @@ export interface ResearchTopic {
     delegatedAt?: string;
     dueAt?: string;
     note?: string;
+    /**
+     * GĐ nào đã được Trưởng nhóm Quản lý NCKH xác nhận ("Duyệt") cho người phụ trách hiện tại —
+     * người phụ trách vẫn được mang theo & có quyền chỉ định trực tiếp ngay khi sang GĐ2 (không
+     * cần chờ), field này chỉ ghi nhận đã có xác nhận rõ ràng cho vòng GĐ2 hay chưa (hiện nút
+     * "Duyệt" ở hàng chờ phân biện cho tới khi được xác nhận).
+     */
+    confirmedForStage?: "proposal" | "recognition";
   };
 
   // Public resubmit link (no-auth form)
@@ -947,6 +988,14 @@ export interface EvaluationConfig {
   updatedBy?: string;
 }
 
+/** Cấu hình ngưỡng cờ rủi ro — HR/Admin có thể chỉnh từ Settings (thay cho hardcode trong lib/risk-flag.ts) */
+export interface RiskFlagConfig {
+  thresholdDays: number;      // Còn <= N ngày tới deadline (hoặc đã quá hạn) thì tính là gần hạn
+  progressThreshold: number;  // Tiến độ (%) dưới ngưỡng này mới bị đánh cờ
+  updatedAt?: string;
+  updatedBy?: string;
+}
+
 export interface CompletionProposal {
   submittedBy: string;
   submittedAt: string;
@@ -1085,6 +1134,14 @@ export interface Task {
   // Workflow
   workflowId?: string;
   workflowName?: string;
+  /**
+   * Task tự sinh làm "hub" đồng bộ ngầm (vd. Task thực thi liên kết per-đề-tài NCKH) — vẫn tính
+   * đầy đủ vào Heatmap/Hiệu suất/Kế hoạch (những nơi này đọc thẳng danh sách Task, không lọc cờ
+   * này), chỉ ẩn khỏi các màn hình liệt kê Task để người dùng thao tác (trang Nhiệm vụ, "Nhiệm vụ
+   * của tôi" ở Dashboard) — vì tiến độ của Task này đã tự động đồng bộ 1 chiều từ nguồn gốc sinh
+   * ra nó, không cần/không nên bị thao tác trực tiếp như 1 nhiệm vụ độc lập.
+   */
+  hiddenFromTaskList?: boolean;
 
   // Steps & subtasks
   steps: TaskStep[];

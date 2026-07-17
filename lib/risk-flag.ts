@@ -1,11 +1,13 @@
-import type { Task } from "@/types";
+import type { Task, RiskFlagConfig } from "@/types";
 import { updateTask } from "@/lib/firebase/firestore";
 import { addNotification } from "@/lib/firebase/firestore";
 
-const RISK_THRESHOLD_DAYS = 2;
-const RISK_PROGRESS_THRESHOLD = 50;
+export const DEFAULT_RISK_FLAG_CONFIG: RiskFlagConfig = {
+  thresholdDays: 2,
+  progressThreshold: 50,
+};
 
-export async function checkAndUpdateRiskFlags(tasks: Task[]): Promise<string[]> {
+export async function checkAndUpdateRiskFlags(tasks: Task[], config: RiskFlagConfig = DEFAULT_RISK_FLAG_CONFIG): Promise<string[]> {
   const flaggedIds: string[] = [];
   const now = new Date();
 
@@ -17,9 +19,9 @@ export async function checkAndUpdateRiskFlags(tasks: Task[]): Promise<string[]> 
     const diffMs = deadline.getTime() - now.getTime();
     const diffDays = diffMs / (1000 * 60 * 60 * 24);
 
-    const isNearDeadline = diffDays >= 0 && diffDays <= RISK_THRESHOLD_DAYS;
+    const isNearDeadline = diffDays >= 0 && diffDays <= config.thresholdDays;
     const isOverdue = diffDays < 0;
-    const isLowProgress = task.progress < RISK_PROGRESS_THRESHOLD;
+    const isLowProgress = task.progress < config.progressThreshold;
 
     const shouldFlag = (isNearDeadline || isOverdue) && isLowProgress;
 

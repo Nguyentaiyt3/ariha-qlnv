@@ -1,8 +1,49 @@
 import type {
   ResearchTopic, ResearchStepKey, ResearchStepState, ResearchStage, ResearchReview,
-  TaskStep, TaskStatus,
+  TaskStep, TaskStatus, NckhReviewCriteriaConfig,
 } from "@/types";
 import { generateId } from "@/lib/utils";
+
+/**
+ * Bộ tiêu chí chấm điểm mặc định (dùng khi Admin chưa lưu cấu hình riêng) — GĐ1 giữ nguyên 7 tiêu
+ * chí đánh giá đề cương gốc; GĐ2 dùng bộ riêng đánh giá kết quả THỰC TẾ đã đạt được (khác GĐ1 vì
+ * lúc này nghiên cứu đã hoàn tất, không còn đang "dự kiến" nữa).
+ */
+export const DEFAULT_NCKH_REVIEW_CRITERIA: NckhReviewCriteriaConfig = {
+  proposal: [
+    { key: "datvande",        label: "1. Đặt vấn đề",           desc: "Tính cấp thiết, lý do chọn đề tài, bối cảnh thực tiễn" },
+    { key: "muctieu",         label: "2. Mục tiêu nghiên cứu",  desc: "Rõ ràng, đo lường được, phù hợp phạm vi đề tài" },
+    { key: "ppThietke",       label: "3a. Thiết kế & đối tượng", desc: "Phương pháp nghiên cứu, đối tượng, cỡ mẫu hợp lý" },
+    { key: "ppQuytrinh",      label: "3b. Thu thập & phân tích", desc: "Quy trình thu thập số liệu, công cụ phân tích phù hợp" },
+    { key: "ketqua",          label: "4. Kết quả dự kiến",       desc: "Khả thi, đóng góp rõ ràng cho lĩnh vực" },
+    { key: "ketluanBandluan", label: "5. Kết luận — Bàn luận",  desc: "Logic, liên kết với kết quả và mục tiêu đã đặt ra" },
+    { key: "cachTrinhbay",    label: "6. Cách trình bày",        desc: "Cấu trúc, văn phong, tài liệu tham khảo" },
+  ],
+  recognition: [
+    { key: "hoanThanhMucTieu", label: "1. Mức độ hoàn thành mục tiêu", desc: "Đối chiếu kết quả đạt được với mục tiêu đã đề ra ở đề cương" },
+    { key: "toChucThucHien",   label: "2. Phương pháp & tổ chức thực hiện", desc: "Quy trình thực hiện thực tế, tổ chức triển khai" },
+    { key: "soLieuPhanTich",   label: "3a. Số liệu & phân tích kết quả", desc: "Độ tin cậy, đầy đủ của số liệu thu thập và xử lý" },
+    { key: "ketQuaNghienCuu",  label: "3b. Kết quả nghiên cứu", desc: "Tính chính xác, rõ ràng của kết quả đạt được" },
+    { key: "dongGopUngDung",   label: "4. Đóng góp & khả năng ứng dụng", desc: "Giá trị khoa học, khả năng ứng dụng/nhân rộng thực tế" },
+    { key: "ketluanBandluan",  label: "5. Kết luận — Bàn luận", desc: "Logic, liên kết với kết quả thực tế và mục tiêu ban đầu" },
+    { key: "cachTrinhbay",     label: "6. Cách trình bày",       desc: "Cấu trúc báo cáo, văn phong, tài liệu tham khảo" },
+  ],
+};
+
+/** Quy đổi tổng điểm phản biện (thang gốc theo số tiêu chí × 5) sang thang 10 để hiển thị thống
+    nhất trên mọi phiếu — số tiêu chí có thể khác nhau tuỳ cấu hình Admin nên không dùng thang gốc. */
+export function scoreOn10(total: number, max: number): number {
+  return max > 0 ? Math.round((total / max) * 100) / 10 : 0;
+}
+
+/** Suy ra xếp loại 3T từ điểm trung bình (thang 10) — dùng khi công nhận đề tài GĐ2 để tự tính
+    điểm 3T cho Task/Hiệu suất liên kết (cả single-topic lẫn hàng loạt). */
+export function grade3TFromAvg(avg10: number): "xuatSac" | "hoanThanhTot" | "hoanThanh" | "khongHoanThanh" {
+  if (avg10 >= 9) return "xuatSac";
+  if (avg10 >= 8) return "hoanThanhTot";
+  if (avg10 >= 5) return "hoanThanh";
+  return "khongHoanThanh";
+}
 
 /** Danh mục bước cố định của quy trình đề tài NCKH cấp cơ sở. */
 export const RESEARCH_STEPS: {
@@ -11,6 +52,9 @@ export const RESEARCH_STEPS: {
   stage: ResearchStage;          // giai đoạn chứa bước
   needsTwoReviews?: boolean;     // bước "gửi 2 phản biện kín"
   isCouncil?: boolean;           // bước họp Hội đồng KHCN
+  /** Bước KHÔNG bắt buộc để đề tài hoàn tất (vd. báo cáo giữa kỳ) — loại khỏi mẫu số tính % tiến
+      độ, nếu không đề tài đã công nhận xong vẫn bị kẹt dưới 100% vĩnh viễn khi bước này bỏ qua. */
+  optional?: boolean;
 }[] = [
   { key: "create",       label: "Nhân viên tạo đề tài",                    stage: "init" },
   { key: "approve_task", label: "Quản lý phê duyệt task",                  stage: "init" },
@@ -23,7 +67,7 @@ export const RESEARCH_STEPS: {
   { key: "p_ethics",     label: "Chứng nhận y đức",                        stage: "proposal" },
   { key: "p_agree",      label: "Đồng ý cho thực hiện",                    stage: "proposal" },
   { key: "exec_start",   label: "Bắt đầu triển khai",                      stage: "executing" },
-  { key: "exec_midterm", label: "Báo cáo tiến độ giữa kỳ",                 stage: "executing" },
+  { key: "exec_midterm", label: "Báo cáo tiến độ giữa kỳ",                 stage: "executing", optional: true },
   { key: "exec_submit",  label: "Nộp báo cáo kết quả",                     stage: "executing" },
   { key: "r_intake",     label: "Tiếp nhận kết quả",                       stage: "recognition" },
   { key: "r_review",     label: "Thẩm định — 2 phản biện kín",             stage: "recognition", needsTwoReviews: true },
@@ -89,6 +133,25 @@ export function submittedReviewCount(
 }
 
 /**
+ * Phiếu phản biện của VÒNG CUỐI CÙNG đã có phiếu nộp cho 1 giai đoạn — dùng để HIỂN THỊ kết quả đã
+ * chốt (vd. "Điểm đạt Giai đoạn 1"), khác với activeReviews (dùng cho luồng xử lý ĐANG DIỄN RA, so
+ * khớp đúng topic.revisionCount). revisionCount là 1 bộ đếm DÙNG CHUNG cho cả 2 giai đoạn — nếu GĐ2
+ * bị yêu cầu sửa đổi (revisionCount tăng tiếp) SAU KHI GĐ1 đã xong, activeReviews(topic,"proposal")
+ * sẽ không còn khớp đúng round cũ của GĐ1 nữa (dẫn tới hiển thị sai "chưa có phản biện"), dù phiếu
+ * phản biện GĐ1 đã nộp đầy đủ từ trước. Hàm này tìm đúng vòng có phiếu ĐÃ NỘP gần nhất của RIÊNG
+ * giai đoạn đó, không phụ thuộc hoạt động ở giai đoạn kia.
+ */
+export function finalReviewsForStage(
+  topic: Pick<ResearchTopic, "reviews" | "revisionCount">,
+  stage: "proposal" | "recognition",
+): ResearchReview[] {
+  const submitted = (topic.reviews ?? []).filter((r) => r.stage === stage && r.status === "submitted");
+  if (!submitted.length) return activeReviews(topic, stage);
+  const lastRound = Math.max(...submitted.map((r) => r.round ?? 0));
+  return (topic.reviews ?? []).filter((r) => r.stage === stage && (r.round ?? 0) === lastRound);
+}
+
+/**
  * 4 kết quả tổng hợp có thể xếp loại cho 1 đề tài đã đủ 2 phiếu thẩm định (vòng hiện tại):
  *  - "pass"                 : cả 2 phiếu ĐẠT — chuyển thẳng Hội đồng.
  *  - "fail"                 : có phiếu KHÔNG ĐẠT — từ chối đề tài.
@@ -115,6 +178,38 @@ export function classifySynthesisOutcome(reviews: ResearchReview[]): SynthesisOu
 }
 
 /**
+ * Chỉ định phản biện (Hàng chờ phân biện ở Giám sát tiến độ) không đòi hỏi currentStep phải đang
+ * ở p_review/r_review — quản lý có thể gán phản biện NGAY khi đề tài còn ở p_compile/p_assign
+ * (trước khi chủ nhiệm bấm "Nộp thẩm định"). Nếu cả 2 phiếu được nộp trong lúc đó, currentStep sẽ
+ * kẹt lại ở bước cũ mãi mãi — đề tài không bao giờ xuất hiện ở "Tổng hợp kết quả" (lọc cứng theo
+ * currentStep === p_review/r_review) dù đã đủ điều kiện. Gọi hàm này sau khi 1 phiếu được nộp để
+ * tự đẩy currentStep sang đúng bước thẩm định nếu vừa đủ 2 phiếu và đề tài chưa tới bước đó.
+ */
+export function maybeAdvanceToReviewStep(
+  topic: Pick<ResearchTopic, "steps" | "currentStep">,
+  reviewsAfterSubmit: Pick<ResearchReview, "stage" | "round" | "status">[],
+  stage: "proposal" | "recognition",
+  round: number,
+): { steps: ResearchStepState[]; currentStep: ResearchStepKey } | null {
+  const submittedCount = reviewsAfterSubmit.filter(
+    (r) => r.stage === stage && (r.round ?? 0) === round && r.status === "submitted",
+  ).length;
+  if (submittedCount < 2) return null;
+
+  const compileKeys: ResearchStepKey[] = stage === "proposal" ? ["p_compile", "p_assign"] : ["r_intake"];
+  const reviewKey: ResearchStepKey = stage === "proposal" ? "p_review" : "r_review";
+  if (!compileKeys.includes(topic.currentStep)) return null;
+
+  const now = new Date().toISOString();
+  const steps = topic.steps.map((s) =>
+    compileKeys.includes(s.key) ? { ...s, status: "passed" as const, completedAt: s.completedAt ?? now }
+    : s.key === reviewKey ? { ...s, status: "in_progress" as const }
+    : s
+  );
+  return { steps, currentStep: reviewKey };
+}
+
+/**
  * Trong 1 danh sách phiếu đã nộp, lọc ra đúng (các) phản biện đã yêu cầu xem lại bản chỉnh sửa
  * (verdict "ĐẠT nếu chỉnh sửa" + đã tick "cần nộp lại") — CHỈ những người này mới nhận phiếu xác
  * nhận rút gọn, không phải toàn bộ phản biện của vòng đó.
@@ -138,6 +233,52 @@ export function reviewersToResendForReconfirm(priorRoundReviews: ResearchReview[
     return confirmReviews.filter((r) => r.status === "submitted" && r.verdict === "fail");
   }
   return reviewersRequiringReconfirm(priorRoundReviews);
+}
+
+/**
+ * Bước chuyển trạng thái khi người phụ trách "Xác nhận đã nhận" bản chỉnh sửa tác giả vừa nộp lại
+ * (topic đang isAwaitingRevisionProcessing) — 2 nhánh theo đúng xếp loại đã chọn lúc "Yêu cầu sửa
+ * đổi" ở Tổng hợp kết quả: "skip" chuyển thẳng sang Hội đồng (không cần PB xác nhận lại), "reconfirm"
+ * gửi lại đúng phản biện cũ 1 phiếu xác nhận rút gọn. Dùng chung cho cả trang chi tiết đề tài
+ * (RIntakePanel/ProposalTab) lẫn bảng "Tổng hợp kết quả" ở trang danh sách.
+ */
+export function buildReconfirmStepsUpdate(
+  topic: Pick<ResearchTopic, "steps">,
+  stage: "proposal" | "recognition",
+  mode: "skip" | "reconfirm",
+): { steps: ResearchStepState[]; currentStep: ResearchStepKey; reconfirmLoopActive?: boolean } {
+  const stamp = new Date().toISOString();
+  if (stage === "proposal") {
+    if (mode === "skip") {
+      const steps = topic.steps.map((s) =>
+        (s.key === "p_compile" || s.key === "p_assign" || s.key === "p_review")
+          ? { ...s, status: "passed" as const, completedAt: stamp }
+        : s.key === "p_council" ? { ...s, status: "in_progress" as const }
+        : s
+      );
+      return { steps, currentStep: "p_council" };
+    }
+    const steps = topic.steps.map((s) =>
+      (s.key === "p_compile" || s.key === "p_assign") ? { ...s, status: "passed" as const, completedAt: stamp }
+      : s.key === "p_review" ? { ...s, status: "in_progress" as const }
+      : s
+    );
+    return { steps, currentStep: "p_review", reconfirmLoopActive: true };
+  }
+  if (mode === "skip") {
+    const steps = topic.steps.map((s) =>
+      (s.key === "r_intake" || s.key === "r_review") ? { ...s, status: "passed" as const, completedAt: stamp }
+      : s.key === "r_council" ? { ...s, status: "in_progress" as const }
+      : s
+    );
+    return { steps, currentStep: "r_council" };
+  }
+  const steps = topic.steps.map((s) =>
+    s.key === "r_intake" ? { ...s, status: "passed" as const, completedAt: stamp }
+    : s.key === "r_review" ? { ...s, status: "in_progress" as const }
+    : s
+  );
+  return { steps, currentStep: "r_review", reconfirmLoopActive: true };
 }
 
 /**
@@ -168,10 +309,13 @@ export function isAwaitingRevisionProcessing(
     !!topic.revisionResubmittedAt;
 }
 
-/** % tiến độ chung = số bước passed / tổng bước. */
+/** % tiến độ chung = số bước passed / tổng bước BẮT BUỘC (loại các bước optional, vd. báo cáo
+    giữa kỳ — đề tài công nhận xong vẫn có thể chưa từng làm báo cáo giữa kỳ, không nên vì vậy mà
+    tiến độ bị kẹt dưới 100% mãi mãi). */
 export function researchProgress(topic: ResearchTopic): number {
-  const total = RESEARCH_STEPS.length;
-  const done = topic.steps.filter((s) => s.status === "passed").length;
+  const requiredKeys = new Set(RESEARCH_STEPS.filter((s) => !s.optional).map((s) => s.key));
+  const total = requiredKeys.size;
+  const done = topic.steps.filter((s) => requiredKeys.has(s.key) && s.status === "passed").length;
   return total > 0 ? Math.round((done / total) * 100) : 0;
 }
 
