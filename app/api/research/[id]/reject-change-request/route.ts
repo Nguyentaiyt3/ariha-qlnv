@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyToken, getUser } from "@/lib/mongodb/auth";
 import { getResearchTopic, updateResearchTopic, createNotification } from "@/lib/mongodb/firestore";
-import { hasPermission } from "@/lib/rbac/permissions";
 import { sameUnit } from "@/lib/rbac/scope";
+import { getEffectiveRole, ROLE_RANK } from "@/lib/rbac/permissions";
+import { isNckhTeamLead } from "@/lib/researchUtils";
 
 async function auth(req: NextRequest) {
   const token = req.cookies.get("auth-token")?.value;
@@ -23,9 +24,13 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     return NextResponse.json({ error: "Không có yêu cầu nào đang chờ duyệt" }, { status: 404 });
   }
 
+  // Cùng thẩm quyền như duyệt (xem giải thích ở approve-change-request/route.ts).
+  const isFileUnlockRequest = req_.requestedByUserId === topic.principalInvestigatorId;
   const canReview =
-    hasPermission(me.role, "research:manage") ||
-    (me.role === "teamLead" && sameUnit(topic.department, me.department));
+    ROLE_RANK[getEffectiveRole(me)] >= ROLE_RANK.director ||
+    (isFileUnlockRequest
+      ? isNckhTeamLead(me)
+      : (me.role === "teamLead" && sameUnit(topic.department, me.department)));
   if (!canReview) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }

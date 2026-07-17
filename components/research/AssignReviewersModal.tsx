@@ -32,11 +32,18 @@ interface ReviewerSlot {
 
 // ─── Helpers ───────────────────────────────────────────────────
 
+// Giai đoạn thẩm định hiện tại của đề tài — GĐ1 (currentStep p_review) hoặc GĐ2 (r_review) —
+// dùng để không chỉ định nhầm phản biện GĐ1 mang stage "recognition" hay ngược lại.
+function reviewStageOf(topic: ResearchTopic): "proposal" | "recognition" {
+  return topic.currentStep === "r_review" ? "recognition" : "proposal";
+}
+
 // Chỉ tính phiếu của vòng thẩm định hiện tại — sau "Yêu cầu sửa đổi" (revisionCount tăng), phiếu
 // vòng trước không tính vào đây nữa, cho phép chỉ định lại đủ 2 phản biện cho vòng thẩm định lại.
 function currentRoundProposalReviews(topic: ResearchTopic): ResearchReview[] {
   const round = topic.revisionCount ?? 0;
-  return (topic.reviews ?? []).filter(r => r.stage === "proposal" && (r.round ?? 0) === round);
+  const stage = reviewStageOf(topic);
+  return (topic.reviews ?? []).filter(r => r.stage === stage && (r.round ?? 0) === round);
 }
 function proposalReviewCount(topic: ResearchTopic): number {
   return currentRoundProposalReviews(topic).length;
@@ -181,8 +188,28 @@ function ExternalReviewerForm({ onAdd }: { onAdd: (name: string, email: string, 
 export function AssignReviewersModal({
   topics, users, currentUser, canManage, canAssignReviewer, onClose, onTopicUpdate,
 }: Props) {
-  const canDirect = canAssignReviewer || canManage;
-  const [tab, setTab] = useState<Tab>(canDirect ? "direct" : "delegate");
+  // Chỉ định trực tiếp: Director/hrAdmin hoặc Trưởng nhóm Quản lý NCKH (canAssignReviewer) — HOẶC
+  // người đã được giao phụ trách phân công (reviewAssignment.delegatedTo) cho TẤT CẢ đề tài đang
+  // chọn trong lượt này (khớp đúng "isDelegated" mà server đã cho phép ở POST/DELETE reviews).
+  // canManage (isNckhFullManager) KHÔNG được dùng để mở khoá tab này — người chỉ có chỉ định
+  // "Quản lý NCKH" (không phải Trưởng nhóm, không được giao phụ trách) chỉ dùng tab "Giao nhân
+  // viên phụ trách".
+  const isDelegatedForAllSelected =
+    topics.length > 0 && topics.every(t => t.reviewAssignment?.delegatedTo === currentUser.id);
+  const canDirect = canAssignReviewer || isDelegatedForAllSelected;
+  // Người chỉ có canDirect NHỜ đang là nhân viên phụ trách (không có canAssignReviewer thật) đã
+  // được giao đúng việc này rồi — không cần (và không nên) thấy lại tab "Giao nhân viên phụ
+  // trách" để giao tiếp cho người khác. Người có canAssignReviewer thật (Director/hrAdmin/Trưởng
+  // nhóm Quản lý NCKH) vẫn thấy cả 2 tab như trước.
+  const showDelegateTab = canManage && (canAssignReviewer || !isDelegatedForAllSelected);
+
+  // Đề tài mà người đang đăng nhập là chủ nhiệm/thành viên — Trưởng nhóm Quản lý NCKH KHÔNG được tự
+  // chỉ định phản biện trực tiếp cho đề tài của chính mình, chỉ được giao cho người khác theo dõi
+  // chỉ định thay. Tính trước useState(tab) để mặc định mở đúng tab khi TẤT CẢ đề tài đang chọn là
+  // của chính mình (thường gặp nhất — bấm "Phân công" cho đúng 1 dòng là đề tài của mình).
+  const myTopicIdsForTabInit = new Set(topics.filter(t => isTopicAuthor({ id: currentUser.id }, t)).map(t => t.id));
+  const allSelectedAreMine = topics.length > 0 && topics.every(t => myTopicIdsForTabInit.has(t.id));
+  const [tab, setTab] = useState<Tab>(canDirect && !allSelectedAreMine ? "direct" : "delegate");
 
   // Direct-assign state
   const [pending, setPending] = useState<
@@ -262,11 +289,12 @@ export function AssignReviewersModal({
         const entries = pending[topic.id] ?? [];
         if (entries.length === 0) continue;
 
+        const stage = reviewStageOf(topic);
         for (const entry of entries) {
           const body =
             entry.type === "internal"
               ? {
-                  stage: "proposal",
+                  stage,
                   reviewerType: "internal",
                   reviewerId: entry.user.id,
                   reviewerName: entry.user.name,
@@ -274,7 +302,7 @@ export function AssignReviewersModal({
                   dueAt: directDue || undefined,
                 }
               : {
-                  stage: "proposal",
+                  stage,
                   reviewerType: "external",
                   reviewerName: entry.name,
                   reviewerEmail: entry.email,
@@ -442,9 +470,9 @@ export function AssignReviewersModal({
         )}
 
         {/* Tabs */}
-        {(canDirect || canManage) && (
+        {((canDirect && !allSelectedAreMine) || showDelegateTab) && (
           <div className="flex border-b border-slate-200 dark:border-slate-700 px-5 gap-4">
-            {canDirect && (
+            {canDirect && !allSelectedAreMine && (
               <button
                 onClick={() => setTab("direct")}
                 className={cn(
@@ -457,7 +485,7 @@ export function AssignReviewersModal({
                 <ClipboardList className="w-3.5 h-3.5" /> Chỉ định trực tiếp
               </button>
             )}
-            {canManage && (
+            {showDelegateTab && (
               <button
                 onClick={() => setTab("delegate")}
                 className={cn(
@@ -498,6 +526,28 @@ export function AssignReviewersModal({
                   <button onClick={() => setDirectDue("")} className="text-slate-400 hover:text-slate-600 text-xs">Xóa</button>
                 )}
               </div>
+
+              {/* Chọn nhiều đề tài (>1) — chọn phản biện MỘT LẦN, áp dụng chung cho tất cả đề tài
+                  đã chọn (cùng hạn phản biện ở trên), thay vì phải chọn lặp lại cho từng đề tài.
+                  Từng đề tài vẫn tự kiểm tra COI riêng (đề tài nào có xung đột sẽ được addPending
+                  báo bỏ qua đúng đề tài đó, không chặn các đề tài còn lại). */}
+              {assignableTopics.length > 1 && (
+                <div className="p-3 rounded-xl border border-violet-200 dark:border-violet-800 bg-violet-50/50 dark:bg-violet-900/10 space-y-2">
+                  <p className="text-xs font-semibold text-violet-700 dark:text-violet-300">
+                    Chọn phản biện áp dụng cho cả {assignableTopics.length} đề tài đã chọn
+                  </p>
+                  <ReviewerPicker
+                    users={reviewerUsers}
+                    excludeIds={[currentUser.id]}
+                    onSelect={u => { for (const t of assignableTopics) addPending(t.id, { type: "internal", user: u }); }}
+                    placeholder="Tìm phản biện viên..."
+                    emptyMsg="Không tìm thấy — chỉ hiển thị nhân viên có vai trò Phản biện"
+                  />
+                  <ExternalReviewerForm
+                    onAdd={(name, email, org) => { for (const t of assignableTopics) addPending(t.id, { type: "external", name, email, org }); }}
+                  />
+                </div>
+              )}
 
               {assignableTopics.map(topic => {
                 const existing = currentRoundProposalReviews(topic);
@@ -556,7 +606,9 @@ export function AssignReviewersModal({
                         );
                       })}
 
-                      {!full && (
+                      {/* Khi chọn nhiều đề tài, chỉ dùng ô "chọn phản biện áp dụng chung" phía trên
+                          — ẩn ô chọn lặp lại theo từng đề tài để tránh 2 cách thêm cùng lúc. */}
+                      {!full && assignableTopics.length === 1 && (
                         <div className="space-y-2 pt-1">
                           <ReviewerPicker
                             users={reviewerUsers}

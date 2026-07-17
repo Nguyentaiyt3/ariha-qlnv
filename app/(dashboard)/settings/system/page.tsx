@@ -1,11 +1,13 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Settings, Save, Clock, AlertTriangle, BarChart3 } from "lucide-react";
-import { getMilestoneConfigs, saveMilestoneConfig, getEvaluationConfig, saveEvaluationConfig } from "@/lib/firebase/firestore";
-import type { MilestoneConfig, EvaluationConfig } from "@/types";
+import { Settings, Save, Clock, AlertTriangle, BarChart3, ClipboardList, Plus, Trash2 } from "lucide-react";
+import { getMilestoneConfigs, saveMilestoneConfig, getEvaluationConfig, saveEvaluationConfig, getNckhReviewCriteria, saveNckhReviewCriteria, getRiskFlagConfig, saveRiskFlagConfig } from "@/lib/firebase/firestore";
+import type { MilestoneConfig, EvaluationConfig, NckhReviewCriteriaConfig, RiskFlagConfig } from "@/types";
 import { DEFAULT_MILESTONE_CONFIG } from "@/lib/deadline-calc";
 import { DEFAULT_EVAL_CONFIG, GRADE_LABEL } from "@/lib/eval3T";
+import { DEFAULT_NCKH_REVIEW_CRITERIA } from "@/lib/research";
+import { DEFAULT_RISK_FLAG_CONFIG } from "@/lib/risk-flag";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { hasPermission } from "@/lib/rbac/permissions";
 import { generateId } from "@/lib/utils";
@@ -24,6 +26,12 @@ export default function SystemSettingsPage() {
   const [saving, setSaving] = useState(false);
   const [evalConfig, setEvalConfig] = useState<EvaluationConfig>(DEFAULT_EVAL_CONFIG);
   const [savingEval, setSavingEval] = useState(false);
+  const [reviewCriteria, setReviewCriteria] = useState<NckhReviewCriteriaConfig>(DEFAULT_NCKH_REVIEW_CRITERIA);
+  const [savingCriteria, setSavingCriteria] = useState(false);
+  const [riskConfig, setRiskConfig] = useState<RiskFlagConfig>(DEFAULT_RISK_FLAG_CONFIG);
+  const [savingRisk, setSavingRisk] = useState(false);
+
+  const [activeTab, setActiveTab] = useState<"milestone" | "eval3t" | "nckh" | "risk">("milestone");
 
   const canEdit = currentUser ? hasPermission(currentUser.role, "*") || currentUser.role === "hrAdmin" : false;
 
@@ -33,7 +41,42 @@ export default function SystemSettingsPage() {
       if (def) setConfig(def);
     });
     getEvaluationConfig().then(setEvalConfig).catch(console.error);
+    getNckhReviewCriteria().then((c) => { if (c) setReviewCriteria(c); }).catch(console.error);
+    getRiskFlagConfig().then((c) => { if (c) setRiskConfig(c); }).catch(console.error);
   }, []);
+
+  const addCriterion = (stage: "proposal" | "recognition") =>
+    setReviewCriteria((c) => ({ ...c, [stage]: [...c[stage], { key: generateId("crit"), label: "", desc: "" }] }));
+
+  const removeCriterion = (stage: "proposal" | "recognition", key: string) =>
+    setReviewCriteria((c) => ({ ...c, [stage]: c[stage].filter((x) => x.key !== key) }));
+
+  const updateCriterion = (stage: "proposal" | "recognition", key: string, field: "label" | "desc", value: string) =>
+    setReviewCriteria((c) => ({ ...c, [stage]: c[stage].map((x) => (x.key === key ? { ...x, [field]: value } : x)) }));
+
+  const handleSaveCriteria = async () => {
+    if (!reviewCriteria.proposal.length || !reviewCriteria.recognition.length) {
+      toast.error("Mỗi giai đoạn cần ít nhất 1 tiêu chí");
+      return;
+    }
+    if (reviewCriteria.proposal.some((c) => !c.label.trim()) || reviewCriteria.recognition.some((c) => !c.label.trim())) {
+      toast.error("Tên tiêu chí không được để trống");
+      return;
+    }
+    setSavingCriteria(true);
+    try {
+      await saveNckhReviewCriteria({
+        proposal: reviewCriteria.proposal,
+        recognition: reviewCriteria.recognition,
+        updatedBy: currentUser?.id,
+      });
+      toast.success("Đã lưu bộ tiêu chí chấm điểm NCKH");
+    } catch {
+      toast.error("Lưu thất bại");
+    } finally {
+      setSavingCriteria(false);
+    }
+  };
 
   if (!canEdit) {
     return (
@@ -81,6 +124,30 @@ export default function SystemSettingsPage() {
     }
   };
 
+  const handleSaveRisk = async () => {
+    if (riskConfig.thresholdDays <= 0) {
+      toast.error("Số ngày ngưỡng phải lớn hơn 0");
+      return;
+    }
+    if (riskConfig.progressThreshold <= 0 || riskConfig.progressThreshold > 100) {
+      toast.error("Ngưỡng tiến độ phải trong khoảng 1-100%");
+      return;
+    }
+    setSavingRisk(true);
+    try {
+      await saveRiskFlagConfig({
+        ...riskConfig,
+        updatedAt: new Date().toISOString(),
+        updatedBy: currentUser?.id,
+      });
+      toast.success("Đã lưu ngưỡng cờ rủi ro");
+    } catch {
+      toast.error("Lưu thất bại");
+    } finally {
+      setSavingRisk(false);
+    }
+  };
+
   return (
     <div>
       <h1 className="text-2xl font-bold text-[var(--foreground)] flex items-center gap-2 mb-6">
@@ -88,8 +155,31 @@ export default function SystemSettingsPage() {
         Cấu hình hệ thống
       </h1>
 
+      {/* Tab strip */}
+      <div className="flex items-center gap-1 mb-5 border-b border-[var(--border)] overflow-x-auto">
+        {([
+          { key: "milestone", label: "Quy trình", icon: Clock },
+          { key: "eval3t",    label: "Đánh giá 3T", icon: BarChart3 },
+          { key: "nckh",      label: "Tiêu chí NCKH", icon: ClipboardList },
+          { key: "risk",      label: "Rủi ro", icon: AlertTriangle },
+        ] as const).map(({ key, label, icon: Icon }) => (
+          <button
+            key={key}
+            onClick={() => setActiveTab(key)}
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 -mb-px transition-colors ${
+              activeTab === key
+                ? "border-blue-500 text-blue-600 dark:text-blue-400"
+                : "border-transparent text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+            }`}
+          >
+            <Icon className="w-4 h-4" />
+            {label}
+          </button>
+        ))}
+      </div>
+
       {/* Milestone config */}
-      <div className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-5 mb-5">
+      <div className={`bg-[var(--card)] border border-[var(--border)] rounded-xl p-5 mb-5 ${activeTab !== "milestone" ? "hidden" : ""}`}>
         <h2 className="font-semibold text-[var(--foreground)] flex items-center gap-2 mb-4">
           <Clock className="w-4 h-4 text-blue-500" />
           Mốc quy trình 3 giai đoạn
@@ -141,10 +231,19 @@ export default function SystemSettingsPage() {
             Thay đổi này chỉ áp dụng cho nhiệm vụ tạo mới. Nhiệm vụ hiện tại giữ nguyên deadline 3 giai đoạn.
           </p>
         </div>
+
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="flex items-center gap-2 px-4 py-2 mt-4 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-60"
+        >
+          {saving ? <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" /> : <Save className="w-4 h-4" />}
+          Lưu cấu hình
+        </button>
       </div>
 
       {/* Evaluation 3T config */}
-      <div className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-5 mb-5">
+      <div className={`bg-[var(--card)] border border-[var(--border)] rounded-xl p-5 mb-5 ${activeTab !== "eval3t" ? "hidden" : ""}`}>
         <h2 className="font-semibold text-[var(--foreground)] flex items-center gap-2 mb-1">
           <BarChart3 className="w-4 h-4 text-purple-500" />
           Cấu hình đánh giá 3T
@@ -216,28 +315,126 @@ export default function SystemSettingsPage() {
         </button>
       </div>
 
+      {/* NCKH review criteria config */}
+      <div className={`bg-[var(--card)] border border-[var(--border)] rounded-xl p-5 mb-5 ${activeTab !== "nckh" ? "hidden" : ""}`}>
+        <h2 className="font-semibold text-[var(--foreground)] flex items-center gap-2 mb-1">
+          <ClipboardList className="w-4 h-4 text-violet-500" />
+          Tiêu chí chấm điểm phản biện NCKH
+        </h2>
+        <p className="text-sm text-[var(--muted-foreground)] mb-5">
+          Bộ tiêu chí (1–5 điểm mỗi tiêu chí) dùng cho phiếu phản biện GĐ1 (đề cương) và GĐ2 (nghiệm thu).
+          Áp dụng cho cả phản biện nội bộ và phản biện ngoài.
+        </p>
+
+        {([
+          { key: "proposal" as const, label: "Giai đoạn 1 — Thẩm định đề cương" },
+          { key: "recognition" as const, label: "Giai đoạn 2 — Nghiệm thu kết quả" },
+        ]).map(({ key: stage, label: stageLabel }) => (
+          <div key={stage} className="mb-5 last:mb-0">
+            <p className="text-xs font-semibold text-[var(--foreground)] mb-3 uppercase tracking-wider">{stageLabel}</p>
+            <div className="space-y-2 mb-2">
+              {reviewCriteria[stage].map((c, idx) => (
+                <div key={c.key} className="flex gap-2 items-start">
+                  <span className="text-xs text-[var(--muted-foreground)] w-5 mt-2">{idx + 1}.</span>
+                  <div className="flex-1 space-y-1.5">
+                    <input
+                      value={c.label}
+                      onChange={(e) => updateCriterion(stage, c.key, "label", e.target.value)}
+                      placeholder="Tên tiêu chí..."
+                      className="w-full px-2.5 py-1.5 text-sm border border-[var(--border)] rounded-lg bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-violet-500"
+                    />
+                    <input
+                      value={c.desc ?? ""}
+                      onChange={(e) => updateCriterion(stage, c.key, "desc", e.target.value)}
+                      placeholder="Mô tả / gợi ý chấm điểm (tuỳ chọn)..."
+                      className="w-full px-2.5 py-1.5 text-xs border border-[var(--border)] rounded-lg bg-[var(--background)] text-[var(--muted-foreground)] focus:outline-none focus:ring-2 focus:ring-violet-500"
+                    />
+                  </div>
+                  <button
+                    onClick={() => removeCriterion(stage, c.key)}
+                    className="text-[var(--muted-foreground)] hover:text-red-500 p-1 mt-1.5"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <button
+              onClick={() => addCriterion(stage)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-dashed border-[var(--border)] rounded-lg text-[var(--muted-foreground)] hover:border-violet-400 hover:text-violet-600 transition-colors"
+            >
+              <Plus className="w-4 h-4" /> Thêm tiêu chí
+            </button>
+          </div>
+        ))}
+
+        <button
+          onClick={handleSaveCriteria}
+          disabled={savingCriteria}
+          className="flex items-center gap-2 px-4 py-2 mt-2 bg-violet-600 hover:bg-violet-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-60"
+        >
+          {savingCriteria ? <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" /> : <Save className="w-4 h-4" />}
+          Lưu bộ tiêu chí
+        </button>
+      </div>
+
       {/* Risk flag config */}
-      <div className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-5 mb-5">
-        <h2 className="font-semibold text-[var(--foreground)] flex items-center gap-2 mb-4">
+      <div className={`bg-[var(--card)] border border-[var(--border)] rounded-xl p-5 mb-5 ${activeTab !== "risk" ? "hidden" : ""}`}>
+        <h2 className="font-semibold text-[var(--foreground)] flex items-center gap-2 mb-1">
           <AlertTriangle className="w-4 h-4 text-red-500" />
           Ngưỡng cờ rủi ro
         </h2>
-        <p className="text-sm text-[var(--muted-foreground)]">
-          Hiện tại: nhiệm vụ còn ≤ <strong>2 ngày</strong> deadline VÀ tiến độ &lt; <strong>50%</strong> sẽ tự động bị đánh cờ rủi ro.
+        <p className="text-sm text-[var(--muted-foreground)] mb-5">
+          Nhiệm vụ còn ít ngày tới deadline (hoặc đã quá hạn) VÀ tiến độ dưới ngưỡng sẽ tự động bị đánh cờ rủi ro,
+          áp dụng khi hệ thống kiểm tra deadline theo lịch.
         </p>
-        <p className="text-xs text-[var(--muted-foreground)] mt-2">
-          (Ngưỡng này được cấu hình trực tiếp trong <code className="text-blue-600">lib/risk-flag.ts</code>)
+        <div className="space-y-4 mb-5">
+          <div>
+            <label className="block text-sm font-medium text-[var(--foreground)] mb-1.5">
+              Còn bao nhiêu ngày tới deadline thì tính là gần hạn
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={1}
+                max={30}
+                value={riskConfig.thresholdDays}
+                onChange={(e) => setRiskConfig((c) => ({ ...c, thresholdDays: Number(e.target.value) }))}
+                className="w-24 px-3 py-2 text-sm border border-[var(--border)] rounded-lg bg-[var(--background)] text-[var(--foreground)] text-center focus:outline-none focus:ring-2 focus:ring-red-500"
+              />
+              <span className="text-sm text-[var(--muted-foreground)]">ngày (hoặc đã quá hạn)</span>
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-[var(--foreground)] mb-1.5">
+              Tiến độ dưới ngưỡng này mới bị đánh cờ
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={1}
+                max={100}
+                value={riskConfig.progressThreshold}
+                onChange={(e) => setRiskConfig((c) => ({ ...c, progressThreshold: Number(e.target.value) }))}
+                className="w-24 px-3 py-2 text-sm border border-[var(--border)] rounded-lg bg-[var(--background)] text-[var(--foreground)] text-center focus:outline-none focus:ring-2 focus:ring-red-500"
+              />
+              <span className="text-sm text-[var(--muted-foreground)]">%</span>
+            </div>
+          </div>
+        </div>
+        <p className="text-xs text-[var(--muted-foreground)] mb-4">
+          Hiện tại: nhiệm vụ còn ≤ <strong>{riskConfig.thresholdDays} ngày</strong> deadline VÀ tiến độ &lt; <strong>{riskConfig.progressThreshold}%</strong> sẽ tự động bị đánh cờ rủi ro.
         </p>
-      </div>
 
-      <button
-        onClick={handleSave}
-        disabled={saving}
-        className="w-full flex items-center justify-center gap-2 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium transition-colors disabled:opacity-60"
-      >
-        {saving ? <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" /> : <Save className="w-4 h-4" />}
-        Lưu cấu hình
-      </button>
+        <button
+          onClick={handleSaveRisk}
+          disabled={savingRisk}
+          className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-60"
+        >
+          {savingRisk ? <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" /> : <Save className="w-4 h-4" />}
+          Lưu ngưỡng rủi ro
+        </button>
+      </div>
     </div>
   );
 }

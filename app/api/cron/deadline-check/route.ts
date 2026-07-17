@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getTasks } from "@/lib/firebase/firestore";
 import { checkAndUpdateRiskFlags } from "@/lib/risk-flag";
+import { getRiskFlagConfig } from "@/lib/mongodb/firestore";
 
 // Called by node-cron or external cron every hour
 // Requires CRON_SECRET header to prevent unauthorized calls
@@ -11,8 +12,8 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const tasks = await getTasks();
-    await checkAndUpdateRiskFlags(tasks);
+    const [tasks, riskConfig] = await Promise.all([getTasks(), getRiskFlagConfig()]);
+    await checkAndUpdateRiskFlags(tasks, riskConfig);
     return NextResponse.json({ ok: true, checked: tasks.length });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";

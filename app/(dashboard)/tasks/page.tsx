@@ -43,7 +43,10 @@ export default function TasksPage() {
   const showAlertBanner = !dismissedAlert && (riskCount > 0 || urgentCount > 0 || overdueCount > 0);
 
   const filteredTasks = useMemo(() => {
-    let result = tasks;
+    // Task hub đồng bộ ngầm (vd. Task thực thi liên kết per-đề-tài NCKH) — không hiện ở đây, tác
+    // giả theo dõi/cập nhật tiến độ ngay tại nguồn gốc sinh ra nó, không cần quản lý như 1 Task
+    // độc lập. Vẫn tính đủ ở Heatmap/Hiệu suất/Kế hoạch (không lọc cờ này ở những nơi đó).
+    let result = tasks.filter((t) => !t.hiddenFromTaskList);
 
     if (filters.search) {
       const q = filters.search.toLowerCase();

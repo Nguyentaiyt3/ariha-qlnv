@@ -4,7 +4,7 @@ export { NotificationModel } from "./Notification";
 export { MessageModel } from "./Message";
 export { WorkflowModel } from "./Workflow";
 export { MilestoneConfigModel } from "./MilestoneConfig";
-export { KPIFrameworkModel, EvaluationConfigModel } from "./KPIFramework";
+export { KPIFrameworkModel, EvaluationConfigModel, NckhReviewCriteriaConfigModel, RiskFlagConfigModel } from "./KPIFramework";
 export { EvaluationModel } from "./Evaluation";
 export { CalendarEventModel } from "./CalendarEvent";
 export { RequestTemplateModel, WorkRequestModel } from "./Request";

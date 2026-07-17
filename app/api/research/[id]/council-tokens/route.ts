@@ -3,7 +3,7 @@ import { randomBytes } from "crypto";
 import { connectDB } from "@/lib/mongodb/config";
 import { ResearchTopicModel } from "@/lib/mongodb/models";
 import { verifyToken, getUser } from "@/lib/mongodb/auth";
-import { hasPermission } from "@/lib/rbac/permissions";
+import { isNckhFullManager } from "@/lib/researchUtils";
 import { sendMail } from "@/lib/email/mailer";
 import type { ResearchTopic } from "@/types";
 
@@ -14,7 +14,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   if (!payload) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const me = await getUser(payload.userId);
-  if (!me || !hasPermission(me.role, "research:manage")) {
+  if (!me || !isNckhFullManager(me)) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 

@@ -1,4 +1,5 @@
 import type { ResearchTopic, User } from "@/types";
+import { getEffectiveRole } from "@/lib/rbac/permissions";
 
 /**
  * Chỉ hrAdmin (quyền "*" toàn hệ thống) hoặc người có chỉ định "Quản lý NCKH"
@@ -11,6 +12,32 @@ export function isNckhManager(user: Pick<User, "role" | "researchDesignations"> 
   if (!user) return false;
   if (user.role === "hrAdmin") return true;
   return (user.researchDesignations ?? []).includes("researchManager");
+}
+
+/**
+ * Nguồn thẩm quyền DUY NHẤT cho "có phải người quản lý NCKH thật hay không" — dùng ở mọi nơi
+ * cần quyết định quyền quản trị toàn quy trình NCKH (tiếp nhận, xác nhận, chứng nhận, từ chối,
+ * xem đầy đủ danh tính phản biện...). Cố tình KHÔNG dựa vào permission "research:manage" — vì
+ * permission này có thể bị cấu hình rộng cho vai trò thấp hơn qua trang Phân quyền của tổ chức
+ * (đã từng gây lộ danh tính phản biện + hiện nhầm nút hành động quản lý cho nhân viên/tác giả).
+ * Chỉ dựa vào 2 thứ không thể bị cấu hình lại qua trang Phân quyền: tên vai trò "director" (đã
+ * ở đỉnh phân cấp thật) và chỉ định "Quản lý NCKH" (gán riêng cho từng người).
+ */
+export function isNckhFullManager(user: Pick<User, "role" | "researchDesignations" | "positions"> | null | undefined): boolean {
+  if (!user) return false;
+  if (isNckhManager(user)) return true;
+  return getEffectiveRole(user) === "director";
+}
+
+/**
+ * "Trưởng nhóm Quản lý NCKH" — người vừa giữ vai trò Trưởng nhóm (teamLead) vừa được chỉ định
+ * "Quản lý NCKH". Đây là cấp trung gian được đề xuất (không tự quyết) cho các hành động cần điều
+ * phối nhưng không nên giao thẳng cho toàn bộ Trưởng nhóm nói chung — vd. chỉ định phản biện, đề
+ * xuất thành lập Hội đồng KHCN (chờ Giám đốc/hrAdmin xác nhận).
+ */
+export function isNckhTeamLead(user: Pick<User, "role" | "researchDesignations" | "positions"> | null | undefined): boolean {
+  if (!user) return false;
+  return getEffectiveRole(user) === "teamLead" && isNckhManager(user);
 }
 
 export function normText(s?: string | null): string {

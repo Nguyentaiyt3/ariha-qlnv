@@ -1,23 +1,54 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyToken, getUser } from "@/lib/mongodb/auth";
 import { getResearchTopic, updateResearchTopic, deleteResearchTopic, getDepartmentTeamLeads, createNotification } from "@/lib/mongodb/firestore";
-import { hasPermission, canDoResearchAction, canUserAssignReviewer } from "@/lib/rbac/permissions";
+import { hasPermission, canUserAssignReviewer, getEffectiveRole, ROLE_RANK } from "@/lib/rbac/permissions";
 import { sameUnit } from "@/lib/rbac/scope";
 import { redactTopicReviewsForViewer, redactAuthorForReviewer, isProposalFileLocked, isFinalReportFileLocked } from "@/lib/research";
-import { isTopicAuthor, isTopicReviewer, isNckhManager } from "@/lib/researchUtils";
+import { isTopicAuthor, isTopicReviewer, isNckhManager, isNckhFullManager, isNckhTeamLead } from "@/lib/researchUtils";
 import { logAudit } from "@/lib/mongodb/auditLog";
-import type { ResearchTopic, User, RecordChangeRequest } from "@/types";
+import type { ResearchTopic, ResearchCouncilSession, User, RecordChangeRequest } from "@/types";
 
 /**
  * Các key thuộc hành động quy trình đã có kiểm soát quyền riêng (intakeStatus, reviewAssignment)
- * hoặc bị chặn hoàn toàn với designation-holder (stage) — không đi qua cổng duyệt sửa/xoá mới.
+ * hoặc bị chặn hoàn toàn với designation-holder (stage), CỘNG VỚI các key chỉ đổi khi thực hiện
+ * hành động xếp loại/thẩm định đã được duyệt quyền riêng ở nơi khác (Tổng hợp kết quả — yêu cầu
+ * sửa đổi/xác nhận đã nhận/xác nhận reviewer, đều đã canManage-gate ở UI) — KHÔNG đi qua cổng
+ * duyệt sửa/xoá chung nữa, nếu không mọi lượt "Yêu cầu sửa đổi" sẽ bị biến thành 1 pending change
+ * request vô nghĩa (không ai chờ duyệt cái này) thay vì áp dụng ngay.
  */
-const WORKFLOW_UPDATE_KEYS = ["stage", "intakeStatus", "reviewAssignment"];
+const WORKFLOW_UPDATE_KEYS = [
+  "stage", "intakeStatus", "reviewAssignment",
+  "currentStep", "steps",
+  "revisionNote", "revisionDueAt", "revisionCount", "revisionResubmittedAt",
+  "reconfirmLoopActive", "skipReviewRound", "needsReviewerReconfirmRound",
+  // executionTaskId: liên kết Task tự sinh (bookkeeping hệ thống, không phải nội dung đề tài) —
+  // route generate-task đã tự lưu thẳng vào DB, chỉ còn client gọi PATCH lại để đồng bộ state cục
+  // bộ; không có gì cần trưởng nhóm duyệt ở đây.
+  "executionTaskId",
+];
 
 async function notifyChangeRequestReviewers(topic: ResearchTopic, req: RecordChangeRequest) {
   const leads = await getDepartmentTeamLeads(topic.department);
   const title = req.type === "edit" ? "Yêu cầu sửa đề tài NCKH chờ duyệt" : "Yêu cầu xoá đề tài NCKH chờ duyệt";
   const body = `${req.requestedBy} đề nghị ${req.type === "edit" ? "sửa" : "xoá"} đề tài "${topic.code || topic.title}"`;
+  for (const lead of leads) {
+    await createNotification({
+      userId: lead.id, type: "approval_request", title, body,
+      link: `/research/${topic.id}`, read: false, priority: "normal",
+      actionRequired: true, createdAt: new Date().toISOString(),
+    });
+  }
+}
+
+/**
+ * Chủ nhiệm đề nghị đổi file đề cương/đề tài đã khoá (đã nộp thẩm định) — chỉ thông báo cho
+ * Trưởng nhóm Quản lý NCKH của đơn vị (không phải bất kỳ trưởng nhóm nào), khớp đúng thẩm quyền
+ * duyệt riêng cho loại yêu cầu này (xem approve/reject-change-request/route.ts).
+ */
+async function notifyFileUnlockReviewers(topic: ResearchTopic, req: RecordChangeRequest) {
+  const leads = (await getDepartmentTeamLeads(topic.department)).filter(isNckhTeamLead);
+  const title = "Chủ nhiệm đề nghị đổi file đã khoá — chờ duyệt";
+  const body = `${req.requestedBy} đề nghị thay đổi file (đã nộp thẩm định) của đề tài "${topic.code || topic.title}"`;
   for (const lead of leads) {
     await createNotification({
       userId: lead.id, type: "approval_request", title, body,
@@ -52,7 +83,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
 
   const me = await getUser(u.userId);
   const isNckhMgr = !!me && isNckhManager(me);
-  const isManager = !!me && (hasPermission(me.role, "research:manage") || isNckhMgr);
+  const isManager = !!me && isNckhFullManager(me);
   const isTeamLeadOwnUnit =
     !!me && me.role === "teamLead" &&
     hasPermission(me.role, "research:monitor") &&
@@ -115,24 +146,76 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 
   // Chặn hoàn toàn người ngoài cuộc — trước đây route này không kiểm tra quyền gì cả, ai đăng
   // nhập cũng PATCH được bất kỳ đề tài nào (kể cả đổi `stage` GĐ1→GĐ5, gán mình làm chủ nhiệm...).
-  const canManage = canDoResearchAction(me as User, "research:manage", topic.department);
+  // Không dựa vào permission "research:manage" đơn thuần — có thể bị tổ chức cấp rộng cho vai trò
+  // thấp hơn qua trang Phân quyền. "Quản lý NCKH" là thẩm quyền toàn tổ chức (không giới hạn đơn
+  // vị), khớp với cách isNckhManager được dùng ở mọi nơi khác trong module (Giám sát tiến độ, ẩn
+  // danh phản biện).
+  const canManage = isNckhFullManager(me);
   const isMember = isTopicMember(topic, me.id);
   const isTeamLeadOwnUnit =
     me.role === "teamLead" && hasPermission(me.role, "research:monitor") && sameUnit(topic.department, me.department);
   const isDesignatedManager = isNckhManager(me);
+  // Thẩm quyền THẬT SỰ ở cấp toàn tổ chức (Director/hrAdmin) — KHÔNG dùng canManage
+  // (isNckhFullManager) ở đây vì nó cũng đúng với BẤT KỲ ai chỉ có chỉ định "Quản lý NCKH" (kể cả
+  // người đang cần xin duyệt bên dưới) — dùng canManage sẽ khiến needsApprovalGate không bao giờ
+  // đúng (canManage luôn true khi isDesignatedManager true) và người xin duyệt tự "đủ quyền" duyệt
+  // luôn yêu cầu của chính mình.
+  const isTopAuthority = ROLE_RANK[getEffectiveRole(me)] >= ROLE_RANK.director;
 
   if (!canManage && !isMember && !isTeamLeadOwnUnit && !isDesignatedManager) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  // File đề cương/đề tài bị khoá vĩnh viễn sau khi đã nộp thẩm định — không được sửa/xoá/thay
-  // thế, kể cả với người có quyền quản lý, vì phản biện có thể đã/đang đánh giá đúng file đó.
-  // Kiểm tra TRƯỚC cổng duyệt sửa/xoá bên dưới để chặn hẳn, không tạo yêu cầu chờ duyệt vô ích.
-  if (Object.prototype.hasOwnProperty.call(updates, "proposalFileUrl") && isProposalFileLocked(topic)) {
-    return NextResponse.json({ error: "Đề cương đã nộp thẩm định — không thể sửa/xoá/thay thế file" }, { status: 403 });
+  // File đề cương/đề tài & minh chứng: CHỈ chủ nhiệm đề tài được sửa — kể cả quản lý (canManage)
+  // hay thành viên/thực hiện chính khác cũng chỉ được xem, không được thay nội dung tác giả nộp.
+  const isPrincipalInvestigator = topic.principalInvestigatorId === me.id;
+  const FILE_OWNER_ONLY_KEYS = ["proposalFileUrl", "finalReportFileUrl", "documents"];
+  if (FILE_OWNER_ONLY_KEYS.some((k) => Object.prototype.hasOwnProperty.call(updates, k)) && !isPrincipalInvestigator) {
+    return NextResponse.json({ error: "Chỉ chủ nhiệm đề tài mới được sửa file/minh chứng" }, { status: 403 });
   }
-  if (Object.prototype.hasOwnProperty.call(updates, "finalReportFileUrl") && isFinalReportFileLocked(topic)) {
-    return NextResponse.json({ error: "File đề tài đã nộp thẩm định — không thể sửa/xoá/thay thế file" }, { status: 403 });
+
+  // File đề cương/đề tài đã khoá (đã nộp thẩm định) — chủ nhiệm KHÔNG bị chặn hẳn nữa, nhưng phải
+  // được Trưởng nhóm Quản lý NCKH (hoặc Director/hrAdmin) đồng ý trước khi áp dụng, vì phản biện
+  // có thể đã/đang đánh giá đúng file đó — tạo pendingChangeRequest thay vì trả 403 trực tiếp.
+  // (Ở trên đã đảm bảo chỉ chủ nhiệm mới tới được đây với các field này.)
+  if (Object.prototype.hasOwnProperty.call(updates, "proposalFileUrl") && isProposalFileLocked(topic)) {
+    if (topic.pendingChangeRequest?.status === "pending") {
+      return NextResponse.json({ error: "Đề tài đang có 1 yêu cầu sửa/xoá chờ duyệt" }, { status: 409 });
+    }
+    const pendingChangeRequest: RecordChangeRequest = {
+      type: "edit",
+      requestedAt: new Date().toISOString(),
+      requestedBy: me.name,
+      requestedByUserId: me.id,
+      proposedChanges: { proposalFileUrl: updates.proposalFileUrl },
+      status: "pending",
+    };
+    await updateResearchTopic(params.id, { pendingChangeRequest });
+    await notifyFileUnlockReviewers(topic, pendingChangeRequest);
+    return NextResponse.json({ success: true, pending: true });
+  }
+  if (
+    (Object.prototype.hasOwnProperty.call(updates, "finalReportFileUrl") ||
+      Object.prototype.hasOwnProperty.call(updates, "documents")) &&
+    isFinalReportFileLocked(topic)
+  ) {
+    if (topic.pendingChangeRequest?.status === "pending") {
+      return NextResponse.json({ error: "Đề tài đang có 1 yêu cầu sửa/xoá chờ duyệt" }, { status: 409 });
+    }
+    const proposedChanges: Record<string, unknown> = {};
+    if (Object.prototype.hasOwnProperty.call(updates, "finalReportFileUrl")) proposedChanges.finalReportFileUrl = updates.finalReportFileUrl;
+    if (Object.prototype.hasOwnProperty.call(updates, "documents")) proposedChanges.documents = updates.documents;
+    const pendingChangeRequest: RecordChangeRequest = {
+      type: "edit",
+      requestedAt: new Date().toISOString(),
+      requestedBy: me.name,
+      requestedByUserId: me.id,
+      proposedChanges,
+      status: "pending",
+    };
+    await updateResearchTopic(params.id, { pendingChangeRequest });
+    await notifyFileUnlockReviewers(topic, pendingChangeRequest);
+    return NextResponse.json({ success: true, pending: true });
   }
 
   // Người chỉ có chỉ định "Quản lý NCKH" (không có quyền research:manage theo role, không phải
@@ -140,7 +223,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   // của trưởng nhóm cùng đơn vị, để nhất quán với Thử nghiệm lâm sàng. Các hành động quy trình đã
   // có kiểm soát quyền riêng (stage/intakeStatus/reviewAssignment) không bị ảnh hưởng.
   const needsApprovalGate =
-    isDesignatedManager && !canManage && !isMember && !isTeamLeadOwnUnit &&
+    isDesignatedManager && !isTopAuthority && !isMember && !isTeamLeadOwnUnit &&
     !WORKFLOW_UPDATE_KEYS.some((k) => Object.prototype.hasOwnProperty.call(updates, k));
 
   if (needsApprovalGate) {
@@ -175,7 +258,19 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       !["recognition", "completed", "rejected"].includes(topic.stage) ||
       (topic.stage === "recognition" && topic.currentStep === "r_intake")
     );
-  if ("stage" in updates && !canManage && !(isSubmitFinalReportTransition && isPIOrPerformer)) {
+  // Tiếp nhận đề cương (p_intake → p_compile) đã có kiểm soát quyền riêng ở cổng "intakeStatus"
+  // bên dưới (isNckhManager, chặn tự tiếp nhận đề tài của mình) — người chỉ có chỉ định "Quản lý
+  // NCKH" (không phải hrAdmin/director nên canManage=false) vẫn phải được phép hoàn tất bước này,
+  // dù update có kèm "stage" (giữ nguyên "proposal", chỉ đổi currentStep trong cùng giai đoạn).
+  const isIntakeAcceptTransition =
+    updates.stage === "proposal" && updates.currentStep === "p_compile" &&
+    topic.currentStep === "p_intake" &&
+    Object.prototype.hasOwnProperty.call(updates, "intakeStatus") && updates.intakeStatus === "passed";
+  if (
+    "stage" in updates && !canManage &&
+    !(isSubmitFinalReportTransition && isPIOrPerformer) &&
+    !(isIntakeAcceptTransition && isNckhManager(me))
+  ) {
     return NextResponse.json({ error: "Bạn không có quyền chuyển giai đoạn đề tài" }, { status: 403 });
   }
 
@@ -208,6 +303,54 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     }
   }
 
+  // Thành lập Hội đồng KHCN: chỉ Director/hrAdmin được thành lập trực tiếp (chính thức ngay);
+  // "Trưởng nhóm Quản lý NCKH" (teamLead + chỉ định Quản lý NCKH) chỉ được ĐỀ XUẤT — server ép
+  // status "proposed", không tin trạng thái client gửi lên. Xác nhận 1 đề xuất (proposed→active)
+  // CHỈ Director/hrAdmin được làm. Các cập nhật khác lên phiên đã có (vd. thành viên bỏ phiếu
+  // online) vẫn đi qua cổng chung ở trên (isTopicMember đã bao gồm thành viên hội đồng).
+  if (Object.prototype.hasOwnProperty.call(updates, "councilSessions")) {
+    const isDirectorOrAbove = ROLE_RANK[getEffectiveRole(me)] >= ROLE_RANK.director;
+    const canProposeCouncilAuth = isNckhTeamLead(me);
+    const incoming = (updates.councilSessions ?? []) as ResearchCouncilSession[];
+    const existingById = new Map(topic.councilSessions.map((s) => [s.id, s]));
+    const now = new Date().toISOString();
+    for (const s of incoming) {
+      const prev = existingById.get(s.id);
+      // Ghi nhanh kết luận Hội đồng (không có danh sách thành viên) — khác với THÀNH LẬP Hội đồng
+      // thật sự (có members, cần biểu quyết) — Quản lý NCKH (isNckhManager) được ghi thẳng, không
+      // cần qua Director/teamLead như khi lập 1 hội đồng có thành viên.
+      const isQuickDecisionStub = !(s.members ?? []).length;
+      if (!prev) {
+        if (!isDirectorOrAbove && !canProposeCouncilAuth && !(isQuickDecisionStub && isNckhManager(me))) {
+          return NextResponse.json({ error: "Bạn không có quyền thành lập/đề xuất Hội đồng KHCN" }, { status: 403 });
+        }
+        if (isQuickDecisionStub) {
+          // Ghi nhanh không qua vòng đề xuất/xác nhận — nhưng KHÔNG tin status/confirmedBy... client
+          // gửi lên (không có UI nào hợp lệ cần gửi các field này lúc tạo mới), ép cứng phía server
+          // để không ai giả mạo "đã được Director xác nhận" qua API trực tiếp.
+          s.status = "active";
+          s.confirmedBy = undefined;
+          s.confirmedByName = undefined;
+          s.confirmedAt = undefined;
+          s.proposedBy = undefined;
+          s.proposedByName = undefined;
+        } else if (!isDirectorOrAbove) {
+          s.status = "proposed";
+          s.proposedBy = me.id;
+          s.proposedByName = me.name;
+        }
+      } else if (prev.status === "proposed" && s.status === "active") {
+        if (!isDirectorOrAbove) {
+          return NextResponse.json({ error: "Chỉ Giám đốc/hrAdmin mới được xác nhận thành lập Hội đồng" }, { status: 403 });
+        }
+        s.confirmedBy = me.id;
+        s.confirmedByName = me.name;
+        s.confirmedAt = now;
+      }
+    }
+    updates.councilSessions = incoming;
+  }
+
   await updateResearchTopic(params.id, updates);
 
   if (updates.stage && updates.stage !== topic.stage) {
@@ -228,7 +371,10 @@ export async function DELETE(req: NextRequest, { params }: { params: { id: strin
   const me = await getUser(u.userId);
   if (!me) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  if (hasPermission(me.role, "research:manage")) {
+  // Chỉ Director/hrAdmin mới được xoá trực tiếp — KHÔNG dùng isNckhFullManager (isNckhFullManager
+  // đúng với bất kỳ ai chỉ có chỉ định "Quản lý NCKH", kể cả người đáng lẽ phải đi qua nhánh xin
+  // duyệt bên dưới; dùng nó ở đây sẽ khiến nhánh "đề nghị xoá" không bao giờ chạy tới).
+  if (ROLE_RANK[getEffectiveRole(me)] >= ROLE_RANK.director) {
     await deleteResearchTopic(params.id);
     return NextResponse.json({ success: true });
   }

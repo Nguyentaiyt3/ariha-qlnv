@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { verifyToken, getUser } from "@/lib/mongodb/auth";
 import { connectDB } from "@/lib/mongodb/config";
 import { ResearchTopicModel } from "@/lib/mongodb/models";
-import { hasPermission } from "@/lib/rbac/permissions";
+import { isNckhFullManager } from "@/lib/researchUtils";
 import type { ResearchAnnotation } from "@/types";
 
 async function auth(req: NextRequest) {
@@ -82,7 +82,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   const target = (doc.annotations ?? []).find(a => a.id === annId);
   if (!target) return NextResponse.json({ error: "Annotation not found" }, { status: 404 });
 
-  const isManager = hasPermission(me.role, "research:manage");
+  const isManager = isNckhFullManager(me);
   if (target.authorId !== me.id && !isManager) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
@@ -116,7 +116,7 @@ export async function DELETE(req: NextRequest, { params }: { params: { id: strin
   const target = (doc.annotations ?? []).find(a => a.id === annId);
   if (!target) return NextResponse.json({ success: true });  // already gone
 
-  const isManager = hasPermission(me.role, "research:manage");
+  const isManager = isNckhFullManager(me);
   if (target.authorId !== me.id && !isManager) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }

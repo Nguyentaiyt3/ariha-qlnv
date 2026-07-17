@@ -613,23 +613,19 @@ export function hasPermissionForUser(user: Pick<User, "role" | "positions">, act
 }
 
 /**
- * Chỉ định phản biện kín: chỉ Trưởng VP (Văn phòng) hoặc Director/hrAdmin.
- * teamLead thuộc đơn vị khác KHÔNG được phép, dù có permission research:assignReviewer.
+ * Chỉ định phản biện kín: Director/hrAdmin, hoặc "Trưởng nhóm Quản lý NCKH" — người vừa giữ vai
+ * trò Trưởng nhóm (teamLead) vừa được chỉ định riêng "Quản lý NCKH". Trưởng nhóm thường (không có
+ * chỉ định) và người chỉ có chỉ định "Quản lý NCKH" nhưng không phải Trưởng nhóm đều KHÔNG được
+ * phép, dù có permission research:assignReviewer.
  */
 export function canUserAssignReviewer(
-  user: Pick<User, "role" | "positions">,
+  user: Pick<User, "role" | "positions" | "researchDesignations">,
   department?: string
 ): boolean {
   const role = getEffectiveRole(user);
   if (ROLE_RANK[role] >= ROLE_RANK.director) return true;
   if (role !== "teamLead") return false;
-  if (!hasPermission(role, "research:assignReviewer")) return false;
-  // Phải có ít nhất một vị trí thuộc đơn vị Văn phòng (VP)
-  const isVPHead = user.positions?.some(p => {
-    const unit = p.unitName?.trim().toLowerCase() ?? "";
-    return unit === "vp" || unit.includes("văn phòng");
-  }) ?? false;
-  if (!isVPHead) return false;
+  if (!(user.researchDesignations ?? []).includes("researchManager")) return false;
   return canManageDepartment(user, department);
 }
 

@@ -15,6 +15,7 @@ import { useAuthStore } from "@/stores/useAuthStore";
 import { subscribeTask, updateTask, deleteTask, getEmailLogs, getAuditTrail, addAuditEvent, addNotification, getEvaluations, saveEvaluation, getEvaluationConfig, getTaskEvaluations, getResearchTopics, getClinicalTrialsByTaskId } from "@/lib/firebase/firestore";
 import { uploadFile } from "@/lib/firebase/storage";
 import { hasPermission, canAssignTo } from "@/lib/rbac/permissions";
+import { isNckhFullManager } from "@/lib/researchUtils";
 import { useUnitAbbr } from "@/hooks/useUnitAbbr";
 import { updateStepById } from "@/lib/workflow-engine";
 import { StepsTab } from "@/components/tasks/StepsTab";
@@ -1932,13 +1933,16 @@ export default function TaskDetailsPage() {
         </div>
       )}
 
-      {/* Research topics widget — shown for anyone with research:create or research:manage */}
-      {task && (researchTopics.length > 0 || (currentUser && (hasPermission(currentUser.role, "research:manage") || hasPermission(currentUser.role, "research:create")))) && (
+      {/* Research topics widget — shown for anyone with research:create or research:manage.
+          canManage dùng isNckhFullManager thay vì hasPermission(role, "research:manage") — permission
+          này có thể bị tổ chức cấp rộng cho vai trò "staff" qua trang Phân quyền (đã xác nhận trong
+          DB), cùng nguyên nhân từng gây lộ quyền quản lý NCKH ở trang /research. */}
+      {task && (researchTopics.length > 0 || (currentUser && (isNckhFullManager(currentUser) || hasPermission(currentUser.role, "research:create")))) && (
         <ResearchWidget
           taskId={id}
           topics={researchTopics}
           task={task}
-          canManage={!!(currentUser && hasPermission(currentUser.role, "research:manage"))}
+          canManage={!!(currentUser && isNckhFullManager(currentUser))}
           canCreate={!!(currentUser && hasPermission(currentUser.role, "research:create"))}
           users={users}
           currentUserId={currentUser?.id ?? ""}
