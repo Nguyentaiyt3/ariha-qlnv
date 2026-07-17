@@ -2715,6 +2715,131 @@ function TaskLinkCell({
   );
 }
 
+// ─── Tab: "Đề tài đã công nhận" ───────────────────────────────
+// Danh mục lưu trữ các đề tài đã hoàn tất (stage "completed") — tra cứu nhanh số quyết định/chứng
+// nhận đã cấp qua từng giai đoạn (triển khai, y đức, công nhận), không có thao tác chỉnh sửa.
+
+function RecognizedTopicsTab({
+  topics, users,
+}: {
+  topics: ResearchTopic[];
+  users: { id: string; name: string }[];
+}) {
+  const [search, setSearch] = useState("");
+  const [yearFilter, setYearFilter] = useState("all");
+  const [deptFilter, setDeptFilter] = useState("all");
+
+  const recognizedTopics = useMemo(() => topics.filter(t => t.stage === "completed"), [topics]);
+
+  const years = useMemo(() =>
+    [...new Set(recognizedTopics.map(t => t.year).filter((y): y is number => !!y))].sort((a, b) => b - a),
+  [recognizedTopics]);
+
+  const depts = useMemo(() =>
+    [...new Set(recognizedTopics.map(t => t.department).filter((d): d is string => !!d))].sort(),
+  [recognizedTopics]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return recognizedTopics.filter(t => {
+      if (yearFilter !== "all" && String(t.year) !== yearFilter) return false;
+      if (deptFilter !== "all" && t.department !== deptFilter) return false;
+      if (!q) return true;
+      return t.title.toLowerCase().includes(q) ||
+        (t.code ?? "").toLowerCase().includes(q) ||
+        (t.principalInvestigatorName ?? "").toLowerCase().includes(q);
+    });
+  }, [recognizedTopics, search, yearFilter, deptFilter]);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[200px] max-w-xs">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
+          <input value={search} onChange={e => setSearch(e.target.value)}
+            placeholder="Tìm mã, tên đề tài, chủ nhiệm..."
+            className="w-full pl-8 pr-3 py-1.5 text-sm bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-400 dark:text-white" />
+        </div>
+        <select value={yearFilter} onChange={e => setYearFilter(e.target.value)}
+          className="text-sm px-2 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-400 dark:text-white">
+          <option value="all">Tất cả năm</option>
+          {years.map(y => <option key={y} value={y}>{y}</option>)}
+        </select>
+        <select value={deptFilter} onChange={e => setDeptFilter(e.target.value)}
+          className="text-sm px-2 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-400 dark:text-white">
+          <option value="all">Tất cả đơn vị</option>
+          {depts.map(d => <option key={d} value={d}>{d}</option>)}
+        </select>
+        <span className="text-xs text-slate-400 ml-auto">{filtered.length} đề tài</span>
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="text-center py-16 text-slate-400">
+          <Award className="w-8 h-8 mx-auto mb-2 text-slate-300" />
+          <p className="text-sm">{recognizedTopics.length === 0 ? "Chưa có đề tài nào được công nhận." : "Không có đề tài khớp bộ lọc."}</p>
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-slate-50 dark:bg-slate-800/60 text-left">
+                <th className="px-3 py-2.5 text-xs font-semibold text-slate-500">Tên đề tài</th>
+                <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Chủ nhiệm</th>
+                <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-32">Thành viên</th>
+                <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-24">Đơn vị</th>
+                <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Số QĐ triển khai</th>
+                <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Chứng nhận y đức</th>
+                <th className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-28">Số QĐ công nhận</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
+              {filtered.map(t => {
+                const piName = t.principalInvestigatorName ?? users.find(u => u.id === t.principalInvestigatorId)?.name;
+                const agreeCert = (t.certificates ?? []).find(c => c.type === "agreement");
+                const ethicsCert = (t.certificates ?? []).find(c => c.type === "ethics");
+                const recognitionCert = (t.certificates ?? []).find(c => c.type === "recognition");
+                return (
+                  <tr key={t.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition">
+                    <td className="px-3 py-3">
+                      <div className="flex items-center gap-1.5 mb-0.5">
+                        {t.code && <span className="font-mono text-[11px] text-slate-400">{t.code}</span>}
+                      </div>
+                      <p className="font-medium text-slate-800 dark:text-white leading-snug">{t.title}</p>
+                      <p className="text-[11px] text-slate-400">{t.field}{t.year ? ` · ${t.year}` : ""}</p>
+                    </td>
+                    <td className="px-3 py-3">
+                      {piName && (
+                        <div className="flex items-center gap-1.5">
+                          <AvatarBubble name={piName} size={20} />
+                          <span className="text-[11px] text-slate-600 dark:text-slate-300 truncate max-w-[80px]">{piName}</span>
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-3 py-3">
+                      <div className="flex flex-col gap-0.5">
+                        {(t.memberNames ?? "").split("\n").filter(Boolean).map((name, i) => (
+                          <div key={i} className="flex items-center gap-1">
+                            <AvatarBubble name={name.trim()} size={16} />
+                            <span className="text-[10px] text-slate-400 truncate max-w-[90px]">{name.trim()}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </td>
+                    <td className="px-3 py-3 text-[11px] text-slate-500">{t.department ?? "—"}</td>
+                    <td className="px-3 py-3 text-[11px] font-mono text-slate-700 dark:text-slate-300">{agreeCert?.number ?? "—"}</td>
+                    <td className="px-3 py-3 text-[11px] font-mono text-slate-700 dark:text-slate-300">{ethicsCert?.number ?? "—"}</td>
+                    <td className="px-3 py-3 text-[11px] font-mono text-slate-700 dark:text-slate-300">{recognitionCert?.number ?? "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Tab: "Giám sát tiến độ" ──────────────────────────────────
 
 function MonitorTab({
@@ -4100,7 +4225,7 @@ export default function ResearchPage() {
   );
 
   // Default tab: research managers start on monitor, others on my-topics
-  const [activeTab, setActiveTab] = useState<"mine" | "review" | "council" | "monitor">(
+  const [activeTab, setActiveTab] = useState<"mine" | "review" | "council" | "monitor" | "recognized">(
     () => canMonitorIntake ? "monitor" : "mine"
   );
 
@@ -4240,6 +4365,7 @@ export default function ResearchPage() {
 
   const canSeeReviewTab = canManage || canMonitor || hasReviewerDesig || reviewCount > 0;
   const canSeeCouncilTab = canManage || canMonitor || isCouncilMemberTop;
+  const recognizedCount = visibleTopics.filter(t => t.stage === "completed").length;
 
   // Nếu tab đang chọn vừa mất quyền xem (vd. tải lại trang sau khi vai trò thay đổi), chuyển về
   // "Đề tài của tôi" thay vì để trống nội dung.
@@ -4254,6 +4380,7 @@ export default function ResearchPage() {
     ...(canSeeReviewTab ? [{ id: "review" as const, label: "Phản biện của tôi", icon: ClipboardList, count: reviewCount }] : []),
     ...(canSeeCouncilTab ? [{ id: "council" as const, label: "Hội đồng KH&CN", icon: Vote, count: councilCount }] : []),
     ...(canMonitorIntake ? [{ id: "monitor" as const, label: "Giám sát tiến độ", icon: BarChart2, count: topics.length, badge: awaitingCount }] : []),
+    { id: "recognized" as const, label: "Đề tài đã công nhận", icon: Award, count: recognizedCount },
   ];
 
   return (
@@ -4407,6 +4534,9 @@ export default function ResearchPage() {
               onView={t => router.push(`/research/${t.id}`)}
               onTopicUpdate={handleTopicUpdate}
             />
+          )}
+          {activeTab === "recognized" && (
+            <RecognizedTopicsTab topics={visibleTopics} users={users} />
           )}
         </>
       )}
