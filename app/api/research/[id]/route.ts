@@ -113,9 +113,11 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   // khi họ đồng thời có quyền quản lý (cùng logic với redactTopicReviewsForViewer ở trên: 1 khi
   // đã là phản biện của đề tài này thì không còn là "quản lý thuần" nữa, dù vai trò/permission có
   // cấp research:manage). Chỉ "quản lý thuần" — KHÔNG đồng thời là phản biện của đề tài này — mới
-  // thấy đầy đủ danh tính để điều phối.
+  // thấy đầy đủ danh tính để điều phối. KHÔNG áp dụng khi đề tài đã "completed" — phản biện kín chỉ
+  // có ý nghĩa trong lúc quy trình còn đang diễn ra; đề tài đã công nhận xong là hồ sơ lưu trữ, ai
+  // xem được đề tài (vd. tab "Đề tài đã công nhận") cũng cần thấy đúng chủ nhiệm/thành viên.
   let responseTopic = topic;
-  if (isTopicReviewer(topic, u.userId)) {
+  if (isTopicReviewer(topic, u.userId) && topic.stage !== "completed") {
     responseTopic = redactAuthorForReviewer(topic);
   }
   return NextResponse.json({ topic: responseTopic });

@@ -90,8 +90,11 @@ export async function GET(req: NextRequest) {
 
   // Chiều còn lại của phản biện kín: phản biện không được biết danh tính tác giả/nhóm thực hiện —
   // áp dụng ngay cả khi họ đồng thời có quyền quản lý (khớp cùng nguyên tắc với reviews ở trên:
-  // đã là phản biện của 1 đề tài thì không còn "quản lý thuần" cho riêng đề tài đó nữa).
-  topics = topics.map((t) => (isTopicReviewer(t, session.userId) ? redactAuthorForReviewer(t) : t));
+  // đã là phản biện của 1 đề tài thì không còn "quản lý thuần" cho riêng đề tài đó nữa). KHÔNG áp
+  // dụng cho đề tài đã "completed" — phản biện kín chỉ có ý nghĩa khi quy trình còn đang diễn ra;
+  // đề tài đã công nhận xong là hồ sơ lưu trữ (tab "Đề tài đã công nhận"), phải thấy đúng chủ
+  // nhiệm/thành viên cho bất kỳ ai được phép xem danh sách.
+  topics = topics.map((t) => (isTopicReviewer(t, session.userId) && t.stage !== "completed" ? redactAuthorForReviewer(t) : t));
 
   return NextResponse.json({ topics });
 }
