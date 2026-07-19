@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback } from "react";
-import { X, Upload, Loader2, FileSpreadsheet, CheckCircle2, AlertTriangle, ChevronDown, ChevronUp, Archive } from "lucide-react";
+import { X, Upload, Loader2, FileSpreadsheet, CheckCircle2, AlertTriangle, ChevronDown, ChevronUp, Archive, FileDown } from "lucide-react";
 import { cn, generateId } from "@/lib/utils";
 import { toast } from "sonner";
 import { RESEARCH_STEPS } from "@/lib/research";
@@ -12,20 +12,28 @@ import type { ResearchTopic, ResearchCertificate, ResearchCouncilSession, User }
 // Col 1  Mã đề tài (tuỳ chọn)
 // Col 2  Tên đề tài *
 // Col 3  Chủ nhiệm *
-// Col 4  Đơn vị *
-// Col 5  Năm *
-// Col 6  Lĩnh vực
-// Col 7  Tóm tắt
-// Col 8  Ngày họp Hội đồng KHCN
-// Col 9  Số chứng nhận y đức
-// Col 10 Số quyết định công nhận (nếu có)
-// Col 11 Ngày công nhận
-// Col 12 Đơn vị cấp
-// Col 13 Phạm vi ảnh hưởng
-// Col 14 Link file đề tài / báo cáo (nếu có)
+// Col 4  Thành viên (tuỳ chọn — phân cách nhiều người bằng dấu ;)
+// Col 5  Đơn vị *
+// Col 6  Năm *
+// Col 7  Lĩnh vực
+// Col 8  Tóm tắt
+// Col 9  Ngày họp Hội đồng KHCN
+// Col 10 Số QĐ triển khai
+// Col 11 Số chứng nhận y đức
+// Col 12 Số quyết định công nhận (nếu có)
+// Col 13 Ngày công nhận
+// Col 14 Đơn vị cấp
+// Col 15 Phạm vi ảnh hưởng
+// Col 16 Link file đề tài / báo cáo (nếu có)
 
 function cell(row: unknown[], idx: number): string {
   return String((row as unknown[])[idx - 1] ?? "").trim();
+}
+
+/** Chuẩn hoá danh sách thành viên từ 1 ô Excel (phân cách bằng ; hoặc xuống dòng) về định dạng lưu
+    trữ nội bộ memberNames (nối bằng "\n"), khớp quy ước hiển thị dùng chung toàn module. */
+function normalizeMembers(raw: string): string {
+  return raw.split(/[;\n]/).map(s => s.trim()).filter(Boolean).join("\n");
 }
 
 interface ParsedRow {
@@ -33,11 +41,13 @@ interface ParsedRow {
   code: string;
   title: string;
   piName: string;
+  members: string;
   department: string;
   year: string;
   field: string;
   abstractText: string;
   councilMeetingDate: string;
+  agreementCertNumber: string;
   ethicsCertNumber: string;
   recognitionCertNumber: string;
   recognitionDate: string;
@@ -57,8 +67,8 @@ function parseRows(data: unknown[][]): ParsedRow[] {
 
     const title  = cell(row, 2);
     const piName = cell(row, 3);
-    const dept   = cell(row, 4);
-    const year   = cell(row, 5);
+    const dept   = cell(row, 5);
+    const year   = cell(row, 6);
     const errors: string[] = [];
     if (!title)  errors.push("Thiếu tên đề tài");
     if (!piName) errors.push("Thiếu chủ nhiệm");
@@ -70,17 +80,19 @@ function parseRows(data: unknown[][]): ParsedRow[] {
       code: cell(row, 1),
       title,
       piName,
+      members: normalizeMembers(cell(row, 4)),
       department: dept,
       year,
-      field:              cell(row, 6),
-      abstractText:       cell(row, 7),
-      councilMeetingDate: cell(row, 8),
-      ethicsCertNumber:   cell(row, 9),
-      recognitionCertNumber: cell(row, 10),
-      recognitionDate:    cell(row, 11),
-      issuedBy:           cell(row, 12),
-      scope:              cell(row, 13),
-      fileUrl:            cell(row, 14),
+      field:              cell(row, 7),
+      abstractText:       cell(row, 8),
+      councilMeetingDate: cell(row, 9),
+      agreementCertNumber: cell(row, 10),
+      ethicsCertNumber:   cell(row, 11),
+      recognitionCertNumber: cell(row, 12),
+      recognitionDate:    cell(row, 13),
+      issuedBy:           cell(row, 14),
+      scope:              cell(row, 15),
+      fileUrl:            cell(row, 16),
       valid: errors.length === 0,
       errors,
     });
@@ -149,8 +161,10 @@ function RowCard({ row, expanded, onToggle, matchedName }: {
           )}
           <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs mt-1">
             <div><span className="text-slate-400">Mã đề tài:</span> <span className="text-slate-600 dark:text-slate-300">{row.code || "—"}</span></div>
+            <div><span className="text-slate-400">Thành viên:</span> <span className="text-slate-600 dark:text-slate-300">{row.members ? `${row.members.split("\n").length} người` : "—"}</span></div>
             <div><span className="text-slate-400">Lĩnh vực:</span> <span className="text-slate-600 dark:text-slate-300">{row.field || "—"}</span></div>
             <div><span className="text-slate-400">Ngày họp HĐ KHCN:</span> <span className="text-slate-600 dark:text-slate-300">{row.councilMeetingDate || "—"}</span></div>
+            <div><span className="text-slate-400">Số QĐ triển khai:</span> <span className="text-slate-600 dark:text-slate-300">{row.agreementCertNumber || "—"}</span></div>
             <div><span className="text-slate-400">Số chứng nhận y đức:</span> <span className="text-slate-600 dark:text-slate-300">{row.ethicsCertNumber || "—"}</span></div>
             <div><span className="text-slate-400">Số QĐ công nhận:</span> <span className="text-slate-600 dark:text-slate-300">{row.recognitionCertNumber || "—"}</span></div>
             <div><span className="text-slate-400">Ngày công nhận:</span> <span className="text-slate-600 dark:text-slate-300">{row.recognitionDate || "—"}</span></div>
@@ -214,6 +228,30 @@ export function ImportRecognizedTopicsModal({ creatorId, creatorName, existingTo
     }
   }, []);
 
+  const handleDownloadTemplate = useCallback(async () => {
+    try {
+      const XLSX = await import("xlsx");
+      const headers = [
+        "Mã đề tài", "Tên đề tài", "Chủ nhiệm", "Thành viên", "Đơn vị", "Năm", "Lĩnh vực", "Tóm tắt",
+        "Ngày họp Hội đồng KHCN", "Số QĐ triển khai", "Số chứng nhận y đức", "Số quyết định công nhận",
+        "Ngày công nhận", "Đơn vị cấp", "Phạm vi ảnh hưởng", "Link file đề tài/báo cáo",
+      ];
+      const example = [
+        "DT-2026-001", "Khảo sát tình hình sử dụng thuốc tại khoa Dược", "Nguyễn Văn A",
+        "Trần Thị B; Lê Văn C", "Dược", "2026", "Dược lâm sàng", "Tóm tắt nội dung đề tài...",
+        "2026-01-15", "12/QĐ-BVTN", "YD-2026-001", "45/QĐ-BVTN", "2026-06-20", "Bệnh viện Thống Nhất",
+        "Cấp cơ sở", "https://...",
+      ];
+      const ws = XLSX.utils.aoa_to_sheet([headers, example]);
+      ws["!cols"] = headers.map(() => ({ wch: 20 }));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Đề tài đã công nhận");
+      XLSX.writeFile(wb, "mau-nhap-de-tai-da-cong-nhan.xlsx");
+    } catch {
+      toast.error("Không tạo được file mẫu");
+    }
+  }, []);
+
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     const file = e.dataTransfer.files[0];
@@ -232,6 +270,9 @@ export function ImportRecognizedTopicsModal({ creatorId, creatorName, existingTo
         const matched = matchUser(row.piName);
 
         const certificates: ResearchCertificate[] = [];
+        if (row.agreementCertNumber) {
+          certificates.push({ type: "agreement", number: row.agreementCertNumber });
+        }
         if (row.ethicsCertNumber) {
           certificates.push({ type: "ethics", number: row.ethicsCertNumber });
         }
@@ -261,6 +302,7 @@ export function ImportRecognizedTopicsModal({ creatorId, creatorName, existingTo
           title: row.title,
           principalInvestigatorId: matched?.id ?? `archival_${generateId("pi")}`,
           principalInvestigatorName: row.piName,
+          memberNames: row.members || undefined,
           department: row.department,
           year: Number(row.year),
           field: row.field || undefined,
@@ -315,9 +357,15 @@ export function ImportRecognizedTopicsModal({ creatorId, creatorName, existingTo
 
           {/* Column guide */}
           <div className="bg-slate-50 dark:bg-slate-800/50 rounded-xl p-3 text-xs text-slate-500 dark:text-slate-400 space-y-1">
-            <p className="font-semibold text-slate-600 dark:text-slate-300">Thứ tự cột trong file Excel (hàng đầu tiên là tiêu đề, bỏ qua khi đọc):</p>
-            <p>A. Mã đề tài · B. Tên đề tài * · C. Chủ nhiệm * · D. Đơn vị * · E. Năm * · F. Lĩnh vực · G. Tóm tắt</p>
-            <p>H. Ngày họp Hội đồng KHCN · I. Số chứng nhận y đức · J. Số quyết định công nhận (nếu có) · K. Ngày công nhận · L. Đơn vị cấp · M. Phạm vi ảnh hưởng · N. Link file đề tài/báo cáo</p>
+            <div className="flex items-start justify-between gap-3">
+              <p className="font-semibold text-slate-600 dark:text-slate-300">Thứ tự cột trong file Excel (hàng đầu tiên là tiêu đề, bỏ qua khi đọc):</p>
+              <button type="button" onClick={handleDownloadTemplate}
+                className="shrink-0 flex items-center gap-1 text-[11px] font-semibold text-violet-600 hover:text-violet-700 dark:text-violet-400 dark:hover:text-violet-300 hover:underline whitespace-nowrap">
+                <FileDown className="w-3 h-3" /> Tải file mẫu
+              </button>
+            </div>
+            <p>A. Mã đề tài · B. Tên đề tài * · C. Chủ nhiệm * · D. Thành viên (phân cách bằng ;) · E. Đơn vị * · F. Năm * · G. Lĩnh vực · H. Tóm tắt</p>
+            <p>I. Ngày họp Hội đồng KHCN · J. Số QĐ triển khai · K. Số chứng nhận y đức · L. Số quyết định công nhận (nếu có) · M. Ngày công nhận · N. Đơn vị cấp · O. Phạm vi ảnh hưởng · P. Link file đề tài/báo cáo</p>
             <p className="italic">* bắt buộc. Các cột còn lại để trống nếu không có dữ liệu.</p>
           </div>
 
