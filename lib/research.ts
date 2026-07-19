@@ -400,10 +400,19 @@ export function redactTopicReviewsForViewer(
 
 /**
  * Ẩn danh tính tác giả/nhóm thực hiện đề tài — chiều còn lại của phản biện kín 2 chiều: phản
- * biện không được biết mình đang chấm đề tài của ai. Áp dụng khi người xem là 1 phản biện của đề
- * tài, ngay cả khi họ đồng thời có quyền quản lý — đã là phản biện của đề tài này thì không còn
- * là "Quản lý NCKH thuần" cho riêng đề tài đó nữa. Các field bắt buộc kiểu string
- * (principalInvestigatorId, createdBy) trả về "" thay vì undefined để giữ đúng kiểu ResearchTopic.
+ * biện không được biết mình đang chấm đề tài của ai, nhóm nào, hay đơn vị nào. Áp dụng khi người
+ * xem là 1 phản biện của đề tài, ngay cả khi họ đồng thời có quyền quản lý — đã là phản biện của
+ * đề tài này thì không còn là "Quản lý NCKH thuần" cho riêng đề tài đó nữa. Các field bắt buộc
+ * kiểu string (principalInvestigatorId, createdBy) trả về "" thay vì undefined để giữ đúng kiểu
+ * ResearchTopic.
+ *
+ * ⚠️ DANH SÁCH NÀY LÀ DENYLIST (liệt kê field cần xoá), không phải allowlist — mỗi khi thêm field
+ * MỚI vào ResearchTopic (types/index.ts) có khả năng gợi ý danh tính/đơn vị/nhóm tác giả (kể cả
+ * gián tiếp), PHẢI bổ sung vào đây. groupId đặc biệt quan trọng: nó trỏ tới ResearchGroup (chứa
+ * mainPerformerId/supervisorId/createdBy) — nếu không xoá, phản biện có thể tự gọi
+ * GET /api/research/groups/[id] để lộ ngược lại danh tính dù topic đã "ẩn danh". Route đó cũng
+ * đã được chặn quyền (chỉ Quản lý NCKH/thành viên nhóm), nhưng KHÔNG dựa vào riêng lớp chặn đó —
+ * vẫn phải xoá groupId ở đây làm lớp phòng thủ độc lập.
  */
 export function redactAuthorForReviewer(topic: ResearchTopic): ResearchTopic {
   return {
@@ -416,6 +425,11 @@ export function redactAuthorForReviewer(topic: ResearchTopic): ResearchTopic {
     memberIds: undefined,
     memberNames: undefined,
     memberDepartments: undefined,
+    department: undefined,
+    groupId: undefined,
+    groupName: undefined,
+    proposedReviewers: undefined,
+    excludedReviewers: undefined,
     submitterName: undefined,
     submitterEmail: undefined,
     submitterPhone: undefined,
